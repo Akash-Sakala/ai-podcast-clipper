@@ -1,10 +1,13 @@
 "use client";
 
-import Dropzone, { type DropzoneState } from "shadcn-dropzone";
-import type { Clip } from "@prisma/client";
-import Link from "next/link";
+import { Loader2, UploadCloud, Youtube } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useDropzone } from "react-dropzone";
+import { toast } from "sonner";
+import { ACTIVE_STATUSES, type Job, type JobStatus } from "~/lib/job-types";
+import { ClipDisplay } from "./clip-display";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import {
   Card,
   CardContent,
@@ -12,11 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "./ui/card";
-import { Loader2, UploadCloud } from "lucide-react";
-import { useState } from "react";
-import { generateUploadUrl } from "~/actions/s3";
-import { toast } from "sonner";
-import { processVideo } from "~/actions/generation";
+import { Input } from "./ui/input";
 import {
   Table,
   TableBody,
@@ -25,153 +24,247 @@ import {
   TableHeader,
   TableRow,
 } from "./ui/table";
-import { Badge } from "./ui/badge";
-import { useRouter } from "next/navigation";
-import { ClipDisplay } from "./clip-display";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+
+const POLL_INTERVAL_MS = 4000;
+
+const STATUS_LABELS: Record<JobStatus, string> = {
+  queued: "Queued",
+  downloading: "Downloading",
+  uploading: "Uploading to Modal",
+  processing: "Processing on GPU",
+  saving: "Saving clips",
+  done: "Done",
+  failed: "Failed",
+};
+
+function uploadFile(file: File, onProgress: (percent: number) => void) {
+  // XMLHttpRequest (not fetch) so we can show upload progress for large files.
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.setRequestHeader("Content-Type", "video/mp4");
+    xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        let message = `Upload failed with status ${xhr.status}`;
+        try {
+          message =
+            (JSON.parse(xhr.responseText) as { error?: string }).error ??
+            message;
+        } catch {}
+        reject(new Error(message));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.send(file);
+  });
+}
 
 export function DashboardClient({
-  uploadedFiles,
-  clips,
+  initialJobs,
+  jobsDir,
 }: {
-  uploadedFiles: {
-    id: string;
-    s3Key: string;
-    filename: string;
-    status: string;
-    clipsCount: number;
-    createdAt: Date;
-  }[];
-  clips: Clip[];
+  initialJobs: Job[];
+  jobsDir: string;
 }) {
+  const [jobs, setJobs] = useState<Job[]>(initialJobs);
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const router = useRouter();
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [submittingUrl, setSubmittingUrl] = useState(false);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    router.refresh();
-    setTimeout(() => setRefreshing(false), 600);
-  };
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop: (accepted) => setFiles(accepted),
+    onDropRejected: () =>
+      toast.error("File not accepted", {
+        description: "Choose a single .mp4 file up to 4 GB.",
+      }),
+    accept: { "video/mp4": [".mp4"] },
+    maxSize: 4 * 1024 * 1024 * 1024,
+    maxFiles: 1,
+    disabled: uploading,
+  });
 
-  const handleDrop = (acceptedFiles: File[]) => {
-    setFiles(acceptedFiles);
-  };
+  const refreshJobs = useCallback(async () => {
+    try {
+      const response = await fetch("/api/jobs", { cache: "no-store" });
+      if (response.ok) setJobs((await response.json()) as Job[]);
+    } catch {
+      // dev server restarting - try again on the next poll
+    }
+  }, []);
+
+  const hasActiveJobs = jobs.some((job) =>
+    ACTIVE_STATUSES.includes(job.status),
+  );
+
+  // Poll while something is running.
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    const timer = setInterval(() => void refreshJobs(), POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [hasActiveJobs, refreshJobs]);
 
   const handleUpload = async () => {
-    if (files.length === 0) return;
+    const file = files[0];
+    if (!file) return;
 
-    const file = files[0]!;
     setUploading(true);
-
+    setUploadProgress(0);
     try {
-      const { success, signedUrl, uploadedFileId } = await generateUploadUrl({
-        filename: file.name,
-        contentType: file.type,
-      });
-
-      if (!success) throw new Error("Failed to get upload URL");
-
-      const uploadResponse = await fetch(signedUrl, {
-        method: "PUT",
-        body: file,
-        headers: {
-          "Content-Type": file.type,
-        },
-      });
-
-      if (!uploadResponse.ok)
-        throw new Error(`Upload filed with status: ${uploadResponse.status}`);
-
-      await processVideo(uploadedFileId);
-
+      await uploadFile(file, setUploadProgress);
       setFiles([]);
-
-      toast.success("Video uploaded successfully", {
-        description:
-          "Your video has been scheduled for processing. Check the status below.",
-        duration: 5000,
+      toast.success("Video uploaded", {
+        description: "Processing has started. Status updates below.",
       });
+      await refreshJobs();
     } catch (error) {
-      toast.error("Upload failed", {
-        description:
-          "There was a problem uploading your video. Please try again.",
-      });
+      toast.error("Upload failed", { description: (error as Error).message });
     } finally {
       setUploading(false);
     }
   };
 
+  const handleYoutube = async () => {
+    if (!youtubeUrl.trim()) return;
+
+    setSubmittingUrl(true);
+    try {
+      const response = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ youtubeUrl }),
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(body.error ?? `Request failed (${response.status})`);
+      }
+      setYoutubeUrl("");
+      toast.success("YouTube job started", {
+        description: "Downloading the video, then processing on the GPU.",
+      });
+      await refreshJobs();
+    } catch (error) {
+      toast.error("Could not start job", {
+        description: (error as Error).message,
+      });
+    } finally {
+      setSubmittingUrl(false);
+    }
+  };
+
   return (
     <div className="mx-auto flex max-w-5xl flex-col space-y-6 px-4 py-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Podcast Clipper
-          </h1>
-          <p className="text-muted-foreground">
-            Upload your podcast and get AI-generated clips instantly
-          </p>
-        </div>
-        <Link href="/dashboard/billing">
-          <Button>Buy Credits</Button>
-        </Link>
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Podcast Clipper
+        </h1>
+        <p className="text-muted-foreground">
+          Turn a podcast into vertical clips with subtitles. Clips are saved on
+          this computer.
+        </p>
       </div>
 
       <Tabs defaultValue="upload">
         <TabsList>
-          <TabsTrigger value="upload">Upload</TabsTrigger>
-          <TabsTrigger value="my-clips">My Clips</TabsTrigger>
+          <TabsTrigger value="upload">New job</TabsTrigger>
+          <TabsTrigger value="clips">Clips</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="upload">
+        <TabsContent value="upload" className="flex flex-col gap-6">
           <Card>
             <CardHeader>
-              <CardTitle>Upload Podcast</CardTitle>
+              <CardTitle>From YouTube</CardTitle>
               <CardDescription>
-                Upload your audio or video file to generate clips
+                Paste a video link. It is downloaded on this computer (up to
+                1080p).
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Dropzone
-                onDrop={handleDrop}
-                accept={{ "video/mp4": [".mp4"] }}
-                maxSize={500 * 1024 * 1024}
-                disabled={uploading}
-                maxFiles={1}
+              <form
+                className="flex gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleYoutube();
+                }}
               >
-                {(dropzone: DropzoneState) => (
-                  <>
-                    <div className="flex flex-col items-center justify-center space-y-4 rounded-lg p-10 text-center">
-                      <UploadCloud className="text-muted-foreground h-12 w-12" />
-                      <p className="font-medium">Drag and drop your file</p>
-                      <p className="text-muted-foreground text-sm">
-                        or click to browse (MP4 up to 500MB)
-                      </p>
-                      <Button
-                        className="cursor-pointer"
-                        variant="default"
-                        size="sm"
-                        disabled={uploading}
-                      >
-                        Select File
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </Dropzone>
+                <Input
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={youtubeUrl}
+                  onChange={(event) => setYoutubeUrl(event.target.value)}
+                  disabled={submittingUrl}
+                />
+                <Button
+                  type="submit"
+                  disabled={!youtubeUrl.trim() || submittingUrl}
+                >
+                  {submittingUrl ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Youtube className="mr-2 h-4 w-4" />
+                  )}
+                  Generate clips
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>From a file</CardTitle>
+              <CardDescription>
+                Upload an MP4 video from this computer.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div
+                {...getRootProps()}
+                className={`cursor-pointer rounded-lg border-2 border-dashed transition-colors ${
+                  isDragActive
+                    ? "border-primary bg-muted"
+                    : "border-muted-foreground/25"
+                } ${uploading ? "pointer-events-none opacity-50" : ""}`}
+              >
+                <input {...getInputProps()} />
+                <div className="flex flex-col items-center justify-center space-y-4 p-10 text-center">
+                  <UploadCloud className="text-muted-foreground h-12 w-12" />
+                  <p className="font-medium">
+                    {isDragActive
+                      ? "Drop the file here"
+                      : "Drag and drop your file"}
+                  </p>
+                  <p className="text-muted-foreground text-sm">
+                    or click to browse (MP4 up to 4 GB)
+                  </p>
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    disabled={uploading}
+                  >
+                    Select File
+                  </Button>
+                </div>
+              </div>
 
               <div className="mt-2 flex items-start justify-between">
-                <div>
-                  {files.length > 0 && (
-                    <div className="space-y-1 text-sm">
+                <div className="text-sm">
+                  {files[0] && (
+                    <>
                       <p className="font-medium">Selected file:</p>
-                      {files.map((file) => (
-                        <p key={file.name} className="text-muted-foreground">
-                          {file.name}
-                        </p>
-                      ))}
-                    </div>
+                      <p className="text-muted-foreground">{files[0].name}</p>
+                    </>
                   )}
                 </div>
                 <Button
@@ -181,100 +274,103 @@ export function DashboardClient({
                   {uploading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Uploading...
+                      Uploading {uploadProgress}%
                     </>
                   ) : (
                     "Upload and Generate Clips"
                   )}
                 </Button>
               </div>
-
-              {uploadedFiles.length > 0 && (
-                <div className="pt-6">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-md mb-2 font-medium">Queue status</h3>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRefresh}
-                      disabled={refreshing}
-                    >
-                      {refreshing && (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      )}
-                      Refresh
-                    </Button>
-                  </div>
-                  <div className="max-h-[300px] overflow-auto rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>File</TableHead>
-                          <TableHead>Uploaded</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Clips created</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {uploadedFiles.map((item) => (
-                          <TableRow key={item.id}>
-                            <TableCell className="max-w-xs truncate font-medium">
-                              {item.filename}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground text-sm">
-                              {new Date(item.createdAt).toLocaleDateString()}
-                            </TableCell>
-                            <TableCell>
-                              {item.status === "queued" && (
-                                <Badge variant="outline">Queued</Badge>
-                              )}
-                              {item.status === "processing" && (
-                                <Badge variant="outline">Processing</Badge>
-                              )}
-                              {item.status === "processed" && (
-                                <Badge variant="outline">Processed</Badge>
-                              )}
-                              {item.status === "no credits" && (
-                                <Badge variant="destructive">No credits</Badge>
-                              )}
-                              {item.status === "failed" && (
-                                <Badge variant="destructive">Failed</Badge>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {item.clipsCount > 0 ? (
-                                <span>
-                                  {item.clipsCount} clip
-                                  {item.clipsCount !== 1 ? "s" : ""}
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground">
-                                  No clips yet
-                                </span>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
+
+          {jobs.length > 0 && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Jobs</CardTitle>
+                    <CardDescription>
+                      {hasActiveJobs
+                        ? "Updating automatically while jobs are running."
+                        : "All jobs finished."}
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void refreshJobs()}
+                  >
+                    Refresh
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-[400px] overflow-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Video</TableHead>
+                        <TableHead>Started</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Details</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {jobs.map((job) => (
+                        <TableRow key={job.id}>
+                          <TableCell
+                            className="max-w-xs truncate font-medium"
+                            title={job.title}
+                          >
+                            {job.source === "youtube" && (
+                              <Youtube className="mr-1 inline h-4 w-4 text-red-500" />
+                            )}
+                            {job.title}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">
+                            {new Date(job.createdAt).toLocaleString()}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                job.status === "failed"
+                                  ? "destructive"
+                                  : "outline"
+                              }
+                            >
+                              {ACTIVE_STATUSES.includes(job.status) && (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              )}
+                              {STATUS_LABELS[job.status] ?? job.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell
+                            className="text-muted-foreground max-w-sm text-sm whitespace-normal"
+                            title={job.error ?? undefined}
+                          >
+                            {job.status === "failed" ? job.error : job.message}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
-        <TabsContent value="my-clips">
+        <TabsContent value="clips">
           <Card>
             <CardHeader>
-              <CardTitle>My Clips</CardTitle>
+              <CardTitle>Clips</CardTitle>
               <CardDescription>
-                View and manage your generated clips here. Processing may take a
-                few minuntes.
+                Newest first. Files live in {jobsDir}.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ClipDisplay clips={clips} />
+              <ClipDisplay jobs={jobs} jobsDir={jobsDir} />
             </CardContent>
           </Card>
         </TabsContent>

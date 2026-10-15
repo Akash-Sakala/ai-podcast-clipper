@@ -1,29 +1,22 @@
-# Create T3 App
+# Podcast Clipper - web UI
 
-This is a [T3 Stack](https://create.t3.gg/) project bootstrapped with `create-t3-app`.
+Local Next.js dashboard for the podcast clipper. No accounts, payments or database:
+jobs are folders under `../data/jobs/` and processing is done by
+`../ai-podcast-clipper-backend/runner.py` on a Modal GPU.
 
-## What's next? How do I make an app with this?
+```powershell
+npm install
+npm run dev   # http://localhost:3000
+```
 
-We try to keep this project as simple as possible, so you can start with just the scaffolding we set up for you, and add additional things later when they become necessary.
+See the main [README](../README.md) for full setup.
 
-If you are not familiar with the different technologies used in this project, please refer to the respective docs. If you still are in the wind, please join our [Discord](https://t3.gg/discord) and ask for help.
-
-- [Next.js](https://nextjs.org)
-- [NextAuth.js](https://next-auth.js.org)
-- [Prisma](https://prisma.io)
-- [Drizzle](https://orm.drizzle.team)
-- [Tailwind CSS](https://tailwindcss.com)
-- [tRPC](https://trpc.io)
-
-## Learn More
-
-To learn more about the [T3 Stack](https://create.t3.gg/), take a look at the following resources:
-
-- [Documentation](https://create.t3.gg/)
-- [Learn the T3 Stack](https://create.t3.gg/en/faq#what-learning-resources-are-currently-available) — Check out these awesome tutorials
-
-You can check out the [create-t3-app GitHub repository](https://github.com/t3-oss/create-t3-app) — your feedback and contributions are welcome!
-
-## How do I deploy this?
-
-Follow our deployment guides for [Vercel](https://create.t3.gg/en/deployment/vercel), [Netlify](https://create.t3.gg/en/deployment/netlify) and [Docker](https://create.t3.gg/en/deployment/docker) for more information.
+| Path | Purpose |
+|---|---|
+| `src/app/page.tsx` | Dashboard (server component, lists jobs) |
+| `src/components/dashboard-client.tsx` | YouTube form, file upload, jobs table |
+| `src/components/clip-display.tsx` | Clip gallery |
+| `src/app/api/jobs/route.ts` | `GET` list jobs, `POST` create job (upload or YouTube) |
+| `src/app/api/media/[jobId]/[clip]/route.ts` | Streams clip files (supports seeking, `?download`) |
+| `src/lib/jobs.ts` | Job folders + starting `runner.py` |
+| `src/env.js` | Optional settings: `DATA_DIR`, `RUNNER_PYTHON` |
