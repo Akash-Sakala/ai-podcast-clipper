@@ -1,0 +1,5 @@
+# Packages for YOUR LAPTOP (the GPU packages in requirements.txt are only
+# installed inside the Modal container).
+modal
+yt-dlp[default]
+imageio-ffmpeg
