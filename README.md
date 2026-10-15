@@ -1,171 +1,209 @@
-# AI Podcast Clipper
+# AI Podcast Clipper (personal local tool)
 
 ![alt text](thumbnail.png)
 
-[Link to video](https://youtu.be/PeFZcvWucoU)
+Turns a full podcast into vertical, subtitled short clips for YouTube Shorts / Reels / TikTok.
+This is a single-user version of [Andreas Trolle's AI Podcast Clipper SaaS](https://github.com/Andreaswt/ai-podcast-clipper-saas):
+there are no accounts, credits, payments, S3, database or queue. Everything is stored on your laptop.
+Only the GPU work runs in the cloud, on [Modal](https://modal.com).
 
-[Discord and more](https://www.andreastrolle.com/)
+## How it works
 
-## Overview
-
-Hi 🤙 In this project, you'll build a SaaS application that converts full podcasts into viral short-form clips ready for YouTube Shorts or TikTok. The tool uses different AI models to transcribe the video, automatically detect the most engaging moments in podcasts and create clips cropped to the active speaker's face. You'll learn how to build a complete production-ready SaaS with user authentication, a credit-based payment system using Stripe, and background processing queues to handle user load. All services used in this project are free, so you won't have to pay anything to follow along. We'll use technologies such as Next.js 15, React, Typescript, Tailwind CSS, ShadCN, Auth.js, Python, FastAPI, Stripe, Modal, Inngest, S3 on AWS, and more
-
-Features:
-
-- 🎬 Auto-detection of viral moments in podcasts (stories, questions, etc.)
-- 🔊 Automatically added subtitles on clips
-- 📝 Transcription with m-bain/whisperX
-- 🎯 Active speaker detection for video cropping with Junhua-Liao/LR-ASD
-- 📱 Clips optimized for vertical platforms (TikTok, YouTube Shorts)
-- 🎞️ GPU-accelerated video rendering with FFMPEGCV
-- 🧠 LLM-powered viral moment identification with Gemini 2.5 Pro
-- 📊 Queue system with Inngest for handling user load
-- 💳 Credit-based system
-- 💰 Stripe integration for credit pack purchases
-- 👤 User authentication system
-- 📱 Responsive Next.js web interface
-- 🎛️ Dashboard to upload podcasts and see clips
-- ⏱️ Inngest for handling long-running processes
-- ⚡ Serverless GPU processing with Modal
-- 🌐 FastAPI endpoint for podcast processing
-- 🎨 Modern UI with Tailwind CSS & Shadcn UI
-
-## Setup
-
-Follow these steps to install and set up the project.
-
-### Clone the Repository
-
-```bash
-git clone --recurse-submodules https://github.com/Andreaswt/ai-podcast-clipper-saas.git
+```
+Browser (localhost:3000)
+  │  paste a YouTube link or upload an .mp4
+  ▼
+Next.js app  ── saves the video to  data/jobs/<job id>/input.mp4
+  │             and starts the runner in the background
+  ▼
+runner.py (your laptop)
+  │  1. downloads the YouTube video (yt-dlp)            [YouTube jobs only]
+  │  2. uploads input.mp4 to the Modal Volume "ai-podcast-clipper-jobs"
+  │  3. calls the deployed GPU class  AiPodcastClipper.process_job
+  │  4. downloads the clips to  data/jobs/<job id>/clips/
+  ▼
+main.py on a Modal L40S GPU
+     WhisperX transcription → Gemini picks the best 30-60 s moments →
+     LR-ASD active-speaker detection → 9:16 crop on the speaker → subtitles (FFmpeg)
 ```
 
-### Install Python
+Each job is a folder:
 
-Download and install Python if not already installed. Use the link below for guidance on installation:
-[Python Download](https://www.python.org/downloads/)
+```
+data/jobs/20261015-184647-d1ef80/
+  job.json          status shown in the UI (queued → downloading → uploading → processing → saving → done/failed)
+  input.mp4         the source video
+  clips/clip_0.mp4  finished clips (up to 5)
+  moments.json      the moments Gemini picked
+  transcript.json   word-level transcript
+  runner.log        everything the runner printed - check this when a job fails
+```
 
-Create a virtual environment with **Python 3.12**.
+## Requirements
 
-### Backend
+- Windows, macOS or Linux. No NVIDIA GPU needed.
+- [Node.js](https://nodejs.org) 20+ (also used by yt-dlp to solve YouTube's JavaScript challenges)
+- [Python 3.12](https://www.python.org/downloads/windows/) (3.12.10 is the last 3.12 with a Windows installer)
+- Git
+- A [Modal](https://modal.com) account. The Starter plan includes $30/month of free credits; an L40S costs about $2/hour.
+- A [Gemini API key](https://aistudio.google.com/apikey)
 
-Navigate to backend folder:
+## One-time setup
 
-```bash
+### 1. Backend (Python, Modal)
+
+```powershell
 cd ai-podcast-clipper-backend
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1          # macOS/Linux: source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements-local.txt
 ```
 
-Install dependencies:
+`requirements-local.txt` is all your laptop needs (modal, yt-dlp, a bundled ffmpeg).
+`requirements.txt` holds the GPU packages (torch, WhisperX, …); those are installed only inside the Modal container.
 
-```bash
-pip install -r requirements.txt
+**Active speaker detection model ([LR-ASD](https://github.com/Junhua-Liao/LR-ASD))** - clone it into a folder named `asd`,
+download the face-detector weights and patch one line that breaks with NumPy 2:
+
+```powershell
+git clone https://github.com/Junhua-Liao/LR-ASD.git asd
+pip install gdown
+gdown 1KafnHz7ccT-3IyddBsL5yi2xGtxAKypt -O asd\model\faceDetector\s3fd\sfd_face.pth
+(Get-Content asd\model\faceDetector\s3fd\box_utils.py) -replace 'astype\(np\.int\)', 'astype(int)' | Set-Content asd\model\faceDetector\s3fd\box_utils.py
 ```
 
-Clone the [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) repo into the backend folder, and rename the folder asd:
+**Modal:**
 
-```bash
-git clone https://github.com/Junhua-Liao/LR-ASD.git
+```powershell
+modal setup                                                   # log in (opens the browser)
+modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<your key>
+modal deploy main.py                                          # run from the backend folder
 ```
 
-Modal setup:
+- The first deploy builds the CUDA image and takes a while. Later deploys are fast.
+- To use a different Gemini model, add `GEMINI_MODEL=<model id>` to the secret
+  (`modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=... GEMINI_MODEL=... --force`).
+  The default is set in `DEFAULT_GEMINI_MODEL` in `main.py`.
+- **Re-run `modal deploy main.py` every time you change `main.py` or anything in `asd/`.**
 
-```bash
-modal setup
-```
+Models used (all downloaded automatically inside Modal and cached in the `ai-podcast-clipper-model-cache` volume):
 
-Run on Modal:
+| Model | Purpose |
+|---|---|
+| WhisperX `large-v2` + bundled VAD | Transcription |
+| wav2vec2 English alignment | Word-level timestamps for subtitles |
+| Gemini (API) | Picks the viral moments |
+| LR-ASD `finetuning_TalkSet.model` + S3FD | Active speaker / face detection for the crop |
 
-```bash
-modal run main.py
-```
+### 2. Frontend (Next.js)
 
-Deploy backend:
-
-```bash
-modal deploy main.py
-```
-
-### Frontend
-
-Install dependencies:
-
-```bash
+```powershell
 cd ai-podcast-clipper-frontend
-npm i
+npm install
 ```
 
-Run:
+No `.env` is needed with the standard folder layout. Optional settings are in `.env.example`:
 
-```bash
+- `DATA_DIR`: where job folders go. The default is `data/` in the repo. The repo is inside OneDrive,
+  so consider a folder outside it, e.g. `C:\podcast-clipper-data`, so large videos aren't synced.
+- `RUNNER_PYTHON`: path to the Python that runs `runner.py`. The default is the backend `.venv`.
+
+## Running
+
+```powershell
+cd ai-podcast-clipper-frontend
 npm run dev
 ```
 
-### Queue
+Open http://localhost:3000.
 
-Run the local queue development server with Inngest:
+- **New job:** paste a YouTube link, or upload an MP4 (up to 4 GB).
+- The jobs table refreshes itself while jobs run.
+- **Clips tab:** play or download the clips. They're also in `data/jobs/<job id>/clips/`.
+- Live GPU logs are at modal.com → Apps → ai-podcast-clipper.
 
-```bash
-cd ai-podcast-clipper-frontend
-npm run inngest-dev
+A job keeps running if you stop the dev server. Start it again and the status catches up.
+
+### Command line (no UI)
+
+```powershell
+cd ai-podcast-clipper-backend
+.venv\Scripts\Activate.ps1
+python runner.py --video "C:\path\to\podcast.mp4"
+python runner.py --youtube "https://www.youtube.com/watch?v=..."
+python runner.py --youtube "..." --max-clips 3
 ```
 
-## AWS Setup
+Jobs started from the command line show up in the web UI too.
 
-CORS policy for S3 bucket:
+### Watching and stopping jobs
 
-```bash
-[
-    {
-        "AllowedHeaders": [
-            "Content-Type",
-            "Content-Length",
-            "Authorization"
-        ],
-        "AllowedMethods": [
-            "PUT"
-        ],
-        "AllowedOrigins": [
-            "*"
-        ],
-        "ExposeHeaders": [
-            "ETag"
-        ],
-        "MaxAgeSeconds": 3600
-    }
-]
+Stopping `npm run dev` does **not** stop a running job - the runner and the Modal GPU call keep going.
+
+```powershell
+# live GPU logs (start a job first; run from the backend folder with the venv active)
+modal app logs ai-podcast-clipper
+
+# 1. is a runner still running on this laptop? (one job shows as 2 python.exe processes: venv launcher + real Python)
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*runner.py*' } | Select-Object ProcessId, CommandLine
+Stop-Process -Id <pid>, <pid> -Force
+
+# 2. is a GPU container still running? (an empty table = nothing running, nothing billed)
+modal container list
+modal container stop <container-id>        # do NOT use `modal app stop` - that undeploys the app
+
+# 3. remove the job's leftover files from the Modal volume (skipped when the runner is force-stopped)
+modal volume ls ai-podcast-clipper-jobs
+modal volume rm ai-podcast-clipper-jobs /<job-id> -r
+
+# 4. remove the job from the UI (it shows as Failed once its runner is gone)
+Remove-Item -Recurse -Force ..\data\jobs\<job-id>
 ```
 
-IAM user policy to upload, download and list bucket items:
+## Troubleshooting
 
-```bash
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:ListBucket"
-            ],
-            "Resource": "[S3 ARN here]"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:GetObject",
-                "s3:PutObject"
-            ],
-            "Resource": "[S3 ARN here]/*"
-        }
-    ]
-}
-```
+| Symptom | Fix |
+|---|---|
+| Job fails with `Python not found at ...` | Create the backend `.venv` (step 1) or set `RUNNER_PYTHON` in the frontend `.env` |
+| `NotFoundError ... ai-podcast-clipper` / app not found | Run `modal deploy main.py` |
+| `Secret ai-podcast-clipper-secret not found` | Create the secret (step 1) |
+| Token / auth errors from Modal | Run `modal setup` again in the backend venv |
+| "No clips were produced - Gemini found no suitable moments" | The video has no clear Q&A or story segments. Try another video. |
+| Gemini 404 / model not found | Set `GEMINI_MODEL` to a current model ([list](https://ai.google.dev/gemini-api/docs/models)) |
+| Clip errors mentioning tracks/scores | LR-ASD crashed. Check the modal.com logs. Usually the `box_utils.py` patch or `sfd_face.pth` is missing. Re-deploy after fixing. |
+| YouTube download fails with `HTTP Error 403: Forbidden` | The runner already retries 3 times with fresh links. If it still fails, wait a few minutes and start the job again, update yt-dlp (`pip install -U "yt-dlp[default]"` in the backend venv), or download the video yourself and upload the file |
+| YouTube says "Sign in to confirm you're not a bot" | Add `YTDLP_COOKIES_FROM_BROWSER="firefox"` (or `edge`/`chrome`) to the frontend `.env` so yt-dlp uses your browser's YouTube login. Firefox works best; Chrome/Edge may need to be closed first |
+| `torchaudio has no attribute AudioMetaData` / container crash-looping | Torch and WhisperX versions are out of sync. Keep the `torch`, `torchaudio`, `torchvision` and `whisperx` pins in `requirements.txt` together, then re-deploy |
+| `FileNotFoundError: /jobs/<id>/input.mp4 not found in the jobs volume` right after a deploy | A request from a job you stopped was still queued on Modal and ran once the app worked again. Harmless - start a new job |
+| `Weights only load failed` in Modal logs | Add `weights_only=False` to the `torch.load` calls in `asd/ASD.py` and `asd/model/faceDetector/s3fd/__init__.py`, then re-deploy |
 
-## LLM for viral moment identification
+## What I changed vs. upstream
 
-[Create an API key for Gemini](https://ai.google.dev/gemini-api/docs/quickstart?lang=python)
+Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) (MIT) and turned into a single-user, local-first tool.
 
-# Videos used for testing / thumbnail
+**Removed**
+- The multi-user SaaS layer: NextAuth login, Stripe billing and credits, Prisma/Postgres, the Inngest queue, S3 uploads and the bearer-token FastAPI endpoint.
 
-[MI6 Secret Agent Talks About the World's Darkest Secrets](https://www.youtube.com/watch?v=-vMgbJ6WqN4)
+**Added**
+- `runner.py`: downloads from YouTube with yt-dlp (H.264 up to 1080p, chunked, retries with fresh signed URLs, optional browser cookies), uploads to a Modal Volume, calls the deployed GPU class, downloads the clips and cleans up remote files. It also works as a standalone CLI.
+- A file-based job store (`data/jobs/<id>/job.json`, atomic writes) with detection of runner processes that died, so jobs never hang as "processing".
+- A frontend for YouTube links or MP4 uploads (up to 4 GB, with progress), a live job table, and a clip player and download, with validated job and clip IDs.
 
-[Janney Sanchez | Therapy saved my life, From Rivera to Sanchez , Living in my Moms Shadow | Ep.198](https://www.youtube.com/watch?v=SOG0GmKts_I)
+**Changed in the GPU backend (`main.py`)**
+- S3 and the HTTP endpoint replaced by a Modal Volume exchange and a `process_job` method.
+- One failing clip no longer fails the whole job (upstream had no per-clip error handling), `max_clips` is a parameter (upstream hard-coded 5) and the job timeout went from 15 to 60 minutes.
+- Gemini model is configurable via `GEMINI_MODEL`, and Gemini's JSON reply is parsed defensively.
+- `torch`, `torchaudio`, `torchvision` and `whisperx` pinned to a set that resolves together (unpinned installs crash on `torchaudio.AudioMetaData`).
+- LR-ASD vendored into `asd/` with a NumPy 2 fix.
+
+**Unchanged from upstream:** the overall pipeline design (WhisperX transcription, Gemini moment selection, LR-ASD active-speaker crop, FFmpeg subtitles) and the crop and subtitle rendering code.
+
+## Credits
+
+- Original project by Andreas Trolle (MIT). See `LICENSE.MD`.
+- Active speaker detection: [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) by Liao Junhua (MIT), in `ai-podcast-clipper-backend/asd/`.
+
+## License
+
+MIT. See [LICENSE.MD](LICENSE.MD). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas).
