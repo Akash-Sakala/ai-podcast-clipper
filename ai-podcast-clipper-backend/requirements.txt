@@ -1,20 +1,22 @@
+# torch/torchaudio/torchvision/whisperx are pinned to a set that resolves together.
+# Unpinned, pip picks torch 2.9+ with an older whisperx, whose pyannote.audio 3.x
+# crashes on 'torchaudio has no attribute AudioMetaData'.
 tqdm
-torch
+torch==2.8.0
+torchaudio==2.8.0
 opencv-python
 ffmpegcv
 numpy
 python_speech_features
 scipy
-scenedetect
+scenedetect==0.6.7.1
 scikit-learn
 gdown
-torchvision
+torchvision==0.23.0
 pandas
 transformers
 accelerate
 datasets
 google-genai
 pysubs2
-boto3
-fastapi[standard]
-whisperx
+whisperx==3.8.6
