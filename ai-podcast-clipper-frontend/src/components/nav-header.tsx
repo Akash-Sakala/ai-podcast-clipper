@@ -1,13 +1,17 @@
+import { ThemeMenu } from "./theme-menu";
+
 const NavHeader = () => {
   return (
-    <header className="bg-background sticky top-0 z-10 flex justify-center border-b">
-      <div className="container flex h-16 items-center justify-between px-4 py-2">
-        <div className="font-sans text-xl font-medium tracking-tight">
-          <span className="text-foreground">podcast</span>
-          <span className="font-light text-gray-500">/</span>
-          <span className="text-foreground font-light">clipper</span>
+    <header className="bg-background/85 sticky top-0 z-20 border-b backdrop-blur">
+      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+        <div className="font-display flex items-center gap-2 text-lg font-semibold tracking-tight">
+          <span
+            aria-hidden
+            className="bg-tally inline-block size-2.5 rounded-full"
+          />
+          podcast clipper
         </div>
-        <span className="text-muted-foreground text-xs">local</span>
+        <ThemeMenu />
       </div>
     </header>
   );

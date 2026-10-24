@@ -1,0 +1,124 @@
+import type { Job, ProgressStage } from "./job-types";
+
+export function relativeTime(iso: string, now = Date.now()) {
+  const seconds = Math.max(0, (now - new Date(iso).getTime()) / 1000);
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+  });
+}
+
+export function clipLength(seconds: number) {
+  const s = Math.round(seconds);
+  return s < 60
+    ? `${s} s`
+    : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+export function timecode(seconds: number) {
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${rest}` : `${m}:${rest}`;
+}
+
+export function duration(seconds: number) {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s`;
+  const m = Math.round(seconds / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/** Steps shown in the progress strip, in order. */
+export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
+  const steps: { stage: ProgressStage; label: string }[] = [
+    { stage: "downloading", label: "Download" },
+    { stage: "uploading", label: "Upload" },
+    { stage: "transcribing", label: "Transcribe" },
+    { stage: "ranking", label: "Find moments" },
+    { stage: "rendering", label: "Render" },
+    { stage: "saving", label: "Save" },
+  ];
+  return steps.filter((step) => {
+    if (step.stage === "downloading")
+      return job.source === "youtube" && job.mode !== "rerank";
+    if (step.stage === "transcribing") return job.mode !== "rerank";
+    return true;
+  });
+}
+
+/** Current stage of an active job, also for runners that predate `progress`. */
+export function currentStage(job: Job): ProgressStage | "queued" {
+  if (job.progress?.stage) return job.progress.stage;
+  switch (job.status) {
+    case "downloading":
+      return "downloading";
+    case "uploading":
+      return "uploading";
+    case "transcribing":
+      return "transcribing";
+    case "selecting":
+      return "ranking";
+    case "rendering":
+      return "rendering";
+    case "processing":
+      return "transcribing";
+    case "saving":
+      return "saving";
+    default:
+      return "queued";
+  }
+}
+
+export function stageSentence(job: Job) {
+  const stage = currentStage(job);
+  const p = job.progress;
+  switch (stage) {
+    case "queued":
+      return "Starting";
+    case "downloading":
+      return "Downloading from YouTube";
+    case "uploading":
+      return "Uploading to the GPU";
+    case "transcribing":
+      return "Transcribing";
+    case "ranking":
+      return "Finding the best moments";
+    case "rendering":
+      return p?.total
+        ? `Rendering clip ${Math.min((p.done ?? 0) + 1, p.total)} of ${p.total}`
+        : "Rendering clips";
+    case "saving":
+      return "Saving clips";
+  }
+}
+
+/** Plain-language reason for a failed job. */
+export function failureSentence(job: Job) {
+  const error = (job.error ?? "").toLowerCase();
+  if (error.includes("sign in") || error.includes("bot"))
+    return "YouTube asked to confirm you're not a bot. Set YTDLP_COOKIES_FROM_BROWSER in .env and try again.";
+  if (error.includes("python not found"))
+    return "The backend Python environment wasn't found. Create the backend .venv or set RUNNER_PYTHON in .env.";
+  if (error.includes("stopped unexpectedly"))
+    return "The job stopped unexpectedly. Try again.";
+  const where: Record<string, string> = {
+    downloading: "Couldn't download this video.",
+    uploading: "Couldn't upload the video to Modal.",
+    transcribing: "Transcription failed on the GPU.",
+    ranking: "Finding moments failed.",
+    rendering: "Rendering the clips failed.",
+    saving: "Couldn't save the finished clips.",
+  };
+  return (
+    where[job.failedStage ?? ""] ?? "Something went wrong while processing."
+  );
+}

@@ -65,7 +65,10 @@ function newJobId() {
 async function writeJob(job: Job) {
   const file = path.join(jobDir(job.id), "job.json");
   const tmp = `${file}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(job, null, 2), "utf-8");
+  // canRerank is derived on read and never stored.
+  const stored: Job = { ...job };
+  delete stored.canRerank;
+  await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
   await fsp.rename(tmp, file);
 }
 
@@ -121,7 +124,8 @@ function isProcessAlive(pid: number) {
 async function detectStaleJob(job: Job): Promise<Job> {
   if (!ACTIVE_STATUSES.includes(job.status)) return job;
 
-  const ageMs = Date.now() - new Date(job.createdAt).getTime();
+  // Grace period from the last update, so a re-queued (re-rank) job isn't flagged early.
+  const ageMs = Date.now() - new Date(job.updatedAt ?? job.createdAt).getTime();
   const runnerGone = job.pid ? !isProcessAlive(job.pid) : ageMs > 2 * 60_000;
   if (!runnerGone) return job;
 
@@ -133,6 +137,15 @@ async function detectStaleJob(job: Job): Promise<Job> {
   };
   await writeJob(failed);
   return failed;
+}
+
+/** One job as the UI sees it: stale runners detected, canRerank derived. */
+export async function getJob(id: string): Promise<Job | null> {
+  if (!isValidJobId(id)) return null;
+  const job = await readJob(id);
+  if (!job) return null;
+  const checked = await detectStaleJob(job);
+  return { ...checked, canRerank: canRerank(checked) };
 }
 
 export async function listJobs(): Promise<Job[]> {
@@ -152,11 +165,22 @@ export async function listJobs(): Promise<Job[]> {
 
   return jobs
     .filter((job): job is Job => job !== null)
+    .map((job) => ({ ...job, canRerank: canRerank(job) }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/** A finished job can be re-ranked when its video and transcript are still on disk. */
+export function canRerank(job: Job) {
+  if (ACTIVE_STATUSES.includes(job.status)) return false;
+  const dir = jobDir(job.id);
+  return (
+    fs.existsSync(path.join(dir, "input.mp4")) &&
+    fs.existsSync(path.join(dir, "transcript.json"))
+  );
+}
+
 /** Starts runner.py for a job in the background and returns immediately. */
-export async function startRunner(id: string) {
+export async function startRunner(id: string, extraArgs: string[] = []) {
   const dir = jobDir(id);
   const runnerScript = path.join(BACKEND_DIR, "runner.py");
 
@@ -170,18 +194,22 @@ export async function startRunner(id: string) {
   }
 
   const logFd = fs.openSync(path.join(dir, "runner.log"), "a");
-  const child = spawn(RUNNER_PYTHON, [runnerScript, "--job-dir", dir], {
-    cwd: BACKEND_DIR,
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", logFd, logFd],
-    env: {
-      ...process.env,
-      DATA_DIR,
-      PYTHONUTF8: "1",
-      PYTHONUNBUFFERED: "1",
+  const child = spawn(
+    RUNNER_PYTHON,
+    [runnerScript, "--job-dir", dir, ...extraArgs],
+    {
+      cwd: BACKEND_DIR,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", logFd, logFd],
+      env: {
+        ...process.env,
+        DATA_DIR,
+        PYTHONUTF8: "1",
+        PYTHONUNBUFFERED: "1",
+      },
     },
-  });
+  );
 
   child.on("error", (error) => {
     void updateJob(id, {
