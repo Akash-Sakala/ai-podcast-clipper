@@ -14,6 +14,7 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 | `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
 | `moments.json` | Every candidate moment with its scores and reason |
 | `clips/clip_0.mp4` … | Finished clips, `clip_0` = best |
+| `clips/clip_0.jpg` … | Poster still for each clip, shown before the clip loads |
 | `runner.log` | Everything the runner printed; check this first when a job fails |
 
 ## Settings
@@ -47,7 +48,7 @@ Jobs started here show up in the web app too.
 python runner.py --video "C:\path\to\podcast.mp4"
 python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
-python runner.py --thumbnails          # covers for uploads made before thumbnails existed
+python runner.py --thumbnails          # covers and clip posters for videos made before they existed
 ```
 
 ## Re-rank

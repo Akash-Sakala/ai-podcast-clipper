@@ -8,7 +8,7 @@ it directly from the terminal:
     python runner.py --youtube "https://www.youtube.com/watch?v=..."
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
-    python runner.py --thumbnails                              (covers for older uploads)
+    python runner.py --thumbnails                              (covers and clip posters for older videos)
 
 Steps: (YouTube download) -> upload to the Modal jobs volume -> run the deployed
 pipeline -> download clips into <job dir>/clips -> update <job dir>/job.json.
@@ -187,46 +187,60 @@ def hide_child_windows() -> None:
     subprocess.Popen.__init__ = init
 
 
+def save_frame(video: pathlib.Path, target: pathlib.Path, at_seconds: float, video_filter: str) -> bool:
+    """Write one JPEG frame of `video` to `target`. Never raises: a missing image
+    only means the web app shows a plain placeholder."""
+    import imageio_ffmpeg
+
+    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
+               "-ss", f"{at_seconds:.2f}", "-i", str(video), "-frames:v", "1",
+               "-vf", video_filter, "-q:v", "4", str(target)]
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+        return target.exists()
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not save {target.name}: {exc}")
+        return False
+
+
 def save_thumbnail(job: Job, size: str = "320:180") -> bool:
     """Save a 16:9 frame from about 10% into input.mp4 as thumbnail.jpg (the cover in
     the web app's video list). YouTube jobs get YouTube's own cover from the web app."""
     import imageio_ffmpeg
 
     video = job.dir / "input.mp4"
-    target = job.dir / "thumbnail.jpg"
     if not video.exists():
         return False
     try:
         reader = imageio_ffmpeg.read_frames(str(video))
         duration = float(next(reader).get("duration") or 0)
         reader.close()
-    except Exception:  # noqa: BLE001 - fall back to a fixed offset
+    except Exception:  # noqa: BLE001 - fall back to the first frame
         duration = 0
     width, height = size.split(":")
-    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
-               "-ss", f"{duration * 0.1:.2f}", "-i", str(video), "-frames:v", "1",
-               "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                      f"crop={width}:{height}",
-               "-q:v", "4", str(target)]
-    try:
-        subprocess.run(command, check=True, capture_output=True, timeout=60)
-        return target.exists()
-    except Exception as exc:  # noqa: BLE001 - a missing cover never fails a job
-        log(f"Could not save a thumbnail: {exc}")
-        return False
+    return save_frame(video, job.dir / "thumbnail.jpg", duration * 0.1,
+                      f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}")
+
+
+def save_clip_poster(clip: pathlib.Path) -> bool:
+    """clip_N.mp4 -> clip_N.jpg: the still the clip card shows before the video loads."""
+    return save_frame(clip, clip.with_suffix(".jpg"), 0.5, "scale=540:-2")
 
 
 def backfill_thumbnails(data_dir: pathlib.Path) -> int:
-    """Save covers for uploaded videos that don't have one yet."""
-    count = 0
+    """Save missing covers for uploaded videos and missing posters for all clips."""
+    covers = posters = 0
     for job_dir in sorted((data_dir / "jobs").glob("*")):
-        if not (job_dir / "job.json").exists() or (job_dir / "thumbnail.jpg").exists():
+        if not (job_dir / "job.json").exists():
             continue
         job = Job(job_dir)
-        if job.data.get("source") == "upload" and save_thumbnail(job):
-            count += 1
-            log(f"Saved a thumbnail for {job.data.get('title')}")
-    log(f"Saved {count} thumbnail(s)")
+        if (job.data.get("source") == "upload" and not (job_dir / "thumbnail.jpg").exists()
+                and save_thumbnail(job)):
+            covers += 1
+        for clip in sorted((job_dir / "clips").glob("clip_*.mp4")):
+            if not clip.with_suffix(".jpg").exists() and save_clip_poster(clip):
+                posters += 1
+    log(f"Saved {covers} video cover(s) and {posters} clip poster(s)")
     return 0
 
 
@@ -319,6 +333,7 @@ def download_outputs(job: Job, volume, result: dict, clips_dir: pathlib.Path | N
         with open(target, "wb") as f:
             volume.read_file_into_fileobj(f"/{job.id}/clips/{name}", f)
         saved.append(name)
+        save_clip_poster(target)
         log(f"Saved {target}")
 
     for extra in ("transcript.json", "moments.json"):
@@ -520,7 +535,7 @@ def main() -> int:
     source.add_argument("--video", help="Path to a local .mp4 file")
     source.add_argument("--youtube", help="YouTube video URL")
     source.add_argument("--thumbnails", action="store_true",
-                        help="Save missing covers for uploaded videos in --data-dir, then exit")
+                        help="Save missing video covers and clip posters in --data-dir, then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
                         help="Where job folders are stored (default: ../data)")
     parser.add_argument("--max-clips", type=int, default=5)

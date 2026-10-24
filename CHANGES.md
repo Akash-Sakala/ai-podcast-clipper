@@ -35,5 +35,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Light / Dark / System theme (next-themes), Geist and Bricolage Grotesque type, amber accent, visible keyboard focus and reduced-motion support.
 - Video list with covers (YouTube thumbnail, or a frame from an uploaded video, saved in the job folder), video length and titles on up to two lines; logo (a sound wave with a vertical clip frame) in the header and as the browser-tab icon.
 - On Windows the runner starts with `pythonw.exe` and hides its child processes' windows, so no console window pops up over the app.
+- Clips show instantly: each clip gets a poster still (`clip_N.jpg`, made by the runner), and clip URLs carry a version so the browser caches them (ETag and immutable caching in the media route).
+- Fullscreen keeps the whole vertical clip (`object-contain`; `object-cover` cropped it to the screen width). Re-rank uses a "list, redone" icon.
 
 **Unchanged from upstream:** the LR-ASD active-speaker crop and the crop and subtitle rendering code.
