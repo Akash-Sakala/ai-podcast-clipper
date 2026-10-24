@@ -1,9 +1,11 @@
-# torch/torchaudio/torchvision/whisperx are pinned to a set that resolves together.
-# Unpinned, pip picks torch 2.9+ with an older whisperx, whose pyannote.audio 3.x
-# crashes on 'torchaudio has no attribute AudioMetaData'.
+# Packages for the Modal GPU image (installed in the container, not on your laptop).
+#
+# torch 2.8 wheels ship CUDA 12.8 + cuDNN 9.10 (nvidia-* packages). onnxruntime-gpu
+# is pinned to 1.24.4, the newest CUDA 12.8 build onnx-asr accepts: from 1.27 the
+# default PyPI build targets CUDA 13, and onnx-asr excludes 1.24.1, 1.25.* and 1.26.0.
 tqdm
 torch==2.8.0
-torchaudio==2.8.0
+torchvision==0.23.0
 opencv-python
 ffmpegcv
 numpy
@@ -11,12 +13,9 @@ python_speech_features
 scipy
 scenedetect==0.6.7.1
 scikit-learn
-gdown
-torchvision==0.23.0
 pandas
-transformers
-accelerate
-datasets
 google-genai
 pysubs2
-whisperx==3.8.6
+onnx-asr==0.12.0
+onnxruntime-gpu==1.24.4
+huggingface_hub

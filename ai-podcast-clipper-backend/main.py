@@ -1,15 +1,27 @@
 """
-AI Podcast Clipper - GPU backend (runs on Modal).
+AI Podcast Clipper - Modal backend (English).
 
 Deploy once with `modal deploy main.py`. The local runner (runner.py) uploads a
-video into the `ai-podcast-clipper-jobs` Modal Volume, calls
-`AiPodcastClipper.process_job` and downloads the finished clips again.
+video into the `ai-podcast-clipper-jobs` Modal Volume and calls
+`AiPodcastClipper.process_job`, which runs the whole cloud pipeline in one GPU
+container (A10 by default, `CLIPPER_GPU` in .env):
+
+  transcript="parakeet"  Parakeet TDT 0.6B v2 transcribes the full video on the
+                         GPU -> Gemini ranks the best moments -> LR-ASD speaker
+                         crop (9:16) -> subtitles from the same transcript.
+
+  transcript="reuse"     re-rank & re-render: reuse the Parakeet transcript of an
+                         earlier run (uploaded again by runner.py --rerank).
+
+  transcript="uploaded"  legacy jobs from the removed Whistle engine: reuse their
+                         uploaded transcript, but re-transcribe each chosen clip with
+                         Parakeet for accurate subtitles.
 
 Volume layout (per job):
     /<job_id>/input.mp4          uploaded by runner.py
-    /<job_id>/transcript.json    word-level transcript (WhisperX)
-    /<job_id>/moments.json       clip moments chosen by Gemini
-    /<job_id>/clips/clip_N.mp4   finished vertical clips with subtitles
+    /<job_id>/transcript.json    word-level transcript (Parakeet)
+    /<job_id>/moments.json       ranked clip moments chosen by Gemini (best first)
+    /<job_id>/clips/clip_N.mp4   finished vertical clips with subtitles (clip_0 = best)
 """
 
 import glob
@@ -23,50 +35,85 @@ import time
 
 import modal
 
+import moments as moment_selection
+import settings
+
+APP_NAME = "ai-podcast-clipper"
+# Primary model: GEMINI_MODEL in the Modal secret if set, else the first of GEMINI_MODELS (.env).
+DEFAULT_MAX_CLIPS = 5
+CLIPPER_GPU = settings.CLIPPER_GPU          # .env, read at deploy time
+PARAKEET_DIR = "/opt/parakeet-tdt-0.6b-v2"
+
 image = (modal.Image.from_registry(
     "nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12")
-    .apt_install(["ffmpeg", "libgl1-mesa-glx", "wget", "libcudnn8", "libcudnn8-dev"])
+    .apt_install(["ffmpeg", "libgl1-mesa-glx", "wget"])
     .pip_install_from_requirements("requirements.txt")
     .run_commands(["mkdir -p /usr/share/fonts/truetype/custom",
                    "wget -O /usr/share/fonts/truetype/custom/Anton-Regular.ttf https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
                    "fc-cache -f -v"])
+    # Bake Parakeet v2 (fp32 ONNX, ~2.5 GB) into the image; add HF_TOKEN to the
+    # secret if Hugging Face rate-limits the build (HTTP 429).
+    .add_local_file("download_parakeet.py", "/opt/download_parakeet.py", copy=True)
+    .run_commands(f"python /opt/download_parakeet.py {PARAKEET_DIR}",
+                  secrets=[modal.Secret.from_name("ai-podcast-clipper-secret")])
     .env({
-        "HF_HOME": "/models/huggingface",
-        "TORCH_HOME": "/models/torch",
-        # Let CTranslate2 (faster-whisper) find the cuDNN 9 / cuBLAS libraries shipped with torch
+        "PARAKEET_MODEL_DIR": PARAKEET_DIR,
+        # cuDNN 9 / cuBLAS 12.8 from the nvidia-* wheels that torch installs (used by ONNX Runtime too)
         "LD_LIBRARY_PATH": "/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:"
                            "/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:"
                            "/usr/local/nvidia/lib:/usr/local/nvidia/lib64",
     })
-    .add_local_dir("asd", "/asd", copy=True))
+    .add_local_dir("asd", "/asd", copy=True)
+    .add_local_python_source("moments", "settings", "audio_utils", "parakeet_transcriber")
+    .add_local_dir("prompts", "/root/prompts"))
 
-# Heavy ML libraries only exist inside the Modal container. Importing them here
+# Heavy ML libraries only exist inside the GPU container. Importing them here
 # means your laptop only needs `pip install modal` to deploy this file.
 with image.imports():
     import cv2
     import ffmpegcv
     import numpy as np
     import pysubs2
-    import whisperx
-    from google import genai
     from tqdm import tqdm
 
-app = modal.App("ai-podcast-clipper", image=image)
+    import parakeet_transcriber
 
-# Caches downloaded model weights (Whisper, alignment model) between cold starts.
-model_cache = modal.Volume.from_name(
-    "ai-podcast-clipper-model-cache", create_if_missing=True)
+app = modal.App(APP_NAME, image=image)
+
 # Exchange folder between your laptop and the GPU container.
 jobs_volume = modal.Volume.from_name(
     "ai-podcast-clipper-jobs", create_if_missing=True)
+secret = modal.Secret.from_name("ai-podcast-clipper-secret")
+# Ranking settings from .env (MIN_CLIPS, CLIP_MIN/MAX_SECONDS, GEMINI_MODELS, ...).
+settings_secret = modal.Secret.from_dict(settings.CONTAINER_SETTINGS)
 
-MODEL_CACHE_PATH = "/models"
 JOBS_PATH = pathlib.Path("/jobs")
+# Live progress for runner.py / the web app: {job_id: {"stage", "done", "total", "etaSeconds"}}.
+progress_dict = modal.Dict.from_name("ai-podcast-clipper-progress", create_if_missing=True)
 
-# Override with GEMINI_MODEL in the Modal secret if this model is retired.
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-DEFAULT_MAX_CLIPS = 5
 
+def report_progress(job_id: str, stage: str, **fields) -> None:
+    try:
+        progress_dict.put(job_id, {"stage": stage, **fields})
+    except Exception as exc:  # noqa: BLE001 - progress is best effort
+        print(f"Could not report progress: {exc!r}")
+
+
+def gemini_settings():
+    client = moment_selection.make_client(os.environ["GEMINI_API_KEY"])
+    return client, os.environ.get("GEMINI_MODEL") or moment_selection.GEMINI_MODELS[0]
+
+
+def read_audio(media_path: pathlib.Path):
+    """Decode any media file to 16 kHz mono float32 samples with ffmpeg."""
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(media_path), "-vn", "-ac", "1",
+                          "-ar", "16000", "-f", "s16le", "-"], check=True, capture_output=True).stdout
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+# --------------------------------------------------------------------------- #
+# Rendering helpers (GPU container)
+# --------------------------------------------------------------------------- #
 
 def create_vertical_video(tracks, scores, pyframes_path, pyavi_path, audio_path, output_path, framerate=25):
     target_width = 1080
@@ -256,7 +303,12 @@ def create_subtitles_with_ffmpeg(transcript_segments: list, clip_start: float, c
     subprocess.run(ffmpeg_cmd, shell=True, check=True)
 
 
-def process_clip(base_dir: pathlib.Path, original_video_path: pathlib.Path, output_path: pathlib.Path, start_time: float, end_time: float, clip_index: int, transcript_segments: list):
+def process_clip(base_dir: pathlib.Path, original_video_path: pathlib.Path, output_path: pathlib.Path,
+                 start_time: float, end_time: float, clip_index: int, transcript_segments: list,
+                 refine_words=None) -> str:
+    """Render one vertical clip. `refine_words(audio_path, start_time)` may return
+    more accurate absolute-time words for the subtitles (hybrid mode).
+    Returns the subtitle source used: "refined" or "transcript"."""
     clip_name = f"clip_{clip_index}"
 
     clip_dir = base_dir / clip_name
@@ -283,6 +335,15 @@ def process_clip(base_dir: pathlib.Path, original_video_path: pathlib.Path, outp
     extract_cmd = f"ffmpeg -i {clip_segment_path} -vn -acodec pcm_s16le -ar 16000 -ac 1 {audio_path}"
     subprocess.run(extract_cmd, shell=True,
                    check=True, capture_output=True)
+
+    subtitle_words, subtitle_source = transcript_segments, "transcript"
+    if refine_words is not None:
+        try:
+            refined = refine_words(audio_path, start_time)
+            if refined:
+                subtitle_words, subtitle_source = refined, "refined"
+        except Exception as exc:  # noqa: BLE001 - fall back to the full transcript
+            print(f"Clip {clip_index}: subtitle re-transcription failed ({exc!r}); using the full transcript")
 
     shutil.copy(clip_segment_path, base_dir / f"{clip_name}.mp4")
 
@@ -315,163 +376,119 @@ def process_clip(base_dir: pathlib.Path, original_video_path: pathlib.Path, outp
     print(
         f"Clip {clip_index} vertical video creation time: {time.time() - cvv_start_time:.2f} seconds")
 
-    create_subtitles_with_ffmpeg(transcript_segments, start_time,
+    create_subtitles_with_ffmpeg(subtitle_words, start_time,
                                  end_time, vertical_mp4_path, subtitle_output_path, max_words=5)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(subtitle_output_path, output_path)
+    return subtitle_source
 
 
-def parse_moments(raw: str) -> list:
-    cleaned = raw.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[len("```json"):].strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned[len("```"):].strip()
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-len("```")].strip()
+# --------------------------------------------------------------------------- #
+# GPU class: Parakeet + Gemini + rendering in one container
+# --------------------------------------------------------------------------- #
 
-    try:
-        moments = json.loads(cleaned)
-    except json.JSONDecodeError:
-        print(f"Could not parse Gemini response as JSON: {raw[:500]}")
-        return []
-
-    if not isinstance(moments, list):
-        return []
-    return [m for m in moments if isinstance(m, dict) and "start" in m and "end" in m]
-
-
-@app.cls(gpu="L40S", timeout=3600, retries=0, scaledown_window=20,
-         secrets=[modal.Secret.from_name("ai-podcast-clipper-secret")],
-         volumes={MODEL_CACHE_PATH: model_cache, str(JOBS_PATH): jobs_volume})
+@app.cls(gpu=CLIPPER_GPU, timeout=3600, retries=0, scaledown_window=20,
+         secrets=[secret, settings_secret], volumes={str(JOBS_PATH): jobs_volume})
 class AiPodcastClipper:
     @modal.enter()
     def load_model(self):
-        print("Loading models")
-
-        self.whisperx_model = whisperx.load_model(
-            "large-v2", device="cuda", compute_type="float16")
-
-        self.alignment_model, self.metadata = whisperx.load_align_model(
-            language_code="en",
-            device="cuda"
-        )
-
-        print("Transcription models loaded...")
-
-        self.gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-        self.gemini_model = os.environ.get(
-            "GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        self.parakeet = parakeet_transcriber.ParakeetEngine(
+            parakeet_transcriber.default_model_dir(), device="cuda")
+        self.gemini_client, self.gemini_model = gemini_settings()
         print(f"Created gemini client (model: {self.gemini_model})")
 
-    def transcribe_video(self, base_dir: pathlib.Path, video_path: pathlib.Path) -> list:
-        audio_path = base_dir / "audio.wav"
-        extract_cmd = f"ffmpeg -i {video_path} -vn -acodec pcm_s16le -ar 16000 -ac 1 {audio_path}"
-        subprocess.run(extract_cmd, shell=True,
-                       check=True, capture_output=True)
-
-        print("Starting transcription with WhisperX...")
-        start_time = time.time()
-
-        audio = whisperx.load_audio(str(audio_path))
-        result = self.whisperx_model.transcribe(audio, batch_size=16)
-
-        result = whisperx.align(
-            result["segments"],
-            self.alignment_model,
-            self.metadata,
-            audio,
-            device="cuda",
-            return_char_alignments=False
-        )
-
-        print(
-            f"Transcription and alignment took {time.time() - start_time:.1f} seconds")
-
-        segments = []
-
-        if "word_segments" in result:
-            for word_segment in result["word_segments"]:
-                segments.append({
-                    "start": word_segment.get("start"),
-                    "end": word_segment.get("end"),
-                    "word": word_segment["word"],
-                })
-
-        return segments
-
-    def identify_moments(self, transcript: list) -> str:
-        response = self.gemini_client.models.generate_content(model=self.gemini_model, contents="""
-    This is a podcast video transcript consisting of word, along with each words's start and end time. I am looking to create clips between a minimum of 30 and maximum of 60 seconds long. The clip should never exceed 60 seconds.
-
-    Your task is to find and extract stories, or question and their corresponding answers from the transcript.
-    Each clip should begin with the question and conclude with the answer.
-    It is acceptable for the clip to include a few additional sentences before a question if it aids in contextualizing the question.
-
-    Please adhere to the following rules:
-    - Ensure that clips do not overlap with one another.
-    - Start and end timestamps of the clips should align perfectly with the sentence boundaries in the transcript.
-    - Only use the start and end timestamps provided in the input. modifying timestamps is not allowed.
-    - Format the output as a list of JSON objects, each representing a clip with 'start' and 'end' timestamps: [{"start": seconds, "end": seconds}, ...clip2, clip3]. The output should always be readable by the python json.loads function.
-    - Aim to generate longer clips between 40-60 seconds, and ensure to include as much content from the context as viable.
-
-    Avoid including:
-    - Moments of greeting, thanking, or saying goodbye.
-    - Non-question and answer interactions.
-
-    If there are no valid clips to extract, the output should be an empty list [], in JSON format. Also readable by json.loads() in Python.
-
-    The transcript is as follows:\n\n""" + str(transcript))
-        print(f"Identified moments response: {response.text}")
-        return response.text or "[]"
-
-    @modal.method()
-    def process_job(self, job_id: str, max_clips: int = DEFAULT_MAX_CLIPS) -> dict:
-        """Process /jobs/<job_id>/input.mp4 and write clips to /jobs/<job_id>/clips/."""
+    def prepare(self, job_id: str):
         jobs_volume.reload()
-
         job_dir = JOBS_PATH / job_id
         input_path = job_dir / "input.mp4"
         if not input_path.exists():
             raise FileNotFoundError(f"{input_path} not found in the jobs volume")
-
         base_dir = pathlib.Path("/tmp") / job_id
         if base_dir.exists():
             shutil.rmtree(base_dir, ignore_errors=True)
         base_dir.mkdir(parents=True, exist_ok=True)
+        video_path = base_dir / "input.mp4"
+        shutil.copy(input_path, video_path)
+        return job_dir, base_dir, video_path
 
+    def render_clips(self, job_dir, base_dir, video_path, clip_moments, transcript_segments, refine_words=None,
+                     job_id: str | None = None):
+        clips, errors, sources = [], [], {}
+        started = time.time()
+        for index, moment in enumerate(clip_moments):
+            if job_id:
+                eta = (time.time() - started) / index * (len(clip_moments) - index) if index else None
+                report_progress(job_id, "rendering", done=index, total=len(clip_moments),
+                                etaSeconds=round(eta) if eta is not None else None)
+            print(f"Processing clip {index} (rank {moment.get('rank', index + 1)}, score "
+                  f"{moment.get('score', '-')}) from {moment['start']} to {moment['end']}")
+            output_path = job_dir / "clips" / f"clip_{index}.mp4"
+            try:
+                sources[output_path.name] = process_clip(
+                    base_dir, video_path, output_path, float(moment["start"]), float(moment["end"]),
+                    index, transcript_segments, refine_words)
+                clips.append(output_path.name)
+            except Exception as exc:  # noqa: BLE001 - one failing clip does not stop the others
+                print(f"Clip {index} failed: {exc!r}")
+                errors.append(f"clip_{index}: {exc}")
+        return clips, errors, sources
+
+    @modal.method()
+    def process_job(self, job_id: str, max_clips: int = DEFAULT_MAX_CLIPS, context: dict | None = None,
+                    transcript: str = "parakeet") -> dict:
+        """Transcribe (or load the uploaded transcript), rank moments, render clips.
+
+        transcript="parakeet": transcribe the full video with Parakeet on the GPU.
+        transcript="uploaded": use /jobs/<job_id>/transcript.json (legacy Whistle jobs) and
+                               re-transcribe only the chosen clips with Parakeet.
+        transcript="reuse":    use /jobs/<job_id>/transcript.json as-is (a Parakeet transcript
+                               from an earlier run: "Re-rank & re-render").
+        """
+        job_dir, base_dir, video_path = self.prepare(job_id)
+        timings, stats = {}, {}
         try:
-            video_path = base_dir / "input.mp4"
-            shutil.copy(input_path, video_path)
+            started = time.time()
+            report_progress(job_id, "transcribing" if transcript == "parakeet" else "ranking")
+            if transcript in ("uploaded", "reuse"):
+                transcript_segments = json.loads((job_dir / "transcript.json").read_text())
+                print(f"Using the uploaded transcript ({len(transcript_segments)} words, mode {transcript})")
+            else:
+                audio = read_audio(video_path)
+                transcript_segments = self.parakeet.transcribe(audio)
+                (job_dir / "transcript.json").write_text(json.dumps(transcript_segments))
+                took = time.time() - started
+                stats = {"audioSeconds": round(len(audio) / 16000, 1), "words": len(transcript_segments),
+                         "realTimeFactor": round(len(audio) / 16000 / max(took, 1e-6), 1)}
+                timings["transcribe"] = round(took, 1)
 
-            # 1. Transcription
-            transcript_segments = self.transcribe_video(base_dir, video_path)
-            (job_dir / "transcript.json").write_text(json.dumps(transcript_segments))
-
-            # 2. Identify moments for clips
-            print("Identifying clip moments")
-            clip_moments = parse_moments(
-                self.identify_moments(transcript_segments))
+            started = time.time()
+            report_progress(job_id, "ranking")
+            print("Ranking clip moments")
+            ranking: dict = {}
+            clip_moments = moment_selection.select_moments(
+                transcript_segments, max_clips, self.gemini_client, self.gemini_model, context, report=ranking)
             (job_dir / "moments.json").write_text(json.dumps(clip_moments, indent=2))
-            print(clip_moments)
+            timings["select"] = round(time.time() - started, 1)
 
-            # 3. Process clips (one failing clip does not stop the others)
-            clips, errors = [], []
-            for index, moment in enumerate(clip_moments[:max_clips]):
-                print(
-                    f"Processing clip {index} from {moment['start']} to {moment['end']}")
-                output_path = job_dir / "clips" / f"clip_{index}.mp4"
-                try:
-                    process_clip(base_dir, video_path, output_path,
-                                 float(moment["start"]), float(moment["end"]), index, transcript_segments)
-                    clips.append(output_path.name)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"Clip {index} failed: {exc!r}")
-                    errors.append(f"clip_{index}: {exc}")
+            refine = None
+            if transcript == "uploaded":
+                def refine(audio_path, start_time):
+                    return self.parakeet.transcribe(read_audio(pathlib.Path(audio_path)), offset_s=start_time)
 
+            started = time.time()
+            clips, errors, sources = self.render_clips(
+                job_dir, base_dir, video_path, clip_moments, transcript_segments, refine, job_id)
+            timings["render"] = round(time.time() - started, 1)
             jobs_volume.commit()
-            return {"clips": clips, "moments": clip_moments, "errors": errors}
+
+            if transcript == "uploaded":
+                subtitles = "parakeet" if sources and all(s == "refined" for s in sources.values()) else (
+                    "mixed" if any(s == "refined" for s in sources.values()) else "whistle")
+            else:
+                subtitles = "parakeet"
+            return {"clips": clips, "moments": clip_moments, "errors": errors, "subtitles": subtitles,
+                    "timings": timings, "transcription": stats, "gpu": CLIPPER_GPU, "ranking": ranking}
         finally:
             print(f"Cleaning up temp dir {base_dir}")
             shutil.rmtree(base_dir, ignore_errors=True)

@@ -3,3 +3,6 @@
 modal
 yt-dlp[default]
 imageio-ffmpeg
+# Only for rank_moments.py (preview Gemini ranking on a finished job locally).
+google-genai
+pydantic
