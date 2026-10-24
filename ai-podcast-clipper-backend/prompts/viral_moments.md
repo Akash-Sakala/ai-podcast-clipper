@@ -11,8 +11,10 @@ transcript, one sentence per line:
 
     [start-end] sentence text
 
-Times are seconds from the start of the video. The transcript comes from a speech
-model, so expect some misheard words; judge the meaning, not the spelling.
+Times are seconds from the start of the video. A line usually holds one sentence, but
+long sentences and sentences broken by a pause are split over several lines: a line
+that does not end with `.`, `?` or `!` continues on the next line. The transcript comes
+from a speech model, so expect some misheard words; judge the meaning, not the spelling.
 
 ## Task
 
@@ -29,17 +31,33 @@ your choice or its score**: the best moment can be at minute 2 or at minute 92. 
 the whole transcript before choosing anything.
 
 Each clip should:
-- be between {min_s} and {max_s} seconds long, and never longer than {max_s} seconds
-  (the end minus the start);
+- be between {min_s} and {max_s} seconds long (the end minus the start). It may run up
+  to {grace_s} seconds past {max_s} only to finish the sentence that is under way at
+  {max_s} seconds; if the point needs more room than that, pick a tighter moment;
 - start at the `start` time of one line and end at the `end` time of a later line,
   copying those numbers from the transcript as plain seconds (for example 754.3);
-- open on a strong first line: a question, a bold claim, a surprising fact, a
-  confession or a set-up. Include one or two setup lines before it only when the
-  viewer needs them;
-- finish on a payoff: the answer, the punchline, the lesson or the twist. Never cut
-  mid-thought;
 - make sense to someone who has never seen the rest of the video;
 - not overlap any other candidate.
+
+## Clean start and end
+
+Viewers swipe away from clips that start or stop mid-thought. Cut like an editor:
+
+- **Start where a thought starts.** The first line must begin a sentence (the line
+  before it ends with `.`, `?` or `!`, or there is a clear pause). Never start in the
+  middle of a sentence or on an answer whose question is missing: include the question
+  instead.
+- **Open on the hook itself:** a question, a bold claim, a surprising fact, a
+  confession or a set-up. Do not open on a word that leans on what came before
+  ("and", "but", "because", "which", "exactly", "yeah, so", "right") unless the line
+  still makes sense on its own. Include one or two setup lines before the hook only
+  when the viewer needs them.
+- **End where the thought lands.** The last line must end with `.`, `?` or `!` and
+  complete the idea: the answer, the punchline, the lesson or the twist. A clip that
+  finishes on its strongest sentence feels deliberate.
+- **Do not end on a loose thread:** a trailing "and…" or "so…", a new question to the
+  guest, the first sentence of the next topic, filler ("you know", "anyway") or the
+  other speaker starting to reply.
 
 Prefer real conversation over greetings, thank-yous, introductions, sponsor reads or
 ads, and housekeeping ("subscribe", "link in the description"). Only pick those if

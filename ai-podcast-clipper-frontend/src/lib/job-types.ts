@@ -87,6 +87,8 @@ export type Job = {
   hasThumbnail?: boolean;
   /** Derived by the server: changes when the clip files are replaced (for caching). */
   clipsVersion?: string;
+  /** Content fingerprint of an uploaded video (see lib/fingerprint.ts). */
+  fingerprint?: string;
   /** Video facts saved by the runner (YouTube jobs). */
   meta?: { channel?: string | null; duration?: number | null } | null;
 };

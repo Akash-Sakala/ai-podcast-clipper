@@ -44,6 +44,14 @@ def _env_float(name: str, default: float | None) -> float | None:
 # Settings come from ai-podcast-clipper-backend/.env (forwarded to the GPU container).
 MIN_CLIP_S = _env_float("CLIP_MIN_SECONDS", 30.0)
 MAX_CLIP_S = _env_float("CLIP_MAX_SECONDS", 60.0)
+# A clip may run this much past CLIP_MAX_SECONDS, only to finish the sentence it is in.
+CLIP_GRACE_S = _env_float("CLIP_GRACE_SECONDS", 5.0)
+# Breathing room around the speech: a little silence before the first word and after
+# the last one (never more than half the pause to the neighbouring speech).
+LEAD_IN_S = 0.3
+TAIL_S = 0.6
+# A pause this long between lines starts a new thought even without punctuation.
+NEW_THOUGHT_PAUSE_S = 1.5
 # Never return fewer clips than this (missing slots are filled from the transcript).
 MIN_CLIPS = int(_env_float("MIN_CLIPS", 3))
 # Models tried in order; a busy model gets one quick retry, then the next one is used.
@@ -109,6 +117,8 @@ def build_lines(words: list[dict], max_gap_s: float = 0.8, max_words: int = 30,
                 "start": round(current[0]["start"], 2),
                 "end": round(current[-1]["end"], 2),
                 "text": " ".join(w["word"] for w in current),
+                # Lines also break on pauses and length, so a line can end mid-sentence.
+                "ends_sentence": bool(_SENTENCE_END.search(current[-1]["word"])),
             })
             current.clear()
 
@@ -124,7 +134,20 @@ def build_lines(words: list[dict], max_gap_s: float = 0.8, max_words: int = 30,
         if _SENTENCE_END.search(word["word"]):
             flush()
     flush()
+    for i, line in enumerate(lines):
+        line["starts_sentence"] = (i == 0 or lines[i - 1]["ends_sentence"]
+                                   or line["start"] - lines[i - 1]["end"] >= NEW_THOUGHT_PAUSE_S)
     return lines
+
+
+def _ends_sentence(line: dict) -> bool:
+    return line.get("ends_sentence", bool(_SENTENCE_END.search(line["text"])))
+
+
+def _starts_sentence(lines: list[dict], i: int) -> bool:
+    if "starts_sentence" in lines[i]:
+        return lines[i]["starts_sentence"]
+    return i == 0 or _ends_sentence(lines[i - 1])
 
 
 def format_lines(lines: list[dict]) -> str:
@@ -176,26 +199,67 @@ def weighted_score(scores: dict) -> float:
 
 
 def snap_to_lines(start: float, end: float, lines: list[dict], min_s: float = MIN_CLIP_S,
-                  max_s: float = MAX_CLIP_S) -> tuple[float, float] | None:
-    """Snap a proposed range to line boundaries and enforce the length limits."""
+                  max_s: float = MAX_CLIP_S, grace_s: float = CLIP_GRACE_S) -> tuple[float, float] | None:
+    """Turn a proposed range into a clean cut: begin where a sentence begins, end
+    where a sentence ends, stay within min_s..max_s (up to grace_s longer, only to
+    finish the sentence in progress at max_s), then add a little breathing room."""
     if not lines or end <= start:
         return None
-    first = min(range(len(lines)), key=lambda i: abs(lines[i]["start"] - start))
-    last = min(range(len(lines)), key=lambda i: abs(lines[i]["end"] - end))
+    n = len(lines)
+    first = min(range(n), key=lambda i: abs(lines[i]["start"] - start))
+    last = min(range(n), key=lambda i: abs(lines[i]["end"] - end))
     if last < first:
         return None
-    # Too long: drop lines from the end (keep the hook at the start).
-    while last > first and lines[last]["end"] - lines[first]["start"] > max_s:
-        last -= 1
-    # Too short: extend forward while it still fits.
-    while (lines[last]["end"] - lines[first]["start"] < min_s and last + 1 < len(lines)
-           and lines[last + 1]["end"] - lines[first]["start"] <= max_s):
-        last += 1
+    hard_max = max_s + grace_s
+
+    def length(i: int, j: int) -> float:
+        return lines[j]["end"] - lines[i]["start"]
+
+    # 1. Begin on a sentence start: step back up to 3 lines (keeps the set-up),
+    #    otherwise forward to the next sentence start.
+    if not _starts_sentence(lines, first):
+        back = next((i for i in range(first - 1, max(first - 4, -1), -1) if _starts_sentence(lines, i)), None)
+        if back is not None and length(back, last) <= hard_max:
+            first = back
+        else:
+            first = next((i for i in range(first + 1, min(first + 4, last + 1)) if _starts_sentence(lines, i)),
+                         first)
+
+    # 2. End on a sentence end, as close as possible to the proposed end. Past max_s
+    #    only when the final sentence was already under way at the max_s mark.
+    def acceptable(j: int) -> bool:
+        if not _ends_sentence(lines[j]):
+            return False
+        d = length(first, j)
+        return d <= max_s or (d <= hard_max and lines[j]["start"] - lines[first]["start"] < max_s)
+
+    reach = [j for j in range(first, n) if length(first, j) <= hard_max]
+    ends = [j for j in reach if acceptable(j)]
+    pool = [j for j in ends if length(first, j) >= min_s] or ends
+    if pool:
+        last = min(pool, key=lambda j: (abs(lines[j]["end"] - end), length(first, j)))
+    else:
+        # No sentence end in reach (an unpunctuated transcript): fit whole lines.
+        last = max(first, min(last, reach[-1] if reach else first))
+        while last > first and length(first, last) > max_s:
+            last -= 1
+        while (length(first, last) < min_s and last + 1 < n
+               and length(first, last + 1) <= max_s):
+            last += 1
+
     s, e = lines[first]["start"], lines[last]["end"]
-    if e - s > max_s:  # a single very long line
+    if e - s > hard_max:  # a single very long line
         e = s + max_s
     if e - s < min(MIN_CLIP_TOLERANCE_S, min_s):
         return None
+
+    # 3. Breathing room: never cut on the first or last sound.
+    prev_end = lines[first - 1]["end"] if first > 0 else 0.0
+    s = max(0.0, s - min(LEAD_IN_S, (s - prev_end) / 2))
+    if last + 1 < n:
+        e += max(0.0, min(TAIL_S, (lines[last + 1]["start"] - e) / 2))
+    else:
+        e += TAIL_S
     return round(s, 3), round(e, 3)
 
 
@@ -279,6 +343,8 @@ def heuristic_candidates(lines: list[dict], min_s: float = MIN_CLIP_S, max_s: fl
     total_end = lines[-1]["end"]
     out = []
     for i, first in enumerate(lines):
+        if not _starts_sentence(lines, i):
+            continue
         j = i
         while j + 1 < len(lines) and lines[j + 1]["end"] - first["start"] <= max_s:
             j += 1
@@ -299,7 +365,10 @@ def heuristic_candidates(lines: list[dict], min_s: float = MIN_CLIP_S, max_s: fl
         signal += 0.2 * min(len(first["text"].split()), 12) / 12 if first["text"].rstrip().endswith("?") else 0.0
         signal -= 4.0 if _PROMO.search(text) else 0.0
         signal -= 3.0 if start < 45 or end > total_end - 45 else 0.0
-        out.append({"start": round(start, 3), "end": round(end, 3),
+        snapped = snap_to_lines(start, end, lines, min_s, max_s)
+        if not snapped:
+            continue
+        out.append({"start": snapped[0], "end": snapped[1],
                     "title": first["text"][:80], "hook": first["text"][:300],
                     "reason": "Picked from the transcript because Gemini returned too few moments.",
                     "scores": {}, "signal": signal, "source": "fallback"})
@@ -497,7 +566,8 @@ def propose_candidates(client, model: str, lines: list[dict], n_candidates: int,
                        min_s: float, max_s: float, generate=_generate_json, report: dict | None = None,
                        log=print) -> list[dict]:
     Candidate, _ = _schemas()
-    system = _load_prompt("viral_moments.md", n_candidates=n_candidates, min_s=int(min_s), max_s=int(max_s))
+    system = _load_prompt("viral_moments.md", n_candidates=n_candidates, min_s=int(min_s), max_s=int(max_s),
+                          grace_s=int(CLIP_GRACE_S))
     user = format_context(context) + "Transcript\n" + format_lines(lines)
     raw = generate(client, model, system, user, list[Candidate], report=report, log=log)
     for c in raw:  # schema uses hook_score to avoid clashing with the hook text

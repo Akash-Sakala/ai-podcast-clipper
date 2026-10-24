@@ -59,7 +59,7 @@ CLIPPER_GPU = get_str("CLIPPER_GPU", "A10")
 
 # Moment-selection settings, read inside the GPU container (moments.py). main.py
 # forwards them as a Modal secret because the container has no .env file.
-RANKING_KEYS = ("MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "GEMINI_MODELS",
+RANKING_KEYS = ("MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
                 "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS")
 CONTAINER_SETTINGS = {key: os.environ[key] for key in RANKING_KEYS if os.environ.get(key)}

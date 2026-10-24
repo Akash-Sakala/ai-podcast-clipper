@@ -11,6 +11,8 @@ A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://g
 - **Best moments, not the first ones:** Gemini scores candidates on hook, standalone sense, payoff, emotion, value and shareability; clips come back ranked with their score and the reason.
 - **Fast, accurate transcripts:** [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) transcribes 30 minutes of audio in about 16 seconds on an A10 (English).
 - **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame.
+- **Clean cuts:** clips start where a thought starts and end where it lands, on whole sentences with a short fade.
+- **No repeat work:** adding a video you already clipped (same YouTube video or the same file, even renamed) takes you to its clips or a re-rank instead.
 - **Never empty-handed:** if Gemini is busy, the app falls back through other models and then to transcript-based picks, and lets you re-rank later without transcribing again.
 - **Clean, live UI:** step-by-step progress, one-click download or ZIP of all clips, light and dark themes.
 
