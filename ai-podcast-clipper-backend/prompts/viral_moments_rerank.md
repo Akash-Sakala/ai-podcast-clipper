@@ -18,6 +18,10 @@ candidate comes from.
 - `value`: a novel, specific or actionable idea the viewer learns.
 - `shareability`: would people quote it, send it to a friend or argue about it?
 
+A clip that starts mid-thought (an answer without its question, a sentence that
+leans on what came before) scores lower on `hook` and `standalone`; one that stops
+before its point lands, or trails into the next topic, scores lower on `payoff`.
+
 Use the full 0-10 range and reserve 9-10 for the very best clips of the whole video.
 Scores only decide the order. Weak candidates get low scores, not removal.
 

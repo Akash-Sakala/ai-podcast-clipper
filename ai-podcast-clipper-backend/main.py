@@ -297,8 +297,14 @@ def create_subtitles_with_ffmpeg(transcript_segments: list, clip_start: float, c
 
     subs.save(subtitle_path)
 
+    # A short audio fade in and out, so the clip never starts or stops on a click.
+    duration = max(clip_end - clip_start, 1.0)
+    fade_out = min(0.35, duration / 4)
+    audio_fade = (f"afade=t=in:st=0:d=0.12,"
+                  f"afade=t=out:st={duration - fade_out:.2f}:d={fade_out:.2f}")
     ffmpeg_cmd = (f"ffmpeg -y -i {clip_video_path} -vf \"ass={subtitle_path}\" "
-                  f"-c:v h264 -preset fast -crf 23 {output_path}")
+                  f"-af \"{audio_fade}\" -c:v h264 -preset fast -crf 23 "
+                  f"-c:a aac -b:a 128k {output_path}")
 
     subprocess.run(ffmpeg_cmd, shell=True, check=True)
 

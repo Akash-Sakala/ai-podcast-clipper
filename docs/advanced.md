@@ -26,6 +26,7 @@ Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.ex
 | `CLIPPER_GPU` | `A10` | GPU for the cloud pipeline. L4 is cheaper and slower, L40S faster |
 | `MIN_CLIPS` | `3` | A job never ends with fewer clips: missing ones are picked from the transcript and marked "fallback" |
 | `CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS` | `30` / `60` | Clip length limits |
+| `CLIP_GRACE_SECONDS` | `5` | Extra seconds a clip may run past the maximum, only to finish its last sentence |
 | `GEMINI_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Models tried in order. `GEMINI_MODEL` in the Modal secret, if set, goes first |
 | `GEMINI_BUSY_RETRIES` / `GEMINI_BUSY_WAIT_SECONDS` | `1` / `3` | Quick retries for a busy model (429/503/504) before moving to the next |
 | `GEMINI_THINKING_LEVEL` | `low` | `minimal`, `low`, `medium` or `high`; empty = model default |

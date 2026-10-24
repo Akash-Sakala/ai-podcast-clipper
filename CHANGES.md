@@ -37,5 +37,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - On Windows the runner starts with `pythonw.exe` and hides its child processes' windows, so no console window pops up over the app.
 - Clips show instantly: each clip gets a poster still (`clip_N.jpg`, made by the runner), and clip URLs carry a version so the browser caches them (ETag and immutable caching in the media route).
 - Fullscreen keeps the whole vertical clip (`object-contain`; `object-cover` cropped it to the screen width). Re-rank uses a "list, redone" icon.
+- Clean cuts: transcript lines record where sentences start and end; clips always begin on a sentence start and end on a sentence end (up to `CLIP_GRACE_SECONDS` past the maximum to finish the last sentence, never mid-word), with a short lead-in, tail and audio fade. The prompts ask Gemini to open on a fresh thought and end where it lands.
+- Duplicate check: adding a YouTube video (any link form) or an MP4 (content fingerprint, so renamed copies match) that was already processed shows a notice with Open clips, Re-rank and Make clips again (`/api/jobs/duplicate`).
 
 **Unchanged from upstream:** the LR-ASD active-speaker crop and the crop and subtitle rendering code.

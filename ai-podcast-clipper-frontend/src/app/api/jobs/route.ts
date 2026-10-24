@@ -5,7 +5,14 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { NextResponse } from "next/server";
-import { createJob, jobDir, listJobs, startRunner } from "~/lib/jobs";
+import {
+  createJob,
+  fileFingerprint,
+  jobDir,
+  listJobs,
+  startRunner,
+  updateJob,
+} from "~/lib/jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +93,10 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  // Remember what this upload looks like, to recognise it if it is added again.
+  const fingerprint = await fileFingerprint(target);
+  if (fingerprint) await updateJob(job.id, { fingerprint });
 
   await startRunner(job.id);
   return NextResponse.json(job, { status: 201 });

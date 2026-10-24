@@ -45,11 +45,53 @@ def test_build_lines_splits_on_sentences():
 
 def test_snap_enforces_length_and_boundaries():
     lines = moments.build_lines(make_words(50))
+    pad = moments.LEAD_IN_S + moments.TAIL_S
     s, e = moments.snap_to_lines(13.0, 120.0, lines)          # far too long
-    assert e - s <= moments.MAX_CLIP_S
-    assert s in {l["start"] for l in lines} and e in {l["end"] for l in lines}
+    assert e - s <= moments.MAX_CLIP_S + moments.CLIP_GRACE_S + pad
+    assert any(abs(l["start"] - s) <= moments.LEAD_IN_S for l in lines)
+    assert any(abs(l["end"] - e) <= moments.TAIL_S for l in lines)
     s, e = moments.snap_to_lines(13.0, 20.0, lines)           # too short -> extended
     assert e - s >= moments.MIN_CLIP_S
+
+
+def long_sentence_words():
+    """Ten 6 s sentences, then one 20 s sentence split over two lines by a pause."""
+    words, t = [], 0.0
+    for s_i in range(10):
+        for i in range(12):
+            words.append({"start": t, "end": t + 0.4, "word": f"a{s_i}_{i}" + ("." if i == 11 else "")})
+            t += 0.5
+        t += 0.4
+    for i in range(40):
+        if i == 20:
+            t += 1.0  # a pause inside the sentence -> new line, same sentence
+        words.append({"start": t, "end": t + 0.4, "word": f"long_{i}" + ("." if i == 39 else "")})
+        t += 0.5
+    return words
+
+
+def test_snap_never_ends_mid_sentence_and_uses_grace():
+    lines = moments.build_lines(long_sentence_words())
+    assert any(not l["ends_sentence"] for l in lines)
+    # Gemini proposes ending on the line that stops mid-sentence.
+    mid = next(l for l in lines if not l["ends_sentence"])
+    s, e = moments.snap_to_lines(lines[0]["start"], mid["end"], lines, min_s=30, max_s=60, grace_s=15)
+    ends = [l["end"] for l in lines if l["ends_sentence"]]
+    assert any(abs(e - x) <= moments.TAIL_S + 1e-6 for x in ends)
+    assert e - s <= 60 + 15 + moments.TAIL_S + 1e-6
+    # Without grace the clip ends on the last complete sentence within 60 s instead.
+    s, e = moments.snap_to_lines(lines[0]["start"], mid["end"], lines, min_s=30, max_s=60, grace_s=0)
+    assert e - s <= 60 + moments.TAIL_S + 1e-6
+    assert any(abs(e - x) <= moments.TAIL_S + 1e-6 for x in ends)
+
+
+def test_snap_moves_start_to_sentence_start_and_pads():
+    lines = moments.build_lines(long_sentence_words())
+    second_half = next(i for i, l in enumerate(lines) if not l["starts_sentence"])
+    s, e = moments.snap_to_lines(lines[second_half]["start"], lines[-1]["end"], lines,
+                                 min_s=10, max_s=60, grace_s=5)
+    assert s < lines[second_half]["start"] - 1  # moved back to where the sentence begins
+    assert s > 0 and e > lines[-1]["end"]       # breathing room on both sides
 
 
 def fake_generate_factory(windows_seen):
@@ -114,7 +156,7 @@ def test_parse_json_list_handles_fences():
 
 
 def test_prompt_placeholders_filled():
-    text = moments._load_prompt("viral_moments.md", n_candidates=10, min_s=30, max_s=60)
+    text = moments._load_prompt("viral_moments.md", n_candidates=10, min_s=30, max_s=60, grace_s=5)
     assert "{" not in text.replace("{n_candidates}", "")
     assert "exactly 10 clip candidates" in text and "60 seconds" in text and "754.3" in text
 
@@ -389,7 +431,7 @@ def test_plain_json_object_wrapper_is_parsed():
 
 
 def test_prompt_never_allows_empty_list():
-    text = moments._load_prompt("viral_moments.md", n_candidates=10, min_s=30, max_s=60)
+    text = moments._load_prompt("viral_moments.md", n_candidates=10, min_s=30, max_s=60, grace_s=5)
     assert "exactly 10 clip candidates" in text
     assert "return an empty list" not in text.lower()
 
