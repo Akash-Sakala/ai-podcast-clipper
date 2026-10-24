@@ -2,10 +2,10 @@
 
 import {
   ArrowLeft,
+  ListRestart,
   Download,
   Info,
   RotateCcw,
-  Sparkles,
   Upload,
   Youtube,
 } from "lucide-react";
@@ -59,7 +59,7 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
 
   const rerankButton = !!job.canRerank && !active && (
     <ActionButton
-      icon={<Sparkles className="size-4" />}
+      icon={<ListRestart className="size-4" />}
       onClick={() => rerank(job)}
       busy={isBusy}
     >
@@ -110,7 +110,7 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
           {downloadAll}
           {headerRerank && !!job.canRerank && (
             <ActionButton
-              icon={<Sparkles className="size-4" />}
+              icon={<ListRestart className="size-4" />}
               onClick={() => rerank(job)}
               busy={isBusy}
             >
@@ -183,9 +183,10 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
           >
             {job.clips.map((clip) => (
               <ClipCard
-                key={`${clip}-${job.rerankedAt ?? ""}`}
+                key={`${clip}-${job.clipsVersion ?? ""}`}
                 jobId={job.id}
                 clip={clip}
+                version={job.clipsVersion ?? job.createdAt}
                 detail={details.get(clip)}
               />
             ))}

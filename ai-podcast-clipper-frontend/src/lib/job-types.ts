@@ -85,6 +85,8 @@ export type Job = {
   canRerank?: boolean;
   /** Derived by the server: a cover image is available at /api/media/<id>/thumbnail. */
   hasThumbnail?: boolean;
+  /** Derived by the server: changes when the clip files are replaced (for caching). */
+  clipsVersion?: string;
   /** Video facts saved by the runner (YouTube jobs). */
   meta?: { channel?: string | null; duration?: number | null } | null;
 };

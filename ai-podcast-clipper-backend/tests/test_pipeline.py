@@ -557,6 +557,23 @@ def test_save_thumbnail_makes_16_9_cover(tmp_path):
     assert (width, height) == (320, 180)
 
 
+def test_backfill_makes_clip_posters(tmp_path):
+    imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
+    import subprocess
+
+    job_dir = tmp_path / "jobs" / "20261024-130000-abcdef"
+    (job_dir / "clips").mkdir(parents=True)
+    (job_dir / "job.json").write_text(json.dumps({"id": job_dir.name, "source": "youtube",
+                                                  "title": "x"}), encoding="utf-8")
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-f", "lavfi",
+                    "-i", "testsrc=size=1080x1920:duration=2:rate=10", "-pix_fmt", "yuv420p",
+                    str(job_dir / "clips" / "clip_0.mp4")], check=True)
+
+    runner.backfill_thumbnails(tmp_path)
+    assert (job_dir / "clips" / "clip_0.jpg").exists()
+    assert not (job_dir / "thumbnail.jpg").exists()  # YouTube covers come from the web app
+
+
 def test_hide_child_windows_is_a_no_op_off_windows(monkeypatch):
     import subprocess
 

@@ -56,15 +56,21 @@ export function ClipCard({
   jobId,
   clip,
   detail,
+  version,
 }: {
   jobId: string;
   clip: string;
   detail?: ClipDetail;
+  /** Changes whenever the clip files are replaced (re-rank), so cached copies stay valid. */
+  version: string;
 }) {
   const [copied, setCopied] = useState(false);
   const [showScore, setShowScore] = useState(false);
   const tipId = useId();
-  const src = `/api/media/${jobId}/${clip}`;
+  const base = `/api/media/${jobId}/${clip}`;
+  const v = encodeURIComponent(version);
+  const src = `${base}?v=${v}`;
+  const poster = `${base.replace(/\.mp4$/, ".jpg")}?v=${v}`;
   const rank = detail?.rank ?? Number(/\d+/.exec(clip)?.[0] ?? 0) + 1;
   const score = detail?.score != null ? Math.round(detail.score) : null;
   const length =
@@ -88,10 +94,13 @@ export function ClipCard({
       <div className="relative">
         <video
           src={src}
+          poster={poster}
           controls
           preload="metadata"
           playsInline
-          className="aspect-[9/16] w-full rounded-lg bg-black object-cover"
+          // object-contain, not cover: in fullscreen the player fills the screen and
+          // "cover" would crop the vertical clip to the screen's width.
+          className="aspect-[9/16] w-full rounded-lg bg-black object-contain [&:fullscreen]:rounded-none"
         />
         <div
           className="absolute top-2 left-2"
@@ -158,7 +167,7 @@ export function ClipCard({
               )}
             </button>
             <a
-              href={`${src}?download`}
+              href={`${base}?download`}
               download={`${String(rank).padStart(2, "0")} ${title}.mp4`}
               aria-label="Download clip"
               title="Download clip"

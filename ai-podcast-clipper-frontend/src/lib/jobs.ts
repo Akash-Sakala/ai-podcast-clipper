@@ -71,6 +71,7 @@ async function writeJob(job: Job) {
   const stored: Job = { ...job };
   delete stored.canRerank;
   delete stored.hasThumbnail;
+  delete stored.clipsVersion;
   await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
   await fsp.rename(tmp, file);
 }
@@ -183,8 +184,26 @@ function hasThumbnail(job: Job) {
   );
 }
 
+/** Newest clip file time: changes when a run or re-rank replaces the clips. */
+function clipsVersion(job: Job) {
+  let newest = 0;
+  for (const clip of job.clips) {
+    try {
+      newest = Math.max(newest, fs.statSync(clipPath(job.id, clip)).mtimeMs);
+    } catch {
+      // missing clip: ignore
+    }
+  }
+  return Math.floor(newest).toString(36);
+}
+
 function withDerived(job: Job): Job {
-  return { ...job, canRerank: canRerank(job), hasThumbnail: hasThumbnail(job) };
+  return {
+    ...job,
+    canRerank: canRerank(job),
+    hasThumbnail: hasThumbnail(job),
+    clipsVersion: clipsVersion(job),
+  };
 }
 
 /** A finished job can be re-ranked when its video and transcript are still on disk. */
