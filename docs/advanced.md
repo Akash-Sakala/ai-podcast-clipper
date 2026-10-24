@@ -10,6 +10,7 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 |---|---|
 | `job.json` | Status, progress, clip details and the Gemini `ranking` report shown in the app |
 | `input.mp4` | The source video |
+| `thumbnail.jpg` | Cover in the video list: YouTube's own thumbnail, or a frame from an uploaded video |
 | `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
 | `moments.json` | Every candidate moment with its scores and reason |
 | `clips/clip_0.mp4` … | Finished clips, `clip_0` = best |
@@ -46,6 +47,7 @@ Jobs started here show up in the web app too.
 python runner.py --video "C:\path\to\podcast.mp4"
 python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
+python runner.py --thumbnails          # covers for uploads made before thumbnails existed
 ```
 
 ## Re-rank

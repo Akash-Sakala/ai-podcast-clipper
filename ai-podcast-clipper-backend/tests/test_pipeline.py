@@ -5,6 +5,7 @@
     python -m pytest tests -q
 """
 
+import json
 import pathlib
 import sys
 
@@ -529,3 +530,50 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
     final = _json.loads((job_dir / "job.json").read_text())["progress"]
     assert final["stage"] == "rendering" and final["done"] == 2 and final["total"] == 5
 
+
+
+def test_save_thumbnail_makes_16_9_cover(tmp_path):
+    imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
+    import subprocess
+
+    job_dir = tmp_path / "jobs" / "20261024-120000-abcdef"
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text(json.dumps({"id": job_dir.name, "source": "upload",
+                                                  "title": "talk.mp4"}), encoding="utf-8")
+    # A vertical test video: the cover must still come out 16:9.
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-f", "lavfi",
+                    "-i", "testsrc=size=360x640:duration=3:rate=10", "-pix_fmt", "yuv420p",
+                    str(job_dir / "input.mp4")], check=True)
+
+    assert runner.backfill_thumbnails(tmp_path) == 0
+    cover = job_dir / "thumbnail.jpg"
+    assert cover.exists()
+    width, height = None, None
+    data = cover.read_bytes()
+    for i in range(len(data) - 9):  # read the size from the JPEG SOF0/SOF2 marker
+        if data[i] == 0xFF and data[i + 1] in (0xC0, 0xC2):
+            height, width = int.from_bytes(data[i + 5:i + 7], "big"), int.from_bytes(data[i + 7:i + 9], "big")
+            break
+    assert (width, height) == (320, 180)
+
+
+def test_hide_child_windows_is_a_no_op_off_windows(monkeypatch):
+    import subprocess
+
+    original = subprocess.Popen.__init__
+    monkeypatch.setattr(runner.os, "name", "posix")
+    runner.hide_child_windows()
+    assert subprocess.Popen.__init__ is original
+
+
+def test_hide_child_windows_adds_create_no_window(monkeypatch):
+    import subprocess
+
+    seen = []
+    monkeypatch.setattr(subprocess.Popen, "__init__", lambda self, *a, **kw: seen.append(kw))
+    monkeypatch.setattr(runner.os, "name", "nt")
+    runner.hide_child_windows()
+    subprocess.Popen.__init__(object(), ["ffmpeg"])
+    subprocess.Popen.__init__(object(), ["x"], creationflags=0x00000010)  # CREATE_NEW_CONSOLE kept
+    assert seen[0]["creationflags"] == 0x08000000
+    assert seen[1]["creationflags"] == 0x00000010

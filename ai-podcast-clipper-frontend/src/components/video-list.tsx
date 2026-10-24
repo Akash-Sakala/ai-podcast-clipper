@@ -1,10 +1,12 @@
 "use client";
 
 import { ChevronRight, RotateCcw, Upload, Youtube } from "lucide-react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   currentStage,
   relativeTime,
+  timecode,
   stageSentence,
   stepsFor,
 } from "~/lib/format";
@@ -38,7 +40,7 @@ function RowStatus({
   if (isActive(job)) {
     return (
       <div className="flex min-w-0 items-center gap-3">
-        <div className="bg-muted h-1.5 w-20 shrink-0 overflow-hidden rounded-full">
+        <div className="bg-muted h-1.5 w-12 shrink-0 overflow-hidden rounded-full sm:w-20">
           <span
             className="bg-tally block h-full transition-[width] duration-500"
             style={{ width: `${Math.max(6, overallProgress(job) * 100)}%` }}
@@ -52,7 +54,7 @@ function RowStatus({
   }
   if (job.status === "failed") {
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         <span className="text-destructive text-sm font-medium">Failed</span>
         {job.mode !== "rerank" && (
           // Above the row's link so it can be clicked on its own.
@@ -82,6 +84,39 @@ function RowStatus({
   );
 }
 
+function Thumbnail({ job }: { job: Job }) {
+  const [failed, setFailed] = useState(false);
+  const seconds = job.meta?.duration ?? job.engine?.parakeet?.audioSeconds;
+  const Icon = job.source === "youtube" ? Youtube : Upload;
+
+  return (
+    <div className="bg-muted relative aspect-video w-24 shrink-0 overflow-hidden rounded-md sm:w-36">
+      {job.hasThumbnail && !failed ? (
+        // eslint-disable-next-line @next/next/no-img-element -- local API image, no optimisation needed
+        <img
+          src={`/api/media/${job.id}/thumbnail`}
+          alt=""
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="size-full object-cover"
+        />
+      ) : (
+        <div className="text-muted-foreground flex size-full items-center justify-center">
+          <Icon
+            className="size-5"
+            aria-label={job.source === "youtube" ? "From YouTube" : "Uploaded"}
+          />
+        </div>
+      )}
+      {seconds ? (
+        <span className="tabular absolute right-1 bottom-1 rounded bg-black/75 px-1 py-px text-[11px] leading-4 font-medium text-white">
+          {timecode(seconds)}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function VideoList({
   jobs,
   busy,
@@ -95,45 +130,43 @@ export function VideoList({
 
   return (
     <ul className="bg-card divide-y overflow-hidden rounded-xl border">
-      {jobs.map((job) => (
-        <li
-          key={job.id}
-          className="hover:bg-accent/60 focus-within:bg-accent/60 has-[a:focus-visible]:ring-ring relative grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 px-4 py-3.5 transition-colors has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-inset sm:grid-cols-[auto_minmax(0,1fr)_15rem_6.5rem_auto] sm:gap-x-4 sm:px-5"
-        >
-          {job.source === "youtube" ? (
-            <Youtube
-              className="text-muted-foreground size-4"
-              aria-label="From YouTube"
-            />
-          ) : (
-            <Upload
-              className="text-muted-foreground size-4"
-              aria-label="Uploaded"
-            />
-          )}
-          <Link
-            href={`/videos/${job.id}`}
-            className="truncate font-medium after:absolute after:inset-0 focus-visible:outline-none"
-            title={job.title}
-          >
-            {displayTitle(job)}
-          </Link>
-          <div className="col-start-2 row-start-2 min-w-0 sm:col-start-auto sm:row-start-auto">
-            <RowStatus job={job} busy={busy === job.id} onRetry={onRetry} />
-          </div>
-          <time
-            dateTime={job.createdAt}
-            suppressHydrationWarning
-            className="text-muted-foreground col-start-3 row-start-1 text-right text-sm sm:col-start-auto sm:row-start-auto"
-          >
+      {jobs.map((job) => {
+        const time = (
+          <time dateTime={job.createdAt} suppressHydrationWarning>
             {relativeTime(job.createdAt, now)}
           </time>
-          <ChevronRight
-            aria-hidden
-            className="text-muted-foreground hidden size-4 sm:block"
-          />
-        </li>
-      ))}
+        );
+        return (
+          <li
+            key={job.id}
+            className="hover:bg-accent/60 focus-within:bg-accent/60 has-[a:focus-visible]:ring-ring relative flex items-center gap-3 px-3 py-3 transition-colors has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-inset sm:gap-4 sm:px-4"
+          >
+            <Thumbnail job={job} />
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <Link
+                href={`/videos/${job.id}`}
+                title={job.title}
+                className="block leading-snug font-medium after:absolute after:inset-0 focus-visible:outline-none"
+              >
+                <span className="line-clamp-2">{displayTitle(job)}</span>
+              </Link>
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <RowStatus job={job} busy={busy === job.id} onRetry={onRetry} />
+                <span className="text-muted-foreground shrink-0 text-xs sm:hidden">
+                  {time}
+                </span>
+              </div>
+            </div>
+            <span className="text-muted-foreground hidden w-24 shrink-0 text-right text-sm sm:block">
+              {time}
+            </span>
+            <ChevronRight
+              aria-hidden
+              className="text-muted-foreground hidden size-4 shrink-0 sm:block"
+            />
+          </li>
+        );
+      })}
     </ul>
   );
 }
