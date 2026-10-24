@@ -8,6 +8,7 @@ it directly from the terminal:
     python runner.py --youtube "https://www.youtube.com/watch?v=..."
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
+    python runner.py --thumbnails                              (covers for older uploads)
 
 Steps: (YouTube download) -> upload to the Modal jobs volume -> run the deployed
 pipeline -> download clips into <job dir>/clips -> update <job dir>/job.json.
@@ -28,6 +29,7 @@ import pathlib
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -164,6 +166,68 @@ def download_youtube(job: Job, attempts: int = 3) -> None:
         "duration": info.get("duration"),
     })
     log(f"Downloaded: {job.data['title']} (YouTube language: {info.get('language') or 'unknown'})")
+
+
+def hide_child_windows() -> None:
+    """On Windows, start every child process (ffmpeg, yt-dlp helpers) without a
+    console window. The web app runs this script with pythonw.exe, which has no
+    console, so each console program it starts would otherwise open its own window."""
+    if os.name != "nt":
+        return
+    create_no_window = 0x08000000
+    new_console_flags = 0x00000010 | 0x00000008  # CREATE_NEW_CONSOLE, DETACHED_PROCESS
+    original_init = subprocess.Popen.__init__
+
+    def init(self, *args, **kwargs):
+        flags = kwargs.get("creationflags", 0) or 0
+        if not flags & new_console_flags:
+            kwargs["creationflags"] = flags | create_no_window
+        original_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = init
+
+
+def save_thumbnail(job: Job, size: str = "320:180") -> bool:
+    """Save a 16:9 frame from about 10% into input.mp4 as thumbnail.jpg (the cover in
+    the web app's video list). YouTube jobs get YouTube's own cover from the web app."""
+    import imageio_ffmpeg
+
+    video = job.dir / "input.mp4"
+    target = job.dir / "thumbnail.jpg"
+    if not video.exists():
+        return False
+    try:
+        reader = imageio_ffmpeg.read_frames(str(video))
+        duration = float(next(reader).get("duration") or 0)
+        reader.close()
+    except Exception:  # noqa: BLE001 - fall back to a fixed offset
+        duration = 0
+    width, height = size.split(":")
+    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
+               "-ss", f"{duration * 0.1:.2f}", "-i", str(video), "-frames:v", "1",
+               "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                      f"crop={width}:{height}",
+               "-q:v", "4", str(target)]
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+        return target.exists()
+    except Exception as exc:  # noqa: BLE001 - a missing cover never fails a job
+        log(f"Could not save a thumbnail: {exc}")
+        return False
+
+
+def backfill_thumbnails(data_dir: pathlib.Path) -> int:
+    """Save covers for uploaded videos that don't have one yet."""
+    count = 0
+    for job_dir in sorted((data_dir / "jobs").glob("*")):
+        if not (job_dir / "job.json").exists() or (job_dir / "thumbnail.jpg").exists():
+            continue
+        job = Job(job_dir)
+        if job.data.get("source") == "upload" and save_thumbnail(job):
+            count += 1
+            log(f"Saved a thumbnail for {job.data.get('title')}")
+    log(f"Saved {count} thumbnail(s)")
+    return 0
 
 
 def upload_input(job: Job, volume, update_status: bool = True) -> None:
@@ -413,6 +477,9 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
             download_youtube(job)
             timings["download"] = round(time.time() - start, 1)
 
+        if job.data.get("source") == "upload" and not (job.dir / "thumbnail.jpg").exists():
+            save_thumbnail(job)
+
         job.update(engine={"transcriber": "parakeet", "language": "en", "subtitles": "parakeet"})
         failed_stage = "uploading"
         set_progress(job, "uploading")
@@ -452,6 +519,8 @@ def main() -> int:
     source.add_argument("--job-dir", help="Existing job folder created by the web app")
     source.add_argument("--video", help="Path to a local .mp4 file")
     source.add_argument("--youtube", help="YouTube video URL")
+    source.add_argument("--thumbnails", action="store_true",
+                        help="Save missing covers for uploaded videos in --data-dir, then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
                         help="Where job folders are stored (default: ../data)")
     parser.add_argument("--max-clips", type=int, default=5)
@@ -460,6 +529,9 @@ def main() -> int:
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
     args = parser.parse_args()
+    hide_child_windows()
+    if args.thumbnails:
+        return backfill_thumbnails(pathlib.Path(args.data_dir).resolve())
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")

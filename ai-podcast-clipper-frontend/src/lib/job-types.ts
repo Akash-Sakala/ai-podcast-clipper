@@ -83,6 +83,10 @@ export type Job = {
   rerankedAt?: string;
   /** Derived by the server: video + transcript still on disk, job not running. */
   canRerank?: boolean;
+  /** Derived by the server: a cover image is available at /api/media/<id>/thumbnail. */
+  hasThumbnail?: boolean;
+  /** Video facts saved by the runner (YouTube jobs). */
+  meta?: { channel?: string | null; duration?: number | null } | null;
 };
 
 export const ACTIVE_STATUSES: JobStatus[] = [

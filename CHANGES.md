@@ -33,5 +33,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Clip cards: rank and score badge with the score breakdown and Gemini's reason on hover or focus, copy title, download; "Download all" as one ZIP (`/api/media/<job>/all`).
 - Failed jobs explain what went wrong in plain language and offer **Try again** (`/api/jobs/<job>/retry`, reuses a downloaded video); a per-video Details popover holds the technical facts.
 - Light / Dark / System theme (next-themes), Geist and Bricolage Grotesque type, amber accent, visible keyboard focus and reduced-motion support.
+- Video list with covers (YouTube thumbnail, or a frame from an uploaded video, saved in the job folder), video length and titles on up to two lines; logo (a sound wave with a vertical clip frame) in the header and as the browser-tab icon.
+- On Windows the runner starts with `pythonw.exe` and hides its child processes' windows, so no console window pops up over the app.
 
 **Unchanged from upstream:** the LR-ASD active-speaker crop and the crop and subtitle rendering code.

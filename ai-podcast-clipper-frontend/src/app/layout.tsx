@@ -7,7 +7,6 @@ import { ThemeProvider } from "~/components/theme-provider";
 export const metadata: Metadata = {
   title: "Podcast Clipper",
   description: "Turn a podcast into ranked vertical clips with subtitles.",
-  icons: [{ rel: "icon", url: "/favicon.ico" }],
 };
 
 // Self-hosted (src/fonts) instead of next/font/google: Google sometimes serves

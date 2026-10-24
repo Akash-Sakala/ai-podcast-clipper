@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { env } from "~/env";
 import { ACTIVE_STATUSES, type Job } from "./job-types";
+import { youtubeVideoId } from "./youtube";
 
 export type { Job, JobStatus } from "./job-types";
 
@@ -14,6 +15,7 @@ export type { Job, JobStatus } from "./job-types";
  *   <DATA_DIR>/jobs/<job id>/
  *     job.json        status, written by this app and by runner.py
  *     input.mp4       uploaded or downloaded video
+ *     thumbnail.jpg   cover for the video list (YouTube's, or a frame of an upload)
  *     clips/clip_N.mp4
  *     runner.log      output of runner.py
  */
@@ -65,9 +67,10 @@ function newJobId() {
 async function writeJob(job: Job) {
   const file = path.join(jobDir(job.id), "job.json");
   const tmp = `${file}.tmp`;
-  // canRerank is derived on read and never stored.
+  // canRerank and hasThumbnail are derived on read and never stored.
   const stored: Job = { ...job };
   delete stored.canRerank;
+  delete stored.hasThumbnail;
   await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
   await fsp.rename(tmp, file);
 }
@@ -145,7 +148,7 @@ export async function getJob(id: string): Promise<Job | null> {
   const job = await readJob(id);
   if (!job) return null;
   const checked = await detectStaleJob(job);
-  return { ...checked, canRerank: canRerank(checked) };
+  return withDerived(checked);
 }
 
 export async function listJobs(): Promise<Job[]> {
@@ -165,8 +168,23 @@ export async function listJobs(): Promise<Job[]> {
 
   return jobs
     .filter((job): job is Job => job !== null)
-    .map((job) => ({ ...job, canRerank: canRerank(job) }))
+    .map(withDerived)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function thumbnailPath(id: string) {
+  return path.join(jobDir(id), "thumbnail.jpg");
+}
+
+/** YouTube covers are fetched on first request, so any YouTube job has one. */
+function hasThumbnail(job: Job) {
+  return (
+    !!youtubeVideoId(job.youtubeUrl) || fs.existsSync(thumbnailPath(job.id))
+  );
+}
+
+function withDerived(job: Job): Job {
+  return { ...job, canRerank: canRerank(job), hasThumbnail: hasThumbnail(job) };
 }
 
 /** A finished job can be re-ranked when its video and transcript are still on disk. */
@@ -177,6 +195,20 @@ export function canRerank(job: Job) {
     fs.existsSync(path.join(dir, "input.mp4")) &&
     fs.existsSync(path.join(dir, "transcript.json"))
   );
+}
+
+/**
+ * On Windows a detached console program always gets its own console window
+ * (Node ignores windowsHide for detached children), which pops up over the app.
+ * pythonw.exe from the same environment runs the same Python without a console;
+ * runner.py hides the windows of anything it starts in turn.
+ */
+function runnerInterpreter() {
+  if (process.platform !== "win32") return RUNNER_PYTHON;
+  const pythonw = RUNNER_PYTHON.replace(/python\.exe$/i, "pythonw.exe");
+  return pythonw !== RUNNER_PYTHON && fs.existsSync(pythonw)
+    ? pythonw
+    : RUNNER_PYTHON;
 }
 
 /** Starts runner.py for a job in the background and returns immediately. */
@@ -195,7 +227,7 @@ export async function startRunner(id: string, extraArgs: string[] = []) {
 
   const logFd = fs.openSync(path.join(dir, "runner.log"), "a");
   const child = spawn(
-    RUNNER_PYTHON,
+    runnerInterpreter(),
     [runnerScript, "--job-dir", dir, ...extraArgs],
     {
       cwd: BACKEND_DIR,
