@@ -6,6 +6,12 @@ Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the
 
 A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas): no accounts, payments, S3 or database.
 
+## Demo
+
+https://github.com/user-attachments/assets/4f1256f4-8035-4e74-be25-355fda692fc8
+
+A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU time (25 s, with music).
+
 ## Features
 
 - **Best moments, not the first ones:** Gemini scores candidates on hook, standalone sense, payoff, emotion, value and shareability; clips come back ranked with their score and the reason.
@@ -120,4 +126,4 @@ A more detailed, editable architecture diagram: [docs/architecture.excalidraw](d
 
 ## Credits & license
 
-MIT, see [LICENSE](LICENSE). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Fonts: Geist and Bricolage Grotesque (SIL Open Font License).
+MIT, see [LICENSE](LICENSE). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Fonts: Geist and Bricolage Grotesque (SIL Open Font License). Demo music: "Happy Beats / Business Moves Vol. 1" by Sascha Ende, [ende.app](https://ende.app) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).
