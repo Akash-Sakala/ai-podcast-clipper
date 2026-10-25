@@ -116,7 +116,8 @@ Stopping `npm run dev` does not stop a running video; it keeps going and the app
 ## More
 
 Settings, command-line use, re-ranking, cancelling a running job, tests and troubleshooting: [docs/advanced.md](docs/advanced.md). What changed from the original project: [CHANGES.md](CHANGES.md).
+A more detailed, editable architecture diagram: [docs/architecture.excalidraw](docs/architecture.excalidraw) (open it at [excalidraw.com](https://excalidraw.com)).
 
 ## Credits & license
 
-MIT, see [LICENSE.MD](LICENSE.MD). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Fonts: Geist and Bricolage Grotesque (SIL Open Font License).
+MIT, see [LICENSE](LICENSE). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Fonts: Geist and Bricolage Grotesque (SIL Open Font License).

@@ -1,3 +1,10 @@
+> **Vendored for inference.** This folder is the speaker-detection part of the podcast clipper, taken from [Junhua-Liao/LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT, see `LICENSE`).
+> - Kept: the model, the S3FD face detector and the TalkSet-fine-tuned weights (`weight/finetuning_TalkSet.model`).
+> - Removed: the AVA training and evaluation files (`train.py`, `dataLoader.py`, `utils/`) and the AVA-trained weights; get them from the upstream repository.
+> - `fast_asd.py` is this project's batched, in-process version of the pipeline in `Columbia_test.py`. `Columbia_test.py` is kept unchanged as the reference for `benchmark_gpu.py --parity`.
+>
+> The upstream README follows.
+
 # LR-ASD: Lightweight and Robust Network for Active Speaker Detection
 
 

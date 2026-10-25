@@ -114,5 +114,6 @@ desktop.ini
 !.vscode/extensions.json
 *.sublime-workspace
 
-# Claude Code local settings
+# Claude Code: local settings and the private handoff notes
 .claude/settings.local.json
+CLAUDE.md
