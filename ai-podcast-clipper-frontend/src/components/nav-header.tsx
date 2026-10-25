@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { LogoMark } from "./logo";
+import { StatsLink } from "./stats-link";
 import { ThemeMenu } from "./theme-menu";
 
 const NavHeader = () => {
@@ -13,7 +14,10 @@ const NavHeader = () => {
           <LogoMark className="text-muted-foreground size-7" />
           podcast clipper
         </Link>
-        <ThemeMenu />
+        <div className="flex items-center gap-1">
+          <StatsLink />
+          <ThemeMenu />
+        </div>
       </div>
     </header>
   );

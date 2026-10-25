@@ -33,6 +33,11 @@
   --tally-ink: #2e1f00;
   --tally-soft: #fdf0d6;
   --radius: 0.625rem;
+  /* Stats charts: slots of the validated data-viz palette (light / dark steps). */
+  --viz-download: #2a78d6;
+  --viz-upload: #1baf7a;
+  --viz-cloud: #eda100;
+  --viz-saving: #6250d6;
 }
 
 .dark {
@@ -58,6 +63,10 @@
   --tally: #f5a524;
   --tally-ink: #2e1f00;
   --tally-soft: #3a2c12;
+  --viz-download: #3987e5;
+  --viz-upload: #199e70;
+  --viz-cloud: #c98500;
+  --viz-saving: #9085e9;
 }
 
 @theme inline {
@@ -83,6 +92,10 @@
   --color-tally: var(--tally);
   --color-tally-ink: var(--tally-ink);
   --color-tally-soft: var(--tally-soft);
+  --color-viz-download: var(--viz-download);
+  --color-viz-upload: var(--viz-upload);
+  --color-viz-cloud: var(--viz-cloud);
+  --color-viz-saving: var(--viz-saving);
 
   --font-sans:
     var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
