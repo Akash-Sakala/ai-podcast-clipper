@@ -52,14 +52,32 @@ def get_str(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
-# GPU for the whole cloud pipeline (Parakeet transcription, Gemini call, rendering).
-# Read at `modal deploy` time.
+# GPU for transcription and for each clip's render container. Read at `modal deploy`
+# time. A comma-separated list ("L40S,A10") is a fallback order: Modal uses the first
+# type that is free. Pick GPUs with an NVENC video encoder (T4, L4, A10, L40S, RTX PRO
+# 6000); A100/H100/H200/B200 have none, so clips would be encoded on the CPU.
 CLIPPER_GPU = get_str("CLIPPER_GPU", "A10")
+NO_NVENC_GPUS = ("A100", "H100", "H200", "B200", "B300")
 
 
-# Moment-selection settings, read inside the GPU container (moments.py). main.py
-# forwards them as a Modal secret because the container has no .env file.
-RANKING_KEYS = ("MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
+def gpu_spec(value: str | None = None) -> str | list[str]:
+    """CLIPPER_GPU as Modal's `gpu=` argument: one type, or a list tried in order."""
+    names = [part.strip() for part in (value if value is not None else CLIPPER_GPU).split(",") if part.strip()]
+    if not names:
+        return "A10"
+    return names[0] if len(names) == 1 else names
+
+
+# Render containers: one per clip, all at once (the Starter plan allows 10 GPUs at a time).
+RENDER_MAX_CONTAINERS = get_int("RENDER_MAX_CONTAINERS", 8)
+# CPU cores reserved for each render container (decoding and framing run on the CPU).
+RENDER_CPU = get_int("RENDER_CPU", 4)
+
+
+# Moment-selection and rendering settings, read inside the containers (moments.py,
+# render.py). main.py forwards them as a Modal secret because the containers have no .env file.
+RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX",
+                "MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
                 "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS")
 CONTAINER_SETTINGS = {key: os.environ[key] for key in RANKING_KEYS if os.environ.get(key)}

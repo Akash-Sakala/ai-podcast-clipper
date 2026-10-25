@@ -19,7 +19,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 
 **Parakeet transcription and best-5 ranking**
 - WhisperX replaced by [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) (ONNX Runtime on CUDA, `parakeet_transcriber.py`), chosen over v3 and [Whistle](https://huggingface.co/Cactus-Compute/whistle) (tried, then removed) on this project's own podcasts. The app is English-only for now.
-- One A10 container (instead of an L40S) runs transcription, Gemini ranking and rendering; `CLIPPER_GPU` in `.env` picks the GPU.
+- An A10 (instead of an L40S) by default; `CLIPPER_GPU` in `.env` picks the GPU.
 - Pause-aligned ≤28 s chunking (`audio_utils.py`), Parakeet runs chunks unbatched because padded batches changed ~4% of words.
 - Moment selection rewritten (`moments.py`, `prompts/viral_moments*.md`): sentence-line transcript (8× smaller prompt), JSON response schema, six-part virality rubric with a code-computed weighted score, snapping to sentence boundaries and the 30-60 s limit, overlap removal, windowed candidates + cross-window re-ranking for long videos. Upstream took Gemini's first five moments in chronological order; clips are now the top five by score (`clip_0` = best).
 - No more empty jobs: the prompt requires exactly N ranked candidates (weak ones get low scores instead of being dropped), Gemini calls retry, fall back to plain JSON and a second model, use the model's default temperature, and any shortfall below `MIN_CLIPS` is filled from the transcript (labelled "fallback"); errors are surfaced in the job instead of being swallowed. `rank_moments.py` re-runs ranking locally.
@@ -40,4 +40,31 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Clean cuts: transcript lines record where sentences start and end; clips always begin on a sentence start and end on a sentence end (up to `CLIP_GRACE_SECONDS` past the maximum to finish the last sentence, never mid-word), with a short lead-in, tail and audio fade. The prompts ask Gemini to open on a fresh thought and end where it lands.
 - Duplicate check: adding a YouTube video (any link form) or an MP4 (content fingerprint, so renamed copies match) that was already processed shows a notice with Open clips, Re-rank and Make clips again (`/api/jobs/duplicate`).
 
-**Unchanged from upstream:** the LR-ASD active-speaker crop and the crop and subtitle rendering code.
+**Faster, parallel rendering**
+
+Rendering took 12-15 minutes of a 20-minute job, five clips one after another (`job.json` timings on this project's videos). Most of that time was spent re-encoding video and moving frames on and off disk, not running models.
+
+- Pipeline split into three steps (`main.py`):
+  - `Transcriber`: one GPU container runs Parakeet.
+  - Gemini ranks from a CPU function (`process_job`), so no GPU waits on it.
+  - `Renderer`: one GPU container per clip, all at the same time.
+- Clip cut seeks before decoding: the old cut decoded the whole video up to the clip, about 80 s for a clip 18 minutes in, measured on 2 CPU cores.
+- LR-ASD runs in-process (`asd/fast_asd.py`, `render.py`). `Columbia_test.py` is kept unchanged as the reference.
+  - Models load once per container.
+  - Frames stay in memory: no JPG dump, no XVID face videos, no unused debug video.
+  - S3FD and LR-ASD run on batches.
+  - Same algorithm and parameters. Batched inference and frames that skip the old JPG round trip can still shift a borderline face detection or round a speaker score by 0.1, so `benchmark_gpu.py --parity` compares the old and new crop decision for every frame of one of your clips.
+- One video encode per clip on the GPU's NVENC encoder (libx264 fallback), with subtitles and the audio fade, instead of three lossy encodes. Clips keep the original audio; it used to be 16 kHz mono.
+- Flash frames removed (`render.flash_frames`, `FLASH_FRAMES_MAX=3`).
+  - 1-3 frames of another shot between two cuts in the source show the frame before them instead, in every pass, so face tracks continue through them.
+  - Remote-podcast edits flash single frames of the side-by-side layout or a zoomed-out view; in a vertical clip they read as jumps.
+- Steady crop: no speaker switch shorter than `SPEAKER_MIN_HOLD_SECONDS` (0.5 s) inside a shot of the source video (`render.steady_faces`).
+  - It removes the split-second flips between two people who score about the same, and the one-frame flashes of the whole frame where a face was briefly untracked.
+  - Cuts in the video itself still switch at once.
+  - The parity check compares the decisions before this step, so it keeps measuring the speaker-detection port.
+- The no-face background blur is computed at quarter size: it looks the same and costs a fraction of the time.
+- `CLIPPER_GPU` accepts a fallback list. `RENDER_MAX_CONTAINERS` and `RENDER_CPU` are new settings.
+- Estimated Modal cost per job (`costs.py`), shown with the processing time in the job's details. Progress reads "Rendering 5 clips", then "2 of 5 ready".
+- `benchmark_gpu.py` compares GPUs on one of your videos, checks old vs new crop decisions (`--parity`) and re-renders chosen clips of a job for a before/after look (`--preview`).
+
+**Unchanged from upstream:** the LR-ASD model and speaker-selection rules, and the subtitle style.

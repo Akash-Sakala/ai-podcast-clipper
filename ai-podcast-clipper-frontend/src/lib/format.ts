@@ -37,6 +37,20 @@ export function duration(seconds: number) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+/** "$0.06", or "Under $0.01" for very cheap runs. */
+export function money(usd: number) {
+  return usd < 0.01 ? "Under $0.01" : `$${usd.toFixed(2)}`;
+}
+
+/** Share of the rendering step that is done (0-1), or null when unknown. */
+export function renderShare(job: Job): number | null {
+  const p = job.progress;
+  if (currentStage(job) !== "rendering" || !p?.total) return null;
+  if (typeof p.fraction === "number")
+    return Math.min(1, Math.max(0, p.fraction));
+  return (p.done ?? 0) / p.total;
+}
+
 /** Steps shown in the progress strip, in order. */
 export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
   const steps: { stage: ProgressStage; label: string }[] = [
@@ -93,9 +107,17 @@ export function stageSentence(job: Job) {
     case "ranking":
       return "Finding the best moments";
     case "rendering":
-      return p?.total
-        ? `Rendering clip ${Math.min((p.done ?? 0) + 1, p.total)} of ${p.total}`
-        : "Rendering clips";
+      if (!p?.total) return "Rendering clips";
+      // Clips render at the same time; older runners rendered one after another.
+      if (typeof p.fraction === "number") {
+        const done = p.done ?? 0;
+        if (done === 0)
+          return p.total === 1
+            ? "Rendering 1 clip"
+            : `Rendering ${p.total} clips`;
+        return `Rendering clips, ${done} of ${p.total} ready`;
+      }
+      return `Rendering clip ${Math.min((p.done ?? 0) + 1, p.total)} of ${p.total}`;
     case "saving":
       return "Saving clips";
   }

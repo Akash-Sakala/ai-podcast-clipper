@@ -7,17 +7,23 @@ from .nets import S3FDNet
 from .box_utils import nms_
 
 PATH_WEIGHT = 'model/faceDetector/s3fd/sfd_face.pth'
-if os.path.isfile(PATH_WEIGHT) == False:
-    Link = "1KafnHz7ccT-3IyddBsL5yi2xGtxAKypt"
-    cmd = "gdown --id %s -O %s"%(Link, PATH_WEIGHT)
-    subprocess.call(cmd, shell=True, stdout=None)
 img_mean = np.array([104., 117., 123.])[:, np.newaxis, np.newaxis].astype('float32')
+
+
+def download_weights():
+    # Was done at import time; now only when the detector is created, so importing
+    # this package (fast_asd.py) has no side effects.
+    if os.path.isfile(PATH_WEIGHT) == False:
+        Link = "1KafnHz7ccT-3IyddBsL5yi2xGtxAKypt"
+        cmd = "gdown --id %s -O %s"%(Link, PATH_WEIGHT)
+        subprocess.call(cmd, shell=True, stdout=None)
 
 
 class S3FD():
 
     def __init__(self, device='cuda'):
 
+        download_weights()
         tstamp = time.time()
         self.device = device
 

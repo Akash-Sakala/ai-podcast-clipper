@@ -25,7 +25,17 @@ export type JobProgress = {
   stageStartedAt?: string;
   done?: number;
   total?: number;
+  /** Share of all clips rendered (0-1); clips render at the same time. */
+  fraction?: number;
   etaSeconds?: number | null;
+};
+
+/** Estimated Modal cost of the last run (see backend costs.py). */
+export type JobCost = {
+  usd: number;
+  gpuSeconds?: number | null;
+  gpu?: string | null;
+  containers?: number | null;
 };
 
 export type ClipDetail = {
@@ -73,6 +83,7 @@ export type Job = {
     parakeet?: { audioSeconds?: number; realTimeFactor?: number } | null;
   };
   timings?: Record<string, number | boolean>;
+  cost?: JobCost | null;
   clipDetails?: ClipDetail[];
   ranking?: JobRanking;
   reranks?: number;

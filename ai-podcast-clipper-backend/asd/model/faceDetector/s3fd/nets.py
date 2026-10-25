@@ -107,6 +107,21 @@ class S3FDNet(nn.Module):
         self.detect = Detect()
 
     def forward(self, x):
+        loc, conf, priors = self.forward_raw(x, cache_priors=False)
+        output = self.detect.forward(
+            loc.view(loc.size(0), -1, 4),
+            self.softmax(conf.view(conf.size(0), -1, 2)),
+            priors.type(type(x.data)).to(self.device)
+        )
+
+        return output
+
+    def forward_raw(self, x, cache_priors=True):
+        """Network heads without Detect: (loc [N, P, 4], conf logits [N, P, 2], priors [P, 4]).
+
+        Works on a batch. The prior boxes depend only on the input size, so they are
+        cached per size when cache_priors is set (forward() keeps recomputing them,
+        as the original code did)."""
         size = x.size()[2:]
         sources = list()
         loc = list()
@@ -161,14 +176,14 @@ class S3FDNet(nn.Module):
         loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
         conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
 
-        with torch.no_grad():
-            self.priorbox = PriorBox(size, features_maps)
-            self.priors = self.priorbox.forward()
+        key = (tuple(size), tuple(tuple(f) for f in features_maps))
+        cache = self.__dict__.setdefault("_prior_cache", {})
+        if not cache_priors or key not in cache:
+            with torch.no_grad():
+                self.priorbox = PriorBox(size, features_maps)
+                self.priors = self.priorbox.forward()
+            if not cache_priors:
+                return loc.view(loc.size(0), -1, 4), conf.view(conf.size(0), -1, 2), self.priors
+            cache[key] = self.priors.to(x.device)
 
-        output = self.detect.forward(
-            loc.view(loc.size(0), -1, 4),
-            self.softmax(conf.view(conf.size(0), -1, 2)),
-            self.priors.type(type(x.data)).to(self.device)
-        )
-
-        return output
+        return loc.view(loc.size(0), -1, 4), conf.view(conf.size(0), -1, 2), cache[key]
