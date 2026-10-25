@@ -23,7 +23,11 @@ Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.ex
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CLIPPER_GPU` | `A10` | GPU for the cloud pipeline. L4 is cheaper and slower, L40S faster |
+| `CLIPPER_GPU` | `A10` | GPU for transcription and for each clip's render container. A list such as `L40S,A10` is a fallback order. Needs an NVENC encoder: L4, A10 or L40S, not A100/H100/H200/B200. See [Choose a GPU](#choose-a-gpu) |
+| `RENDER_MAX_CONTAINERS` | `8` | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
+| `RENDER_CPU` | `4` | CPU cores reserved per render container (decoding and framing run on the CPU) |
+| `FLASH_FRAMES_MAX` | `3` | A run of up to this many frames of another shot between two cuts in the video itself shows the frame before it instead. Remote-podcast edits often flash a frame of the side-by-side layout or a zoomed-out view, which reads as a jump. `0` = off |
+| `SPEAKER_MIN_HOLD_SECONDS` | `0.5` | Shortest time the crop stays on one speaker, or on the whole frame, before it may switch. Removes split-second jumps; cuts in the video itself still switch at once. `0` = off |
 | `MIN_CLIPS` | `3` | A job never ends with fewer clips: missing ones are picked from the transcript and marked "fallback" |
 | `CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS` | `30` / `60` | Clip length limits |
 | `CLIP_GRACE_SECONDS` | `5` | Extra seconds a clip may run past the maximum, only to finish its last sentence |
@@ -66,6 +70,46 @@ python rank_moments.py --list-models                           # model IDs your 
 python rank_moments.py "..\data\jobs\<job id>" --max-clips 5   # writes moments.preview.json
 ```
 
+## How a job runs in the cloud
+
+`process_job` is a CPU function that runs the job in three steps:
+
+1. **Transcribe**: one GPU container (`Transcriber`) runs Parakeet on the whole video.
+2. **Rank**: Gemini picks the moments from the CPU function, so no GPU is billed while it ranks.
+3. **Render**: one GPU container (`Renderer`) per clip, all at the same time. Each one seeks straight to its clip in the uploaded video, finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder (libx264 if there is none), with subtitles and the audio fade.
+
+Flash frames are removed first (`render.flash_frames`): 1-3 frames of another shot between two hard cuts, found on tiny thumbnails of every frame. Every pass (face detection, speaker scoring, encoding) sees the frame before the flash instead, so face tracks run straight through it and the clip shows a 40-120 ms freeze instead of a jump. A camera change right after a flash stays a hard cut.
+
+The crop is then steadied (`render.steady_faces`). Inside each shot of the source video, a stretch shorter than `SPEAKER_MIN_HOLD_SECONDS` goes to the stretch next to it:
+- A neighbouring speaker who is still on screen keeps being followed; if both neighbours qualify, the one with the higher speaking score wins.
+- Otherwise the nearest crop is held still, for example over a frame where the face was briefly lost.
+
+Cuts in the source are never crossed, so a cut to another camera still switches immediately.
+
+A job's details in the app show its processing time and estimated Modal cost (`costs.py`: GPU, CPU and memory per container, using Modal's October 2026 prices). The Modal dashboard has the real bill.
+
+## Choose a GPU
+
+`benchmark_gpu.py` renders clips from one of your finished jobs on several GPUs and prints the time and estimated cost of each. It runs as a separate, temporary app and does not touch the deployed one:
+
+```powershell
+modal run benchmark_gpu.py --job-dir "..\data\jobs\<job id>"                          # L4, A10, L40S, 2 clips each
+modal run benchmark_gpu.py --job-dir "..\data\jobs\<job id>" --gpus "A10,L40S" --clips 5
+modal run benchmark_gpu.py --job-dir "..\data\jobs\<job id>" --parity                 # old vs new crop decisions
+modal run benchmark_gpu.py --job-dir "..\data\jobs\<job id>" --preview 2 --gpus none # re-render clip_2 into <job>\preview
+```
+
+`--preview` re-renders some of a job's clips (same moments, comma-separated clip numbers) with the current code into `<job dir>/preview/`, without touching the job. Use it to compare a clip before and after a change. It also prints how many crop changes the speaker hold removed.
+
+`--parity` renders the best clip on `CLIPPER_GPU` the old way (`Columbia_test.py` in its own process) and the new way, each twice. Add `--gpus none` to skip the GPU comparison. It prints three lines of the share of frames with the same crop decision (follow a speaker or show the whole frame), frames on another person, and the mean crop-centre shift in pixels of the 1080-px-wide clip:
+
+- **old vs old** and **new vs new**: how much each path varies between runs on its own.
+- **old vs new**: the change. The two are lined up by picture first, since the old cut often starts one frame earlier.
+
+It then lists every stretch where old and new crop differently, with its time in the video. `<job dir>/parity/` gets `report.json` and a side-by-side still of each stretch (old left, new right), so you can see which one framed the person talking.
+
+Put the winner in `CLIPPER_GPU`, then `modal deploy main.py`.
+
 ## Logs
 
 - GPU: `modal app logs ai-podcast-clipper`, or modal.com → Apps → ai-podcast-clipper
@@ -79,7 +123,8 @@ Stopping `npm run dev` does not stop a job. To cancel one:
 # 1. stop the runner(s) on this laptop
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*runner.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
-# 2. stop the GPU container (an empty list = nothing running, nothing billed)
+# 2. stop the job's containers: process_job, then any Transcriber or Renderer ones
+#    (an empty list = nothing running, nothing billed)
 modal container list
 modal container stop <container-id>          # never `modal app stop`: that undeploys the app
 

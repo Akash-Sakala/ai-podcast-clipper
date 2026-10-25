@@ -531,7 +531,7 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
     job = runner.Job(job_dir)
     seen = []
     states = [{"stage": "transcribing"}, {"stage": "ranking"},
-              {"stage": "rendering", "done": 2, "total": 5, "etaSeconds": 90}]
+              {"stage": "rendering", "done": 2, "total": 5, "fraction": 0.62, "etaSeconds": 90}]
 
     class _Call:
         polls = 0
@@ -540,7 +540,8 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
             _Call.polls += 1
             if _Call.polls <= len(states):
                 raise TimeoutError()
-            return {"clips": [], "timings": {"render": 1.0}, "gpu": "A10"}
+            return {"clips": [], "timings": {"render": 1.0}, "gpu": "A10",
+                    "cost": {"usd": 0.0412, "gpuSeconds": 410, "containers": 6}}
 
     class _Dict:
         def get(self, key):
@@ -551,12 +552,14 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
         def pop(self, key):
             pass
 
-    class _Cls:
-        def __call__(self):
-            return _types.SimpleNamespace(process_job=_types.SimpleNamespace(spawn=lambda *a: _Call()))
+    spawned = []
+
+    def from_name(app, name):
+        spawned.append((app, name))
+        return _types.SimpleNamespace(spawn=lambda *a: _Call())
 
     fake_modal = _types.SimpleNamespace(
-        Cls=_types.SimpleNamespace(from_name=lambda *a: _Cls()),
+        Function=_types.SimpleNamespace(from_name=from_name),
         Dict=_types.SimpleNamespace(from_name=lambda *a, **k: _Dict()),
         exception=_types.SimpleNamespace(TimeoutError=type("ModalTimeout", (Exception,), {})))
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
@@ -566,11 +569,15 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
 
     timings = {}
     result = runner.run_gpu(job, 5, "parakeet", timings)
+    assert spawned == [("ai-podcast-clipper", "process_job")]
     assert result["gpu"] == "A10" and timings["gpu_render"] == 1.0
     stages = [u["stage"] for u in updates if u]
     assert stages[:1] == ["transcribing"] and "ranking" in stages and "rendering" in stages
     final = _json.loads((job_dir / "job.json").read_text())["progress"]
     assert final["stage"] == "rendering" and final["done"] == 2 and final["total"] == 5
+    assert final["fraction"] == 0.62
+    assert runner.job_cost(result) == {"usd": 0.0412, "gpuSeconds": 410, "gpu": "A10", "containers": 6}
+    assert runner.job_cost({"clips": []}) is None
 
 
 

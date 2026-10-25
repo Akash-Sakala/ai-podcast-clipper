@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   currentStage,
   relativeTime,
+  renderShare,
   timecode,
   stageSentence,
   stepsFor,
@@ -22,9 +23,7 @@ function overallProgress(job: Job) {
     0,
     steps.findIndex((s) => s.stage === stage),
   );
-  const p = job.progress;
-  const within =
-    stage === "rendering" && p?.total ? (p.done ?? 0) / p.total : 0.35;
+  const within = renderShare(job) ?? 0.35;
   return Math.min(1, (index + within) / steps.length);
 }
 

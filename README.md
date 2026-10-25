@@ -10,7 +10,8 @@ A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://g
 
 - **Best moments, not the first ones:** Gemini scores candidates on hook, standalone sense, payoff, emotion, value and shareability; clips come back ranked with their score and the reason.
 - **Fast, accurate transcripts:** [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) transcribes 30 minutes of audio in about 16 seconds on an A10 (English).
-- **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame.
+- **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame, without split-second jumps between people.
+- **Clips render in parallel:** one GPU container per clip, each clip encoded once on the GPU; every video shows how long it took and what it cost.
 - **Clean cuts:** clips start where a thought starts and end where it lands, on whole sentences with a short fade.
 - **No repeat work:** adding a video you already clipped (same YouTube video or the same file, even renamed) takes you to its clips or a re-rank instead.
 - **Never empty-handed:** if Gemini is busy, the app falls back through other models and then to transcript-based picks, and lets you re-rank later without transcribing again.
@@ -28,22 +29,23 @@ flowchart LR
     yt[("YouTube")] -. "yt-dlp" .-> runner
     runner -- "upload video" --> vol[("Modal volume")]
 
-    subgraph gpu["Modal, one A10 GPU container"]
-        asr["Parakeet v2<br/>word timestamps"] --> rank["Rank moments"]
-        rank --> crop["LR-ASD<br/>9:16 speaker crop"]
-        crop --> subs["Subtitles<br/>FFmpeg"]
+    subgraph modal["Modal"]
+        asr["Transcribe<br/>Parakeet v2, 1 GPU"] --> rank["Rank moments<br/>CPU"]
+        rank --> r1["Clip 1<br/>GPU"]
+        rank --> r2["Clip 2<br/>GPU"]
+        rank --> rn["Clip N<br/>GPU"]
     end
 
     vol --> asr
     rank <-. "API" .-> gemini["Gemini"]
-    subs --> vol
+    r1 & r2 & rn --> vol
     vol -- "download clips" --> runner
 ```
 
 1. **Add a video** in the browser. The Next.js app creates a job folder and starts `runner.py` in the background.
-2. **The runner** downloads the YouTube video (or uses your upload), sends it to a Modal volume and starts the GPU job.
-3. **On the GPU**, Parakeet transcribes the audio, Gemini ranks the moments, LR-ASD crops each clip to the speaker and FFmpeg adds subtitles. Progress is reported back as it goes.
-4. **The runner** downloads the finished clips into the job folder, and they appear in the app.
+2. **The runner** downloads the YouTube video (or uses your upload), sends it to a Modal volume and starts the job.
+3. **On Modal**, Parakeet transcribes the audio on a GPU, then Gemini ranks the moments while no GPU is billed. Then every clip renders at the same time in its own GPU container: LR-ASD finds the speaker, and each clip is cropped to 9:16 and encoded once with subtitles on the GPU's video encoder. Progress is reported back as it goes.
+4. **The runner** downloads the finished clips into the job folder, and they appear in the app with the job's processing time and estimated cost.
 
 ## Requirements
 
@@ -84,7 +86,7 @@ modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<your key> HF_TOKEN
 modal deploy main.py
 ```
 
-The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while; later deploys are quick. Re-run `modal deploy main.py` after changing `main.py`, `asd/` or `.env`.
+The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while; later deploys are quick. Re-run `modal deploy main.py` after changing `main.py`, `render.py`, `asd/` or `.env`.
 
 **4. Install the frontend**
 

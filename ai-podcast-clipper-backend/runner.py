@@ -13,9 +13,10 @@ it directly from the terminal:
 Steps: (YouTube download) -> upload to the Modal jobs volume -> run the deployed
 pipeline -> download clips into <job dir>/clips -> update <job dir>/job.json.
 
-One GPU container (A10) transcribes the video with Parakeet TDT 0.6B v2
-(English), ranks the best moments with Gemini and renders the clips. Its live
-progress (stage, clips done) is mirrored into job.json for the web app.
+In the cloud, a GPU container transcribes the video with Parakeet TDT 0.6B v2
+(English), Gemini ranks the best moments, and every clip renders in its own GPU
+container at the same time. The live progress (stage, share of the clips done)
+and the estimated cost are mirrored into job.json for the web app.
 
 Requires `modal deploy main.py` to have been run once.
 """
@@ -37,7 +38,7 @@ import traceback
 import settings  # noqa: F401 - loads ai-podcast-clipper-backend/.env
 
 APP_NAME = "ai-podcast-clipper"
-CLASS_NAME = "AiPodcastClipper"
+FUNCTION_NAME = "process_job"
 JOBS_VOLUME = "ai-podcast-clipper-jobs"
 
 PROGRESS_DICT = "ai-podcast-clipper-progress"   # live stage/clip counts written by the GPU
@@ -284,14 +285,14 @@ def set_progress(job: Job, stage: str, **fields) -> None:
 # --------------------------------------------------------------------------- #
 
 def run_gpu(job: Job, max_clips: int, transcript: str, timings: dict) -> dict:
-    """Run AiPodcastClipper.process_job and mirror its live progress into job.json."""
+    """Run the deployed process_job and mirror its live progress into job.json."""
     import modal
 
     job.update(status="processing", message="Processing on the GPU")
     set_progress(job, "transcribing" if transcript == "parakeet" else "ranking")
-    log(f"Calling {CLASS_NAME}.process_job (transcript={transcript})")
+    log(f"Calling {FUNCTION_NAME} (transcript={transcript})")
     start = time.time()
-    call = modal.Cls.from_name(APP_NAME, CLASS_NAME)().process_job.spawn(
+    call = modal.Function.from_name(APP_NAME, FUNCTION_NAME).spawn(
         job.id, max_clips, gemini_context(job), transcript)
     progress = modal.Dict.from_name(PROGRESS_DICT, create_if_missing=True)
 
@@ -317,8 +318,19 @@ def run_gpu(job: Job, max_clips: int, transcript: str, timings: dict) -> dict:
 
     timings.update({f"gpu_{k}": v for k, v in (result.get("timings") or {}).items()})
     timings["gpu_total"] = round(time.time() - start, 1)
-    log(f"GPU processing finished in {timings['gpu_total']:.0f}s on {result.get('gpu', '?')}")
+    cost = result.get("cost") or {}
+    log(f"GPU processing finished in {timings['gpu_total']:.0f}s on {result.get('gpu', '?')}"
+        + (f", about ${cost['usd']:.3f}" if cost.get("usd") is not None else ""))
     return result
+
+
+def job_cost(result: dict) -> dict | None:
+    """The estimated Modal cost of this run, as stored in job.json."""
+    cost = result.get("cost")
+    if not cost or cost.get("usd") is None:
+        return None
+    return {"usd": cost["usd"], "gpuSeconds": cost.get("gpuSeconds"), "gpu": result.get("gpu"),
+            "containers": cost.get("containers")}
 
 
 def download_outputs(job: Job, volume, result: dict, clips_dir: pathlib.Path | None = None) -> list[str]:
@@ -459,7 +471,7 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
             details = clip_details(clips, result.get("moments") or [])
         job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                    ranking=ranking, clipDetails=details, reranks=int(job.data.get("reranks") or 0) + 1,
-                   rerankedAt=now_iso(), progress=None)
+                   rerankedAt=now_iso(), progress=None, cost=job_cost(result))
         log(f"{message}. Timings: {timings}")
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -514,7 +526,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
         ranking = result.get("ranking") or {}
         message = ranking_message(clips, errors, ranking)
         job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
-                   ranking=ranking, progress=None, clipDetails=clip_details(clips, result.get("moments") or []))
+                   ranking=ranking, progress=None, clipDetails=clip_details(clips, result.get("moments") or []),
+                   cost=job_cost(result))
         log(f"{message}. Timings: {timings}")
         return 0
     except Exception as exc:  # noqa: BLE001

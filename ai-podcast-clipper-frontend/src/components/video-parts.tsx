@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   currentStage,
   duration,
+  money,
+  renderShare,
   stageSentence,
   stepsFor,
   timecode,
@@ -77,6 +79,7 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
   const startedAt = job.queuedAt ?? job.createdAt;
   const since = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
   const eta = p?.etaSeconds;
+  const share = renderShare(job);
 
   return (
     <div className="space-y-3">
@@ -84,8 +87,8 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
         {steps.map((step, i) => {
           const state = i < index ? "done" : i === index ? "current" : "todo";
           const fill =
-            state === "current" && step.stage === "rendering" && p?.total
-              ? Math.max(8, ((p.done ?? 0) / p.total) * 100)
+            state === "current" && step.stage === "rendering" && share != null
+              ? Math.max(8, share * 100)
               : null;
           return (
             <li key={step.stage} className="min-w-0 flex-1">
@@ -168,6 +171,11 @@ export function DetailsPanel({ job }: { job: Job }) {
   const total = job.timings?.total;
   if (typeof total === "number" && !isActive(job))
     rows.push({ label: "Processing time", value: duration(total) });
+  if (job.cost && !isActive(job))
+    rows.push({
+      label: "Estimated cost",
+      value: `${money(job.cost.usd)}${job.cost.gpu ? ` on ${job.cost.gpu}` : ""}`,
+    });
   if (job.reranks)
     rows.push({
       label: "Re-ranked",
