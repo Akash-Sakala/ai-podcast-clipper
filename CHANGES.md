@@ -67,4 +67,13 @@ Rendering took 12-15 minutes of a 20-minute job, five clips one after another (`
 - Estimated Modal cost per job (`costs.py`), shown with the processing time in the job's details. Progress reads "Rendering 5 clips", then "2 of 5 ready".
 - `benchmark_gpu.py` compares GPUs on one of your videos, checks old vs new crop decisions (`--parity`) and re-renders chosen clips of a job for a before/after look (`--preview`).
 
+**Repository cleanup**
+- `LICENSE` (was `LICENSE.MD`): template brackets fixed; Andreas Trolle's copyright kept, with a line for this fork's changes.
+- `docs/architecture.excalidraw` replaces the upstream SaaS diagram (Stripe checkout, EC2 vs Modal), which described removed features.
+- Removed code nothing used:
+  - six shadcn components and the three packages only they needed (`@radix-ui/react-slot`, `@radix-ui/react-tabs`, `class-variance-authority`);
+  - LR-ASD's AVA training and evaluation files and its unused AVA-trained weights. `asd/README.md` notes what the vendored copy keeps.
+- `public/favicon.ico` is now the sound-wave logo (it was the upstream "PC" icon).
+- The frontend README's file table matches the current app.
+
 **Unchanged from upstream:** the LR-ASD model and speaker-selection rules, and the subtitle style.
