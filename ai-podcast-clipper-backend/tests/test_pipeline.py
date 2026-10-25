@@ -473,7 +473,7 @@ def _rerank_setup(tmp_path, monkeypatch, new_clips):
     monkeypatch.setattr(runner, "upload_transcript", lambda *a, **k: None)
     calls = {}
 
-    def fake_gpu(job, max_clips, mode, timings):
+    def fake_gpu(job, max_clips, mode, timings, extra_usages=None):
         calls["mode"] = mode
         moments_out = [{"start": 10.0 * i, "end": 10.0 * i + 40, "rank": i + 1, "score": 80 - i, "title": f"m{i}"}
                        for i in range(len(new_clips))]
@@ -496,6 +496,7 @@ def test_rerank_replaces_clips_and_reuses_transcript(tmp_path, monkeypatch):
     assert (job_dir / "clips" / "clip_0.mp4").read_bytes().startswith(b"new-")
     assert not (job_dir / "clips_new").exists() and not (job_dir / "clips_previous").exists()
     assert (job_dir / "moments.previous.json").exists()
+    assert not (job_dir / "input.mp4").exists()            # the video is not kept after a run
 
 
 def test_rerank_keeps_old_clips_when_nothing_new(tmp_path, monkeypatch):

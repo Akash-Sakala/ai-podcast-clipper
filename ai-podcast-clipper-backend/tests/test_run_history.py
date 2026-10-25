@@ -168,7 +168,7 @@ def test_rerank_appends_to_history_seeded_from_the_log(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "upload_input", lambda *a, **k: None)
     monkeypatch.setattr(runner, "upload_transcript", lambda *a, **k: None)
 
-    def fake_gpu(job, max_clips, mode, timings):
+    def fake_gpu(job, max_clips, mode, timings, extra_usages=None):
         timings.update({"gpu_select": 20.0, "gpu_render": 90.0, "gpu_total": 115.0})
         return {"clips": ["clip_0.mp4"], "moments": [{"rank": 1}], "errors": [], "gpu": "A10",
                 "ranking": {"valid": 1}, "cost": {"usd": 0.1, "gpuSeconds": 300, "containers": 2}}

@@ -77,6 +77,20 @@ Rendering took 12-15 minutes of a 20-minute job, five clips one after another (`
 - Run history: `runner.py` appends each run (first run, re-rank, failure) to `job.json` `runs` (`run_history.py`). `--backfill-stats` rebuilds it from `runner.log` for older videos; their costs are estimated from the logged GPU time and marked "est.".
 - The page refreshes every few seconds while a video is processing.
 
+**Videos go straight to Modal, and nothing big is kept**
+
+Downloading a video on the laptop and uploading it to Modal took about 4 minutes of a 6-7 minute job (100-130 s each way on this project's videos), and the job folders held about 6 GB of source videos.
+
+- YouTube videos download on Modal (`download_video` in `main.py`): a small CPU-only image with ffmpeg, yt-dlp and Deno writes `input.mp4` straight into the jobs volume, and reports download progress. `downloader.py` holds the yt-dlp settings for both places.
+- If YouTube blocks the cloud download ("confirm you're not a bot", 429) or it fails, the runner downloads on the laptop and uploads, as before. `YOUTUBE_DOWNLOAD=laptop` in `.env` always does.
+- After a successful run the video is deleted from the job folder and from the volume. A job keeps `job.json`, the transcript, the moments, the clips and the thumbnail. Failed runs keep a video they already have, for **Try again**. `--keep-video` keeps it (for `benchmark_gpu.py`).
+- Re-rank downloads a YouTube video on Modal again. An uploaded MP4 is chosen again (Re-rank opens a file picker, or drop the same file on the home page), checked against its fingerprint and re-ranked.
+- `python runner.py --prune-videos [--dry-run]` deletes the videos older versions kept in finished job folders, saving each upload's fingerprint and cover first.
+- The download container's cost is part of the job's estimate (`costs.py`: CPU and memory, no GPU). The progress strip skips the upload step for YouTube videos, and the job's details say where the video was downloaded. On the stats page, a cloud download counts as cloud work.
+- `YTDLP_VERSION` and `DENO_VERSION` pin the download image; bumping them and redeploying rebuilds only that small image.
+- `benchmark_gpu.py` downloads a YouTube job's video on Modal when the job folder no longer has it.
+- The running timer in the progress strip no longer causes a hydration warning in the browser.
+
 **Repository cleanup**
 - `LICENSE` (was `LICENSE.MD`): template brackets fixed; Andreas Trolle's copyright kept, with a line for this fork's changes.
 - `docs/architecture.excalidraw` replaces the upstream SaaS diagram (Stripe checkout, EC2 vs Modal), which described removed features.

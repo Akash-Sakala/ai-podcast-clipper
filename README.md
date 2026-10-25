@@ -2,7 +2,7 @@
 
 Turn a long podcast or interview into ranked, ready-to-post vertical clips for YouTube Shorts, Instagram Reels and TikTok.
 
-Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video, crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on a rented cloud GPU ([Modal](https://modal.com)); the app, your videos and the finished clips stay on your machine.
+Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video, crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on a rented cloud GPU ([Modal](https://modal.com)): YouTube videos download straight to the cloud and are deleted once the clips are made, so only the app and the finished clips live on your machine.
 
 A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas): no accounts, payments, S3 or database.
 
@@ -19,6 +19,7 @@ A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU t
 - **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame, without split-second jumps between people.
 - **Clips render in parallel:** one GPU container per clip, each clip encoded once on the GPU; every video shows how long it took and what it cost.
 - **Clean cuts:** clips start where a thought starts and end where it lands, on whole sentences with a short fade.
+- **Nothing big on your laptop:** YouTube videos download straight to Modal (your laptop takes over only if YouTube blocks the cloud), and every video is deleted once its clips are saved. A job folder keeps the clips, transcript, thumbnail and details.
 - **No repeat work:** adding a video you already clipped (same YouTube video or the same file, even renamed) takes you to its clips or a re-rank instead.
 - **Never empty-handed:** if Gemini is busy, the app falls back through other models and then to transcript-based picks, and lets you re-rank later without transcribing again.
 - **Clean, live UI:** step-by-step progress, one-click download or ZIP of all clips, light and dark themes.
@@ -33,16 +34,18 @@ flowchart LR
         app --> runner["runner.py"]
     end
 
-    yt[("YouTube")] -. "yt-dlp" .-> runner
-    runner -- "upload video" --> vol[("Modal volume")]
+    runner -- "upload MP4" --> vol[("Modal volume")]
+    yt[("YouTube")] -. "fallback if blocked" .-> runner
 
     subgraph modal["Modal"]
+        dl["Download<br/>yt-dlp, CPU"]
         asr["Transcribe<br/>Parakeet v2, 1 GPU"] --> rank["Rank moments<br/>CPU"]
         rank --> r1["Clip 1<br/>GPU"]
         rank --> r2["Clip 2<br/>GPU"]
         rank --> rn["Clip N<br/>GPU"]
     end
 
+    yt --> dl --> vol
     vol --> asr
     rank <-. "API" .-> gemini["Gemini"]
     r1 & r2 & rn --> vol
@@ -50,9 +53,9 @@ flowchart LR
 ```
 
 1. **Add a video** in the browser. The Next.js app creates a job folder and starts `runner.py` in the background.
-2. **The runner** downloads the YouTube video (or uses your upload), sends it to a Modal volume and starts the job.
+2. **The runner** gets the video onto a Modal volume: a YouTube video downloads there directly on a small CPU container, an uploaded MP4 is sent from your machine. If YouTube blocks the cloud download, the runner downloads on your laptop and uploads instead.
 3. **On Modal**, Parakeet transcribes the audio on a GPU, then Gemini ranks the moments while no GPU is billed. Then every clip renders at the same time in its own GPU container: LR-ASD finds the speaker, and each clip is cropped to 9:16 and encoded once with subtitles on the GPU's video encoder. Progress is reported back as it goes.
-4. **The runner** downloads the finished clips into the job folder, and they appear in the app with the job's processing time and estimated cost.
+4. **The runner** downloads the finished clips into the job folder, and they appear in the app with the job's processing time and estimated cost. Then the video is deleted, from Modal and from the job folder.
 
 ## Requirements
 
@@ -93,7 +96,7 @@ modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<your key> HF_TOKEN
 modal deploy main.py
 ```
 
-The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while; later deploys are quick. Re-run `modal deploy main.py` after changing `main.py`, `render.py`, `asd/` or `.env`.
+The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while; later deploys are quick. Re-run `modal deploy main.py` after changing `main.py`, `render.py`, `asd/` or `.env`. Updating from an older version? Run `python runner.py --prune-videos` once to delete the videos it kept in finished job folders.
 
 **4. Install the frontend**
 
@@ -114,7 +117,7 @@ npm run dev
 Open http://localhost:3000.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with its live status; you can keep adding more while others run.
-- **Clips page:** click a video to see its clips, best first. Hover the rank badge (`#1 86`) for the score breakdown and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing; **Try again** restarts a failed video.
+- **Clips page:** click a video to see its clips, best first. Hover the rank badge (`#1 86`) for the score breakdown and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing (a YouTube video is downloaded again; for an uploaded MP4 you choose the same file again); **Try again** restarts a failed video.
 - **Stats:** the chart icon in the header shows what each video cost on Modal and how long each step took. For videos processed before it existed, run `python runner.py --backfill-stats` once in `ai-podcast-clipper-backend`.
 
 Finished clips are also saved in `data/jobs/<job id>/clips/`.

@@ -4,6 +4,7 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   currentStage,
+  downloadShare,
   duration,
   money,
   renderShare,
@@ -11,7 +12,9 @@ import {
   stepsFor,
   timecode,
 } from "~/lib/format";
+import { fingerprintFile } from "~/lib/fingerprint";
 import { isActive, type Job } from "~/lib/job-types";
+import { pickVideoFile, uploadVideo } from "~/lib/upload";
 import { cn } from "~/lib/utils";
 import { toast } from "sonner";
 
@@ -79,7 +82,7 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
   const startedAt = job.queuedAt ?? job.createdAt;
   const since = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
   const eta = p?.etaSeconds;
-  const share = renderShare(job);
+  const share = stage === "downloading" ? downloadShare(job) : renderShare(job);
 
   return (
     <div className="space-y-3">
@@ -87,7 +90,7 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
         {steps.map((step, i) => {
           const state = i < index ? "done" : i === index ? "current" : "todo";
           const fill =
-            state === "current" && step.stage === "rendering" && share != null
+            state === "current" && share != null
               ? Math.max(8, share * 100)
               : null;
           return (
@@ -125,7 +128,10 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
         <p aria-live="polite" className="font-medium">
           {stageSentence(job)}
         </p>
-        <p className="text-muted-foreground tabular shrink-0">
+        <p
+          className="text-muted-foreground tabular shrink-0"
+          suppressHydrationWarning // a live clock: server and browser are a second apart
+        >
           {eta != null && eta > 0
             ? `About ${duration(eta)} left`
             : timecode(since)}
@@ -166,6 +172,19 @@ export function DetailsPanel({ job }: { job: Job }) {
     label: "Transcription",
     value: `Parakeet${job.engine?.gpu ? ` on ${job.engine.gpu}` : ""}${speed ? `, ${Math.round(speed)}× real time` : ""}`,
   });
+  const transfer = job.videoTransfer;
+  if (job.source === "youtube" && transfer && !isActive(job))
+    rows.push({
+      label: "Downloaded",
+      value:
+        transfer === "cloud-download"
+          ? "On Modal"
+          : transfer === "laptop-download"
+            ? job.downloadFallback === "blocked"
+              ? "On your laptop (YouTube blocked Modal)"
+              : "On your laptop"
+            : "Earlier, on your laptop",
+    });
   const model = job.ranking?.modelUsed ?? job.ranking?.model;
   if (model) rows.push({ label: "Moments picked by", value: model });
   const total = job.timings?.total;
@@ -241,18 +260,46 @@ export function useJobActions(onStarted: () => Promise<void>) {
 
   const run = useCallback(
     async (job: Job, action: "rerank" | "retry") => {
+      // An upload's video is deleted after its run: re-rank asks for the file again.
+      let file: File | null = null;
+      if (action === "rerank" && job.rerankNeedsFile) {
+        file = await pickVideoFile();
+        if (!file) return;
+        const print = await fingerprintFile(file).catch(() => null);
+        if (job.fingerprint && print && print !== job.fingerprint) {
+          toast.error("That's a different video", {
+            description: "Choose the MP4 these clips were made from.",
+          });
+          return;
+        }
+      }
       setBusy(job.id);
+      const toastId = file
+        ? toast.loading("Uploading the video", { description: "0%" })
+        : undefined;
       try {
-        const response = await fetch(`/api/jobs/${job.id}/${action}`, {
-          method: "POST",
-        });
-        if (!response.ok) {
-          const body = (await response.json().catch(() => ({}))) as {
-            error?: string;
-          };
-          throw new Error(body.error ?? `Request failed (${response.status})`);
+        if (file) {
+          await uploadVideo(`/api/jobs/${job.id}/rerank`, file, (percent) =>
+            toast.loading("Uploading the video", {
+              id: toastId,
+              description: `${percent}%`,
+            }),
+          );
+        } else {
+          const response = await fetch(`/api/jobs/${job.id}/${action}`, {
+            method: "POST",
+          });
+          if (!response.ok) {
+            const body = (await response.json().catch(() => ({}))) as {
+              error?: string;
+            };
+            throw new Error(
+              body.error ?? `Request failed (${response.status})`,
+            );
+          }
         }
         toast.success(action === "rerank" ? "Re-ranking" : "Trying again", {
+          id: toastId,
           description:
             action === "rerank"
               ? "Reusing the transcript. The current clips stay until the new ones are ready."
@@ -262,7 +309,7 @@ export function useJobActions(onStarted: () => Promise<void>) {
       } catch (error) {
         toast.error(
           action === "rerank" ? "Couldn't re-rank" : "Couldn't try again",
-          { description: (error as Error).message },
+          { id: toastId, description: (error as Error).message },
         );
       } finally {
         setBusy(null);

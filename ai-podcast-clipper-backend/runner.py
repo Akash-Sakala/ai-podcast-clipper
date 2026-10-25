@@ -10,9 +10,17 @@ it directly from the terminal:
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
     python runner.py --thumbnails                              (covers and clip posters for older videos)
     python runner.py --backfill-stats                          (run history of older videos, for the stats page)
+    python runner.py --prune-videos [--dry-run]                (delete videos kept by older versions)
 
-Steps: (YouTube download) -> upload to the Modal jobs volume -> run the deployed
-pipeline -> download clips into <job dir>/clips -> update <job dir>/job.json.
+Steps: video into the Modal jobs volume -> run the deployed pipeline -> download clips
+into <job dir>/clips -> update <job dir>/job.json -> delete the video everywhere.
+
+YouTube videos download straight into the volume (download_video on Modal), so they
+never touch the laptop. If YouTube blocks Modal, the laptop downloads and uploads the
+video instead (YOUTUBE_DOWNLOAD=laptop in .env always does). An uploaded MP4 is sent
+from the job folder. Once the clips are saved, input.mp4 is deleted from the job folder
+and the volume: only job.json, the transcript, the moments, the clips and the
+thumbnail stay. Re-rank downloads a YouTube video again; an upload is added again.
 
 In the cloud, a GPU container transcribes the video with Parakeet TDT 0.6B v2
 (English), Gemini ranks the best moments, and every clip renders in its own GPU
@@ -24,6 +32,7 @@ Requires `modal deploy main.py` to have been run once.
 
 import argparse
 import datetime as dt
+import hashlib
 import io
 import json
 import os
@@ -36,15 +45,18 @@ import sys
 import time
 import traceback
 
+import downloader
 import run_history
-import settings  # noqa: F401 - loads ai-podcast-clipper-backend/.env
+import settings  # loads ai-podcast-clipper-backend/.env
 
 APP_NAME = "ai-podcast-clipper"
 FUNCTION_NAME = "process_job"
+DOWNLOAD_FUNCTION = "download_video"
 JOBS_VOLUME = "ai-podcast-clipper-jobs"
 
 PROGRESS_DICT = "ai-podcast-clipper-progress"   # live stage/clip counts written by the GPU
 POLL_SECONDS = 3
+FINGERPRINT_CHUNK = 1024 * 1024                  # same as the web app's lib/fingerprint.ts
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = BACKEND_DIR.parent / "data"
@@ -108,70 +120,140 @@ class Job:
         return Job(job_dir)
 
 
+def apply_meta(job: Job, meta: dict) -> None:
+    job.update(title=meta.get("title") or job.data["title"], meta=meta)
+
+
 def download_youtube(job: Job, attempts: int = 3) -> None:
+    """Laptop download into <job dir>/input.mp4 (the fallback when Modal cannot download)."""
     import imageio_ffmpeg
-    import yt_dlp
 
     url = job.data["youtubeUrl"]
     job.update(status="downloading", message="Downloading from YouTube")
     log(f"Downloading {url}")
-
-    options = {
-        # Prefer H.264 (avc1) video up to 1080p - the clipping pipeline (OpenCV, LR-ASD)
-        # handles it best - plus M4A audio, merged into input.mp4.
-        "format": ("bv*[vcodec^=avc1][height<=1080]+ba[ext=m4a]/"
-                   "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/"
-                   "b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b"),
-        "merge_output_format": "mp4",
-        "outtmpl": str(job.dir / "input.%(ext)s"),
-        "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
-        # YouTube needs a JavaScript runtime; Node is already installed for the web app.
-        "js_runtimes": {"deno": {}, "node": {}},
-        "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
-        "noplaylist": True,
-        "noprogress": True,
-        # Download in 10 MB pieces and retry failed pieces - YouTube often answers
-        # large single requests with "HTTP Error 403: Forbidden".
-        "http_chunk_size": 10 * 1024 * 1024,
-        "retries": 10,
-        "fragment_retries": 10,
-    }
     # Optional: use your browser's YouTube login when YouTube asks to
     # "confirm you're not a bot". Set YTDLP_COOKIES_FROM_BROWSER=firefox (or edge/chrome).
-    browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip() or None
     if browser:
-        options["cookiesfrombrowser"] = (browser,)
         log(f"Using cookies from {browser}")
+    last = [0.0]
 
-    info = None
-    for attempt in range(1, attempts + 1):
-        try:
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-            break
-        except yt_dlp.utils.DownloadError as exc:
-            if attempt == attempts:
-                raise
-            # Stream URLs are signed per request - start over with fresh ones.
-            log(f"Download attempt {attempt} failed ({exc}); retrying in {10 * attempt}s")
-            for partial in job.dir.glob("input.*"):
-                partial.unlink(missing_ok=True)
-            job.update(message=f"Downloading from YouTube (retry {attempt}/{attempts - 1})")
-            time.sleep(10 * attempt)
+    def progress(fraction: float) -> None:
+        if time.time() - last[0] >= 1.5:
+            last[0] = time.time()
+            set_progress(job, "downloading", where="laptop", fraction=round(fraction, 3))
 
-    if not (job.dir / "input.mp4").exists():
-        raise RuntimeError("YouTube download finished but input.mp4 was not created")
+    def retry(attempt: int, total: int, exc: Exception) -> None:
+        log(f"Download attempt {attempt} failed ({exc}); retrying in {10 * attempt}s")
+        job.update(message=f"Downloading from YouTube (retry {attempt}/{total - 1})")
 
-    info = info or {}
-    job.update(title=info.get("title") or job.data["title"], meta={
-        "title": info.get("title"),
-        "channel": info.get("channel") or info.get("uploader"),
-        "description": (info.get("description") or "")[:2000],
-        "tags": (info.get("tags") or [])[:30],
-        "language": info.get("language"),
-        "duration": info.get("duration"),
-    })
+    info = downloader.download(url, job.dir, attempts=attempts, ffmpeg_location=imageio_ffmpeg.get_ffmpeg_exe(),
+                               cookies_browser=browser, on_progress=progress, on_retry=retry)
+    apply_meta(job, downloader.video_meta(info))
     log(f"Downloaded: {job.data['title']} (YouTube language: {info.get('language') or 'unknown'})")
+
+
+def cloud_download(job: Job) -> dict:
+    """Download the YouTube video straight into the Modal volume (main.download_video).
+    Never raises: {"ok": False, "error": ...} means the laptop should download it."""
+    import modal
+
+    try:
+        call = modal.Function.from_name(APP_NAME, DOWNLOAD_FUNCTION).spawn(job.id, job.data["youtubeUrl"])
+        return wait_for(call, job)
+    except Exception as exc:  # noqa: BLE001 - e.g. deployed before download_video existed
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def put_video_on_modal(job: Job, volume, timings: dict, usages: list) -> None:
+    """Get the video into /<job id>/input.mp4 on the Modal volume.
+
+    A video in the job folder (an upload, or an older job) is uploaded. A YouTube
+    video is downloaded on Modal; if that fails (YouTube blocks some cloud IPs), the
+    laptop downloads it and uploads it, as before."""
+    local = job.dir / "input.mp4"
+    transfer = "upload"
+    if not local.exists() and job.data.get("source") == "youtube":
+        if settings.YOUTUBE_DOWNLOAD == "cloud":
+            job.update(status="downloading", message="Downloading from YouTube to Modal",
+                       videoTransfer="cloud-download")
+            set_progress(job, "downloading", where="cloud")
+            log(f"Downloading {job.data['youtubeUrl']} on Modal")
+            start = time.time()
+            result = cloud_download(job)
+            timings["cloud_download"] = round(time.time() - start, 1)
+            if result.get("usage"):
+                usages.append(result["usage"])
+            if result.get("ok"):
+                apply_meta(job, result.get("meta") or {})
+                log(f"Downloaded on Modal in {timings['cloud_download']:.0f}s ({result.get('sizeMB', '?')} MB): "
+                    f"{job.data['title']}")
+                return
+            log(f"Modal could not download the video ({result.get('error') or 'unknown error'}); "
+                "downloading on this laptop instead")
+            job.update(downloadFallback="blocked" if result.get("blocked") else "failed")
+        transfer = "laptop-download"
+        job.update(videoTransfer=transfer)
+        set_progress(job, "downloading", where="laptop")
+        start = time.time()
+        download_youtube(job)
+        timings["download"] = round(time.time() - start, 1)
+
+    if not local.exists():
+        raise FileNotFoundError("The uploaded video is no longer in the job folder: add the same MP4 again "
+                                "to re-rank it")
+    if transfer == "upload":
+        job.update(videoTransfer=transfer)
+    set_progress(job, "uploading")
+    start = time.time()
+    upload_input(job, volume)
+    timings["upload"] = round(time.time() - start, 1)
+
+
+def discard_local_video(job: Job) -> float:
+    """Delete input.mp4 (and any partial download) from the job folder once the clips
+    are saved. Returns the MB freed. Never raises."""
+    freed = 0
+    for path in job.dir.glob("input.*"):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+            for attempt in range(5):
+                try:
+                    path.unlink()
+                    break
+                except PermissionError:  # Windows: the web app or a player may have it open
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.5 * (attempt + 1))
+            freed += size
+        except OSError as exc:
+            log(f"Could not delete {path.name}: {exc}")
+    return freed / 1024 / 1024
+
+
+def fingerprint_ranges(size: int) -> list[tuple[int, int]]:
+    if size <= 3 * FINGERPRINT_CHUNK:
+        return [(0, size)]
+    middle = size // 2 - FINGERPRINT_CHUNK // 2
+    return [(0, FINGERPRINT_CHUNK), (middle, middle + FINGERPRINT_CHUNK), (size - FINGERPRINT_CHUNK, size)]
+
+
+def file_fingerprint(path: pathlib.Path) -> str | None:
+    """The web app's upload fingerprint (lib/fingerprint.ts): SHA-256 of "<size>:" plus
+    1 MiB from the start, middle and end. Lets a re-added file be recognised after its
+    copy in the job folder is gone."""
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256(f"{size}:".encode())
+        with open(path, "rb") as f:
+            for start, end in fingerprint_ranges(size):
+                f.seek(start)
+                digest.update(f.read(end - start))
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def hide_child_windows() -> None:
@@ -289,37 +371,46 @@ def set_progress(job: Job, stage: str, **fields) -> None:
 # Cloud step
 # --------------------------------------------------------------------------- #
 
-def run_gpu(job: Job, max_clips: int, transcript: str, timings: dict) -> dict:
-    """Run the deployed process_job and mirror its live progress into job.json."""
+def wait_for(call, job: Job):
+    """The result of a spawned Modal call, mirroring its live progress into job.json meanwhile."""
+    import modal
+
+    progress = modal.Dict.from_name(PROGRESS_DICT, create_if_missing=True)
+    last = None
+    try:
+        while True:
+            try:
+                return call.get(timeout=POLL_SECONDS)
+            except (TimeoutError, modal.exception.TimeoutError):
+                pass
+            try:
+                current = progress.get(job.id)
+            except Exception:  # noqa: BLE001 - progress is best effort
+                current = None
+            if current and current != last:
+                last = current
+                fields = {k: v for k, v in current.items() if k != "stage"}
+                set_progress(job, current.get("stage", "processing"), **fields)
+    finally:
+        try:
+            progress.pop(job.id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def run_gpu(job: Job, max_clips: int, transcript: str, timings: dict, extra_usages: list | None = None) -> dict:
+    """Run the deployed process_job and mirror its live progress into job.json.
+    extra_usages: the download container, so the job's cost includes it."""
     import modal
 
     job.update(status="processing", message="Processing on the GPU")
     set_progress(job, "transcribing" if transcript == "parakeet" else "ranking")
     log(f"Calling {FUNCTION_NAME} (transcript={transcript})")
     start = time.time()
-    call = modal.Function.from_name(APP_NAME, FUNCTION_NAME).spawn(
-        job.id, max_clips, gemini_context(job), transcript)
-    progress = modal.Dict.from_name(PROGRESS_DICT, create_if_missing=True)
-
-    last = None
-    while True:
-        try:
-            result = call.get(timeout=POLL_SECONDS)
-            break
-        except (TimeoutError, modal.exception.TimeoutError):
-            pass
-        try:
-            current = progress.get(job.id)
-        except Exception:  # noqa: BLE001 - progress is best effort
-            current = None
-        if current and current != last:
-            last = current
-            fields = {k: v for k, v in current.items() if k != "stage"}
-            set_progress(job, current.get("stage", "processing"), **fields)
-    try:
-        progress.pop(job.id)
-    except Exception:  # noqa: BLE001
-        pass
+    function = modal.Function.from_name(APP_NAME, FUNCTION_NAME)
+    args = (job.id, max_clips, gemini_context(job), transcript)
+    call = function.spawn(*args, extra_usages=extra_usages) if extra_usages else function.spawn(*args)
+    result = wait_for(call, job)
 
     timings.update({f"gpu_{k}": v for k, v in (result.get("timings") or {}).items()})
     timings["gpu_total"] = round(time.time() - start, 1)
@@ -376,24 +467,22 @@ def swap_in_new_clips(job: Job, new_dir: pathlib.Path) -> None:
 
 
 def rerank_job(job: Job, volume, max_clips: int, timings: dict) -> tuple[dict, list[str]]:
-    """Re-rank & re-render: reuse the saved video and transcript, skip download and transcription."""
-    for name in ("input.mp4", "transcript.json"):
-        if not (job.dir / name).exists():
-            raise FileNotFoundError(f"{name} is missing from the job folder, so this job cannot be re-ranked")
+    """Re-rank & re-render: reuse the saved transcript, skip transcription. The video is
+    downloaded again (YouTube) or taken from the job folder (an upload added again)."""
+    if not (job.dir / "transcript.json").exists():
+        raise FileNotFoundError("transcript.json is missing from the job folder, so this job cannot be re-ranked")
     # Jobs from the removed Whistle engine get their subtitles re-transcribed with Parakeet.
     transcriber = (job.data.get("engine") or {}).get("transcriber") or "parakeet"
     mode = "uploaded" if transcriber == "whistle" else "reuse"
 
-    start = time.time()
-    set_progress(job, "uploading")
-    upload_input(job, volume)
+    usages: list = []
+    put_video_on_modal(job, volume, timings, usages)
     upload_transcript(job, volume)
-    timings["upload"] = round(time.time() - start, 1)
     previous = job.dir / "moments.json"
     if previous.exists():
         shutil.copy(previous, job.dir / "moments.previous.json")
 
-    result = run_gpu(job, max_clips, mode, timings)
+    result = run_gpu(job, max_clips, mode, timings, usages)
     new_dir = job.dir / "clips_new"
     shutil.rmtree(new_dir, ignore_errors=True)
     clips = download_outputs(job, volume, result, new_dir)
@@ -489,12 +578,12 @@ def backfill_stats(data_dir: pathlib.Path, force: bool = False) -> int:
     return 0
 
 
-def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
+def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video: bool = False) -> int:
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, status="uploading", progress=None,
-               message="Re-rank & re-render: uploading the saved video and transcript")
+    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None,
+               downloadFallback=None, message="Re-rank & re-render: getting the video ready")
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {"rerank": True}
     job_start = time.time()
@@ -516,6 +605,8 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
                    ranking=ranking, clipDetails=details, reranks=int(job.data.get("reranks") or 0) + 1,
                    rerankedAt=now_iso(), progress=None, cost=cost, runs=runs)
         log(f"{message}. Timings: {timings}")
+        if not keep_video:
+            forget_video(job)
         return 0
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -531,36 +622,39 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
             cleanup_remote(job, volume)
 
 
-def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
+def forget_video(job: Job) -> None:
+    """After a successful run: an upload keeps its fingerprint (to be recognised when it is
+    added again), then input.mp4 leaves the job folder."""
+    if job.data.get("source") == "upload" and not job.data.get("fingerprint"):
+        fingerprint = file_fingerprint(job.dir / "input.mp4")
+        if fingerprint:
+            job.update(fingerprint=fingerprint)
+    freed = discard_local_video(job)
+    if freed:
+        log(f"Deleted the video from the job folder ({freed:.0f} MB)")
+
+
+def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video: bool = False) -> int:
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, progress=None)
+    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, downloadFallback=None)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {}
+    usages: list = []
     job_start = time.time()
     failed_stage = "starting"
 
     try:
-        if job.data.get("source") == "youtube" and not (job.dir / "input.mp4").exists():
-            failed_stage = "downloading"
-            set_progress(job, "downloading")
-            start = time.time()
-            download_youtube(job)
-            timings["download"] = round(time.time() - start, 1)
-
         if job.data.get("source") == "upload" and not (job.dir / "thumbnail.jpg").exists():
             save_thumbnail(job)
 
         job.update(engine={"transcriber": "parakeet", "language": "en", "subtitles": "parakeet"})
-        failed_stage = "uploading"
-        set_progress(job, "uploading")
-        start = time.time()
-        upload_input(job, volume)
-        timings["upload"] = round(time.time() - start, 1)
+        failed_stage = "uploading" if (job.dir / "input.mp4").exists() else "downloading"
+        put_video_on_modal(job, volume, timings, usages)
 
         failed_stage = "processing"
-        result = run_gpu(job, max_clips, "parakeet", timings)
+        result = run_gpu(job, max_clips, "parakeet", timings, usages)
         job.update(engine={**job.data["engine"], "subtitles": result.get("subtitles", "parakeet"),
                            "gpu": result.get("gpu"), "parakeet": result.get("transcription") or None})
         failed_stage = "saving"
@@ -577,6 +671,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
                    ranking=ranking, progress=None, clipDetails=clip_details(clips, result.get("moments") or []),
                    cost=cost, runs=runs)
         log(f"{message}. Timings: {timings}")
+        if not keep_video:
+            forget_video(job)
         return 0
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -591,6 +687,39 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
             cleanup_remote(job, volume)
 
 
+def prune_videos(data_dir: pathlib.Path, dry_run: bool = False) -> int:
+    """Delete the videos older versions kept in finished job folders. Failed and running
+    jobs keep theirs (Try again reuses it). Uploads keep a fingerprint and a cover first."""
+    freed, count = 0.0, 0
+    for job_dir in sorted((data_dir / "jobs").glob("*")):
+        videos = [p for p in job_dir.glob("input.*") if p.is_file()]
+        if not videos or not (job_dir / "job.json").exists():
+            continue
+        job = Job(job_dir)
+        size = sum(p.stat().st_size for p in videos) / 1024 / 1024
+        if job.data.get("status") != "done":
+            log(f"{job.id}: kept ({job.data.get('status')}, {size:.0f} MB)")
+            continue
+        if dry_run:
+            log(f"{job.id}: would delete {size:.0f} MB")
+            freed, count = freed + size, count + 1
+            continue
+        if job.data.get("source") == "upload":
+            if not job.data.get("fingerprint"):
+                fingerprint = file_fingerprint(job_dir / "input.mp4")
+                if fingerprint:
+                    job.data["fingerprint"] = fingerprint
+                    job.save()  # keeps updatedAt: the video itself did not change
+            if not (job_dir / "thumbnail.jpg").exists():
+                save_thumbnail(job)
+        freed_here = discard_local_video(job)
+        log(f"{job.id}: deleted {freed_here:.0f} MB")
+        freed, count = freed + freed_here, count + 1
+    verb = "Would free" if dry_run else "Freed"
+    log(f"{verb} {freed / 1024:.1f} GB from {count} video(s)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Podcast Clipper local runner")
     source = parser.add_mutually_exclusive_group(required=True)
@@ -601,11 +730,17 @@ def main() -> int:
                         help="Save missing video covers and clip posters in --data-dir, then exit")
     source.add_argument("--backfill-stats", action="store_true",
                         help="Rebuild the run history of older videos in --data-dir from their runner.log, then exit")
+    source.add_argument("--prune-videos", action="store_true",
+                        help="Delete the input.mp4 of finished jobs in --data-dir (kept by older versions), then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
                         help="Where job folders are stored (default: ../data)")
     parser.add_argument("--max-clips", type=int, default=5)
     parser.add_argument("--keep-remote", action="store_true",
                         help="Keep the job files in the Modal volume after downloading")
+    parser.add_argument("--keep-video", action="store_true",
+                        help="Keep input.mp4 in the job folder after the run (e.g. for benchmark_gpu.py)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="With --prune-videos: only list what would be deleted")
     parser.add_argument("--force", action="store_true",
                         help="With --backfill-stats: also rebuild videos that already have a run history")
     parser.add_argument("--rerank", action="store_true",
@@ -616,10 +751,12 @@ def main() -> int:
         return backfill_thumbnails(pathlib.Path(args.data_dir).resolve())
     if args.backfill_stats:
         return backfill_stats(pathlib.Path(args.data_dir).resolve(), args.force)
+    if args.prune_videos:
+        return prune_videos(pathlib.Path(args.data_dir).resolve(), args.dry_run)
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")
-        return run_rerank(pathlib.Path(args.job_dir).resolve(), args.max_clips, args.keep_remote)
+        return run_rerank(pathlib.Path(args.job_dir).resolve(), args.max_clips, args.keep_remote, args.keep_video)
 
     if args.job_dir:
         job_dir = pathlib.Path(args.job_dir).resolve()
@@ -632,12 +769,13 @@ def main() -> int:
             job = Job.create(data_dir, "upload", video.name)
             log(f"Copying {video} into {job.dir}")
             shutil.copy(video, job.dir / "input.mp4")
+            job.update(fingerprint=file_fingerprint(job.dir / "input.mp4"))
         else:
             job = Job.create(data_dir, "youtube", args.youtube, youtube_url=args.youtube)
         job_dir = job.dir
         log(f"Created job {job.id} in {job_dir}")
 
-    return run_job(job_dir, args.max_clips, args.keep_remote)
+    return run_job(job_dir, args.max_clips, args.keep_remote, args.keep_video)
 
 
 if __name__ == "__main__":

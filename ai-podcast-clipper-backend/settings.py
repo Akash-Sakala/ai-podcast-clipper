@@ -74,6 +74,17 @@ RENDER_MAX_CONTAINERS = get_int("RENDER_MAX_CONTAINERS", 8)
 RENDER_CPU = get_int("RENDER_CPU", 4)
 
 
+# Where YouTube videos are downloaded (read by runner.py for every job):
+#   cloud  - straight into the Modal jobs volume; the laptop takes over if YouTube blocks Modal
+#   laptop - on this laptop, then uploaded to Modal (the old way)
+YOUTUBE_DOWNLOAD = "laptop" if get_str("YOUTUBE_DOWNLOAD", "cloud").strip().lower() == "laptop" else "cloud"
+# yt-dlp and Deno (its JavaScript runtime) in the Modal download image. YouTube changes
+# often: bump YTDLP_VERSION and run `modal deploy main.py` when downloads start failing.
+# Only the small download image is rebuilt, not the GPU image.
+YTDLP_VERSION = get_str("YTDLP_VERSION", "2026.10.21")
+DENO_VERSION = get_str("DENO_VERSION", "2.9.8")
+
+
 # Moment-selection and rendering settings, read inside the containers (moments.py,
 # render.py). main.py forwards them as a Modal secret because the containers have no .env file.
 RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX",

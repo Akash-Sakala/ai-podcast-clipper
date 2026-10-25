@@ -1,7 +1,8 @@
 """
 Benchmark clip rendering on several GPUs, and check the new render path against the old one.
 
-Uses a finished job (its input.mp4, moments.json and transcript.json) and renders its
+Uses a finished job (its moments.json and transcript.json, and its video: input.mp4 if the
+job folder still has it, else a fresh download on Modal for YouTube jobs) and renders its
 first clips on each GPU type, all clips of a GPU at once, as a real job does. Prints
 the time and the estimated cost per clip so you can pick CLIPPER_GPU.
 
@@ -169,13 +170,30 @@ def parity_run(job_id: str, moment: dict, words: list, max_stills: int = 12) -> 
 
 
 def upload_job(job_dir: pathlib.Path, bench_id: str) -> tuple[list, list]:
-    for name in ("input.mp4", "moments.json", "transcript.json"):
+    """Put the job's video into the volume as /<bench_id>/input.mp4: uploaded from the job
+    folder if it is still there, else downloaded on Modal again (YouTube jobs)."""
+    for name in ("moments.json", "transcript.json"):
         if not (job_dir / name).exists():
             raise SystemExit(f"{job_dir / name} is missing: use a finished job folder")
-    size_mb = (job_dir / "input.mp4").stat().st_size / 1024 / 1024
-    print(f"Uploading input.mp4 ({size_mb:.0f} MB) ...")
-    with main.jobs_volume.batch_upload(force=True) as batch:
-        batch.put_file(str(job_dir / "input.mp4"), f"/{bench_id}/input.mp4")
+    video = job_dir / "input.mp4"
+    job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    if video.exists():
+        size_mb = video.stat().st_size / 1024 / 1024
+        print(f"Uploading input.mp4 ({size_mb:.0f} MB) ...")
+        with main.jobs_volume.batch_upload(force=True) as batch:
+            batch.put_file(str(video), f"/{bench_id}/input.mp4")
+    elif job.get("youtubeUrl"):
+        print("Downloading the video on Modal (the deployed download_video) ...")
+        result = modal.Function.from_name(main.APP_NAME, "download_video").remote(bench_id, job["youtubeUrl"])
+        try:
+            main.progress_dict.pop(bench_id)
+        except Exception:  # noqa: BLE001 - the download's progress entry, best effort
+            pass
+        if not result.get("ok"):
+            raise SystemExit(f"Modal could not download the video: {result.get('error')}")
+    else:
+        raise SystemExit(f"{video} is missing: copy the uploaded MP4 there as input.mp4, "
+                         "or run the job with runner.py --keep-video")
     moments = json.loads((job_dir / "moments.json").read_text(encoding="utf-8"))
     words = json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
     return moments, words

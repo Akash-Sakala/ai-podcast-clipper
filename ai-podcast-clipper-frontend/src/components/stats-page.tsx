@@ -307,6 +307,8 @@ function SegmentTooltip({
   const detail =
     segment.key === "cloud"
       ? [
+          row.cloudDownload !== null &&
+            `Download ${stepTime(row.cloudDownload)}`,
           row.transcribe !== null && `Transcribe ${stepTime(row.transcribe)}`,
           row.findMoments !== null &&
             `Find moments ${stepTime(row.findMoments)}`,
@@ -570,7 +572,11 @@ function resultLabel(run: RunRecord) {
 
 function RunsDetail({ video }: { video: VideoStats }) {
   const t = (run: RunRecord, key: keyof RunRecord["timings"]) => {
-    const value = run.timings[key];
+    // Download: on Modal, on the laptop, or both when the laptop took over.
+    const value =
+      key === "download"
+        ? (run.timings.download ?? 0) + (run.timings.cloud_download ?? 0)
+        : run.timings[key];
     return typeof value === "number" && value > 0 ? stepTime(value) : "—";
   };
   return (

@@ -52,8 +52,8 @@ def container_seconds(usage: dict, scaledown_s: float) -> float:
 
 
 def estimate(usages: list[dict], orchestrator_seconds: float = 0.0) -> dict:
-    """usages: one dict per GPU call {container, gpu, enterSeconds, seconds, cpu, memoryGiB, scaledown}.
-    Calls served by the same container share its boot and scale-down."""
+    """usages: one dict per container call {container, gpu, enterSeconds, seconds, cpu, memoryGiB,
+    scaledown, cpuOnly}. Calls served by the same container share its boot and scale-down."""
     containers: dict[str, dict] = {}
     for usage in usages:
         key = str(usage.get("container") or id(usage))
@@ -64,12 +64,14 @@ def estimate(usages: list[dict], orchestrator_seconds: float = 0.0) -> dict:
     usd, gpu_seconds, gpus = 0.0, 0.0, {}
     for entry in containers.values():
         seconds = container_seconds(entry, float(entry.get("scaledown") or 0))
-        label = gpu_label(entry.get("gpu")) or "A10"
-        price = GPU_PRICE_PER_S.get(label, GPU_PRICE_PER_S["A10"])
+        price = 0.0
+        if not entry.get("cpuOnly"):  # CPU-only containers (the YouTube download) bill no GPU
+            label = gpu_label(entry.get("gpu")) or "A10"
+            price = GPU_PRICE_PER_S.get(label, GPU_PRICE_PER_S["A10"])
+            gpu_seconds += seconds
+            gpus[label] = gpus.get(label, 0) + 1
         usd += seconds * (price + float(entry.get("cpu") or 0.125) * CPU_CORE_PRICE_PER_S
                           + float(entry.get("memoryGiB") or 0.125) * MEMORY_GIB_PRICE_PER_S)
-        gpu_seconds += seconds
-        gpus[label] = gpus.get(label, 0) + 1
     usd += orchestrator_seconds * (1.0 * CPU_CORE_PRICE_PER_S + 1.0 * MEMORY_GIB_PRICE_PER_S)
-    return {"usd": round(usd, 4), "gpuSeconds": round(gpu_seconds), "containers": len(containers),
+    return {"usd": round(usd, 4), "gpuSeconds": round(gpu_seconds), "containers": sum(gpus.values()),
             "gpus": gpus}

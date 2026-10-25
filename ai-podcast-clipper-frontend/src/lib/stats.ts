@@ -28,11 +28,14 @@ export type TimeShareRow = {
   title: string;
   startedAt: string;
   pipeline: RunRecord["pipeline"];
+  /** Laptop download and upload (older runs, or the fallback when YouTube blocks Modal). */
   download: number;
   upload: number;
+  /** Everything on Modal, the YouTube download included. */
   cloud: number;
   saving: number;
   total: number;
+  cloudDownload: number | null;
   transcribe: number | null;
   findMoments: number | null;
   render: number | null;
@@ -117,6 +120,7 @@ function latestRunOnly(job: Job): RunRecord[] {
   for (const key of [
     "download",
     "upload",
+    "cloud_download",
     "gpu_transcribe",
     "gpu_select",
     "gpu_render",
@@ -268,7 +272,10 @@ export function computeStats(jobs: Job[], now = new Date()): Stats {
       const download = t.download ?? 0;
       const upload = t.upload ?? 0;
       const total = t.total ?? 0;
-      const cloud = Math.min(t.gpu_total ?? 0, total - download - upload);
+      const cloud = Math.min(
+        (t.gpu_total ?? 0) + (t.cloud_download ?? 0),
+        total - download - upload,
+      );
       return {
         key: `${video.id}-${run.startedAt}`,
         title: video.title,
@@ -279,6 +286,7 @@ export function computeStats(jobs: Job[], now = new Date()): Stats {
         cloud: Math.max(0, cloud),
         saving: Math.max(0, total - download - upload - Math.max(0, cloud)),
         total,
+        cloudDownload: num(t.cloud_download),
         transcribe: num(t.gpu_transcribe),
         findMoments: num(t.gpu_select),
         render: num(t.gpu_render),
@@ -294,7 +302,11 @@ export function computeStats(jobs: Job[], now = new Date()): Stats {
       ) / totalTime
     : null;
   const cloudShare = totalTime
-    ? sum(shareRuns.map((r) => r.timings.gpu_total ?? 0)) / totalTime
+    ? sum(
+        shareRuns.map(
+          (r) => (r.timings.gpu_total ?? 0) + (r.timings.cloud_download ?? 0),
+        ),
+      ) / totalTime
     : null;
 
   const buckets: LengthBucket[] = BUCKETS.map((bucket, index) => {
@@ -329,7 +341,9 @@ export function computeStats(jobs: Job[], now = new Date()): Stats {
     insights.push(
       laptopShare > cloudShare
         ? `Downloading and uploading on your laptop take ${percent(laptopShare)} of a full run, more than the cloud work (${percent(cloudShare)}).`
-        : `The cloud work takes ${percent(cloudShare)} of a full run; downloading and uploading on your laptop take ${percent(laptopShare)}.`,
+        : laptopShare < 0.05
+          ? `Videos download straight to Modal: the cloud work takes ${percent(cloudShare)} of a full run, and your laptop only saves the clips.`
+          : `The cloud work takes ${percent(cloudShare)} of a full run; downloading and uploading on your laptop take ${percent(laptopShare)}.`,
     );
   const rerankAvg = mean(rerankCosts);
   if (rerankAvg !== null && perVideoUsd)
