@@ -10,7 +10,7 @@ A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://g
 
 https://github.com/user-attachments/assets/4f1256f4-8035-4e74-be25-355fda692fc8
 
-A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU time (25 s, with music).
+A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU time.
 
 ## Features
 
