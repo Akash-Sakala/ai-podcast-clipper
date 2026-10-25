@@ -67,6 +67,16 @@ Rendering took 12-15 minutes of a 20-minute job, five clips one after another (`
 - Estimated Modal cost per job (`costs.py`), shown with the processing time in the job's details. Progress reads "Rendering 5 clips", then "2 of 5 ready".
 - `benchmark_gpu.py` compares GPUs on one of your videos, checks old vs new crop decisions (`--parity`) and re-renders chosen clips of a job for a before/after look (`--preview`).
 
+**Stats page**
+- `/stats` (chart icon in the header), in the app's own style:
+  - Modal spend in total and this month, against the Starter plan's $30 credit;
+  - cost per video (first run plus re-ranks) and per clip;
+  - end-to-end time, and where a run's time goes (laptop download and upload, cloud work, saving clips);
+  - average end-to-end, transcribe, find-moments and render times by podcast length, for the current pipeline or all runs;
+  - a few computed insights, and every run of a video step by step.
+- Run history: `runner.py` appends each run (first run, re-rank, failure) to `job.json` `runs` (`run_history.py`). `--backfill-stats` rebuilds it from `runner.log` for older videos; their costs are estimated from the logged GPU time and marked "est.".
+- The page refreshes every few seconds while a video is processing.
+
 **Repository cleanup**
 - `LICENSE` (was `LICENSE.MD`): template brackets fixed; Andreas Trolle's copyright kept, with a line for this fork's changes.
 - `docs/architecture.excalidraw` replaces the upstream SaaS diagram (Stripe checkout, EC2 vs Modal), which described removed features.

@@ -8,7 +8,7 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 
 | File | Contents |
 |---|---|
-| `job.json` | Status, progress, clip details and the Gemini `ranking` report shown in the app |
+| `job.json` | Status, progress, clip details, the Gemini `ranking` report and `runs`, the history of every run (stats page) |
 | `input.mp4` | The source video |
 | `thumbnail.jpg` | Cover in the video list: YouTube's own thumbnail, or a frame from an uploaded video |
 | `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
@@ -54,6 +54,7 @@ python runner.py --video "C:\path\to\podcast.mp4"
 python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
 python runner.py --thumbnails          # covers and clip posters for videos made before they existed
+python runner.py --backfill-stats      # run history for videos made before the stats page (once)
 ```
 
 ## Re-rank
@@ -87,6 +88,15 @@ The crop is then steadied (`render.steady_faces`). Inside each shot of the sourc
 Cuts in the source are never crossed, so a cut to another camera still switches immediately.
 
 A job's details in the app show its processing time and estimated Modal cost (`costs.py`: GPU, CPU and memory per container, using Modal's October 2026 prices). The Modal dashboard has the real bill.
+
+## Stats page
+
+The chart icon in the header opens `/stats`: Modal spend (all time and this month against the Starter plan's $30 credit), cost and end-to-end time per video (first run plus re-ranks), where a run's time goes (download and upload on the laptop, the cloud work, saving clips), and average step times by podcast length. It refreshes every few seconds while a video is processing.
+
+- **Run history.** When a run ends (first run, re-rank or failure), the runner appends it to `runs` in `job.json`: mode, result, start and end time, the step timings and the cost (`run_history.py`).
+- **Older videos.** `python runner.py --backfill-stats` rebuilds `runs` once from each job's `runner.log`, which keeps every run's lines. It skips videos that already have a history (`--force` rebuilds them).
+- **Estimated costs.** Runs from before the parallel renderer ran everything in one GPU container and logged no cost. Their cost is estimated from the logged GPU time at the same prices and marked "est.". The first version (WhisperX, before Parakeet) ran on an L40S, later ones on an A10. Failed runs that stopped before reporting a cost count as $0.
+- **Averages.** "Current pipeline" uses only runs where every clip rendered on its own GPU; "All runs" includes the older ones. End to end counts first runs that made clips; Find moments and Render include re-ranks.
 
 ## Choose a GPU
 

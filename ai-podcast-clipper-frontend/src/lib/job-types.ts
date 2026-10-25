@@ -38,6 +38,34 @@ export type JobCost = {
   containers?: number | null;
 };
 
+/** One run of a job (first run, re-rank or failed attempt), kept for the stats page. */
+export type RunRecord = {
+  mode: "full" | "rerank";
+  status: "done" | "no-clips" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  clips: number | null;
+  /** "single-gpu": the first versions, before every clip got its own GPU. */
+  pipeline: "parallel" | "single-gpu";
+  videoSeconds: number | null;
+  /** Seconds per step; a step that did not run is missing. */
+  timings: Partial<
+    Record<
+      | "download"
+      | "upload"
+      | "gpu_transcribe"
+      | "gpu_select"
+      | "gpu_render"
+      | "gpu_total"
+      | "total",
+      number
+    >
+  >;
+  /** estimated: worked out from logged GPU time (runs before per-container usage). */
+  cost: (JobCost & { estimated?: boolean }) | null;
+  recordedBy?: "runner" | "log";
+};
+
 export type ClipDetail = {
   name: string;
   rank: number;
@@ -100,6 +128,8 @@ export type Job = {
   clipsVersion?: string;
   /** Content fingerprint of an uploaded video (see lib/fingerprint.ts). */
   fingerprint?: string;
+  /** Every run of this job, oldest first (runner.py; older jobs: --backfill-stats). */
+  runs?: RunRecord[];
   /** Video facts saved by the runner (YouTube jobs). */
   meta?: { channel?: string | null; duration?: number | null } | null;
 };

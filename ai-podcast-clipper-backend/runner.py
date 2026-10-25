@@ -9,6 +9,7 @@ it directly from the terminal:
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
     python runner.py --thumbnails                              (covers and clip posters for older videos)
+    python runner.py --backfill-stats                          (run history of older videos, for the stats page)
 
 Steps: (YouTube download) -> upload to the Modal jobs volume -> run the deployed
 pipeline -> download clips into <job dir>/clips -> update <job dir>/job.json.
@@ -35,6 +36,7 @@ import sys
 import time
 import traceback
 
+import run_history
 import settings  # noqa: F401 - loads ai-podcast-clipper-backend/.env
 
 APP_NAME = "ai-podcast-clipper"
@@ -71,6 +73,9 @@ class Job:
     def update(self, **fields) -> None:
         self.data.update(fields)
         self.data["updatedAt"] = now_iso()
+        self.save()
+
+    def save(self) -> None:
         tmp = self.file.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
         for attempt in range(10):
@@ -449,6 +454,41 @@ def cleanup_remote(job: Job, volume) -> None:
         log(f"Could not clean up remote files: {exc}")
 
 
+def run_entries(job: Job, *, mode: str, status: str, started: float, timings: dict,
+                cost: dict | None = None, clips: list[str] | None = None) -> list[dict] | None:
+    """job.json "runs" with this run added (the stats page reads it). Never raises."""
+    try:
+        log_file = job.dir / "runner.log"
+        log_text = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
+        runs = run_history.history_before(job.data, log_text, started)
+        runs.append(run_history.runner_entry(job.data, mode=mode, status=status, started=started,
+                                             timings=timings, cost=cost,
+                                             clips=None if clips is None else len(clips)))
+        return runs
+    except Exception as exc:  # noqa: BLE001 - stats are best effort
+        log(f"Could not record the run for the stats page: {exc}")
+        return job.data.get("runs")
+
+
+def backfill_stats(data_dir: pathlib.Path, force: bool = False) -> int:
+    """Rebuild "runs" from runner.log for videos processed before the run history existed."""
+    filled = 0
+    for job_dir in sorted((data_dir / "jobs").glob("*")):
+        log_file = job_dir / "runner.log"
+        if not (job_dir / "job.json").exists() or not log_file.exists():
+            continue
+        job = Job(job_dir)
+        if isinstance(job.data.get("runs"), list) and not force:
+            continue
+        runs = run_history.parse_log(log_file.read_text(encoding="utf-8", errors="replace"), job.data)
+        job.data["runs"] = runs
+        job.save()  # keeps updatedAt: the video itself did not change
+        filled += 1
+        log(f"{job.id}: {len(runs)} run(s)")
+    log(f"Rebuilt the run history of {filled} video(s)")
+    return 0
+
+
 def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
     import modal
 
@@ -469,16 +509,21 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
             details = job.data.get("clipDetails") or []
         else:
             details = clip_details(clips, result.get("moments") or [])
+        cost = job_cost(result)
+        runs = run_entries(job, mode="rerank", status="done" if result.get("clips") else "no-clips",
+                           started=job_start, timings=timings, cost=cost, clips=result.get("clips") or [])
         job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                    ranking=ranking, clipDetails=details, reranks=int(job.data.get("reranks") or 0) + 1,
-                   rerankedAt=now_iso(), progress=None, cost=job_cost(result))
+                   rerankedAt=now_iso(), progress=None, cost=cost, runs=runs)
         log(f"{message}. Timings: {timings}")
         return 0
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
+        timings["total"] = round(time.time() - job_start, 1)
+        runs = run_entries(job, mode="rerank", status="failed", started=job_start, timings=timings)
         job.update(status="done" if job.data.get("clips") else "failed",
                    message="Re-rank failed - previous clips kept" if job.data.get("clips") else "Failed",
-                   error=f"{type(exc).__name__}: {exc}", progress=None,
+                   error=f"{type(exc).__name__}: {exc}", progress=None, runs=runs,
                    failedStage=(job.data.get("progress") or {}).get("stage") or "processing")
         return 1
     finally:
@@ -525,16 +570,21 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool) -> int:
         errors = result.get("errors") or []
         ranking = result.get("ranking") or {}
         message = ranking_message(clips, errors, ranking)
+        cost = job_cost(result)
+        runs = run_entries(job, mode="full", status="done" if clips else "no-clips", started=job_start,
+                           timings=timings, cost=cost, clips=clips)
         job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                    ranking=ranking, progress=None, clipDetails=clip_details(clips, result.get("moments") or []),
-                   cost=job_cost(result))
+                   cost=cost, runs=runs)
         log(f"{message}. Timings: {timings}")
         return 0
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         timings["total"] = round(time.time() - job_start, 1)
+        runs = run_entries(job, mode="full", status="failed", started=job_start, timings=timings)
         job.update(status="failed", message="Failed", error=f"{type(exc).__name__}: {exc}", timings=timings,
-                   failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, progress=None)
+                   failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, progress=None,
+                   runs=runs)
         return 1
     finally:
         if not keep_remote:
@@ -549,17 +599,23 @@ def main() -> int:
     source.add_argument("--youtube", help="YouTube video URL")
     source.add_argument("--thumbnails", action="store_true",
                         help="Save missing video covers and clip posters in --data-dir, then exit")
+    source.add_argument("--backfill-stats", action="store_true",
+                        help="Rebuild the run history of older videos in --data-dir from their runner.log, then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
                         help="Where job folders are stored (default: ../data)")
     parser.add_argument("--max-clips", type=int, default=5)
     parser.add_argument("--keep-remote", action="store_true",
                         help="Keep the job files in the Modal volume after downloading")
+    parser.add_argument("--force", action="store_true",
+                        help="With --backfill-stats: also rebuild videos that already have a run history")
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
     args = parser.parse_args()
     hide_child_windows()
     if args.thumbnails:
         return backfill_thumbnails(pathlib.Path(args.data_dir).resolve())
+    if args.backfill_stats:
+        return backfill_stats(pathlib.Path(args.data_dir).resolve(), args.force)
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")

@@ -37,6 +37,14 @@ export function duration(seconds: number) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+/** Step and run times: "45 s", "6 min 41 s", "20 min". */
+export function stepTime(seconds: number) {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} s`;
+  if (s >= 600) return `${Math.round(s / 60)} min`;
+  return s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} min`;
+}
+
 /** "$0.06", or "Under $0.01" for very cheap runs. */
 export function money(usd: number) {
   return usd < 0.01 ? "Under $0.01" : `$${usd.toFixed(2)}`;

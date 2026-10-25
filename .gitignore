@@ -117,3 +117,7 @@ desktop.ini
 # Claude Code: local settings and the private handoff notes
 .claude/settings.local.json
 CLAUDE.md
+
+# Demo video: source assets and /brag output (local only)
+demo-assets/
+brag-output*/

@@ -22,6 +22,7 @@ A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU t
 - **No repeat work:** adding a video you already clipped (same YouTube video or the same file, even renamed) takes you to its clips or a re-rank instead.
 - **Never empty-handed:** if Gemini is busy, the app falls back through other models and then to transcript-based picks, and lets you re-rank later without transcribing again.
 - **Clean, live UI:** step-by-step progress, one-click download or ZIP of all clips, light and dark themes.
+- **Stats page:** Modal spend per video and per month, end-to-end and per-step times by podcast length, and where each run's time goes.
 
 ## How it works
 
@@ -114,6 +115,7 @@ Open http://localhost:3000.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with its live status; you can keep adding more while others run.
 - **Clips page:** click a video to see its clips, best first. Hover the rank badge (`#1 86`) for the score breakdown and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing; **Try again** restarts a failed video.
+- **Stats:** the chart icon in the header shows what each video cost on Modal and how long each step took. For videos processed before it existed, run `python runner.py --backfill-stats` once in `ai-podcast-clipper-backend`.
 
 Finished clips are also saved in `data/jobs/<job id>/clips/`.
 
