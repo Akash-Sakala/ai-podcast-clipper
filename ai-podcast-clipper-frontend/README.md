@@ -20,11 +20,12 @@ See the main [README](../README.md) for full setup.
 | `src/components/new-job-bar.tsx` | YouTube link, MP4 upload, drag and drop, duplicate check |
 | `src/components/video-page.tsx`, `clip-card.tsx` | Clips page, clip player, rank and score badge, downloads |
 | `src/components/video-parts.tsx` | Shared pieces: progress strip, details popover (time and cost), notices, actions |
-| `src/app/api/jobs/...` | List and create jobs; get one; re-rank; retry; duplicate check |
+| `src/app/api/jobs/...` | List and create jobs; get one; re-rank (takes the MP4 again for an upload); retry; duplicate check |
 | `src/app/api/media/[jobId]/...` | Clips and posters (seeking, caching), ZIP of all clips, video cover |
 | `src/lib/jobs.ts` | Job folders, stale-runner detection, starting `runner.py` |
 | `src/lib/format.ts`, `job-types.ts` | Display text (progress, durations, cost) and the `job.json` types |
 | `src/lib/stats.ts`, `src/app/api/stats` | Stats worked out from each job's run history |
 | `src/lib/fingerprint.ts`, `youtube.ts` | Duplicate detection: upload fingerprint and YouTube video ID |
+| `src/lib/upload.ts` | MP4 upload with progress, for new videos and for re-ranking an upload |
 | `src/env.js` | Optional settings: `DATA_DIR`, `RUNNER_PYTHON` |
 | `src/app/icon.svg`, `public/favicon.ico` | App icon (the sound-wave logo) |

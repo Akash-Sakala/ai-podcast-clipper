@@ -14,11 +14,13 @@ export type { Job, JobStatus } from "./job-types";
  * Jobs are plain folders on disk - no database:
  *
  *   <DATA_DIR>/jobs/<job id>/
- *     job.json        status, written by this app and by runner.py
- *     input.mp4       uploaded or downloaded video
- *     thumbnail.jpg   cover for the video list (YouTube's, or a frame of an upload)
+ *     job.json         status, written by this app and by runner.py
+ *     input.mp4        an uploaded video, only until its run finishes (YouTube videos
+ *                      download straight to Modal and never land here)
+ *     transcript.json  reused by re-rank
+ *     thumbnail.jpg    cover for the video list (YouTube's, or a frame of an upload)
  *     clips/clip_N.mp4
- *     runner.log      output of runner.py
+ *     runner.log       output of runner.py
  */
 
 const REPO_ROOT = path.resolve(process.cwd(), "..");
@@ -71,6 +73,7 @@ async function writeJob(job: Job) {
   // canRerank and hasThumbnail are derived on read and never stored.
   const stored: Job = { ...job };
   delete stored.canRerank;
+  delete stored.rerankNeedsFile;
   delete stored.hasThumbnail;
   delete stored.clipsVersion;
   await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
@@ -202,6 +205,7 @@ function withDerived(job: Job): Job {
   return {
     ...job,
     canRerank: canRerank(job),
+    rerankNeedsFile: rerankNeedsFile(job),
     hasThumbnail: hasThumbnail(job),
     clipsVersion: clipsVersion(job),
   };
@@ -257,14 +261,22 @@ export async function findDuplicate(query: {
   return null;
 }
 
-/** A finished job can be re-ranked when its video and transcript are still on disk. */
+export function inputPath(id: string) {
+  return path.join(jobDir(id), "input.mp4");
+}
+
+/**
+ * A finished job can be re-ranked while its transcript is on disk. The video is
+ * downloaded again (YouTube) or added again (an upload whose copy was deleted).
+ */
 export function canRerank(job: Job) {
   if (ACTIVE_STATUSES.includes(job.status)) return false;
-  const dir = jobDir(job.id);
-  return (
-    fs.existsSync(path.join(dir, "input.mp4")) &&
-    fs.existsSync(path.join(dir, "transcript.json"))
-  );
+  return fs.existsSync(path.join(jobDir(job.id), "transcript.json"));
+}
+
+/** An uploaded video that is no longer in the job folder: re-rank needs the file again. */
+export function rerankNeedsFile(job: Job) {
+  return job.source === "upload" && !fs.existsSync(inputPath(job.id));
 }
 
 /**

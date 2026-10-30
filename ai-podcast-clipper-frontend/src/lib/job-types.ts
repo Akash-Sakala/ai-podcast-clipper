@@ -25,10 +25,18 @@ export type JobProgress = {
   stageStartedAt?: string;
   done?: number;
   total?: number;
-  /** Share of all clips rendered (0-1); clips render at the same time. */
+  /** Share done (0-1): of the download, or of all clips (they render at the same time). */
   fraction?: number;
   etaSeconds?: number | null;
+  /** While downloading: on Modal, or on this laptop (the fallback). */
+  where?: "cloud" | "laptop";
 };
+
+/**
+ * How the current or last run got the video to Modal: downloaded on Modal (YouTube),
+ * downloaded on the laptop and uploaded (fallback), or uploaded from the job folder.
+ */
+export type VideoTransfer = "cloud-download" | "laptop-download" | "upload";
 
 /** Estimated Modal cost of the last run (see backend costs.py). */
 export type JobCost = {
@@ -53,6 +61,7 @@ export type RunRecord = {
     Record<
       | "download"
       | "upload"
+      | "cloud_download"
       | "gpu_transcribe"
       | "gpu_select"
       | "gpu_render"
@@ -120,8 +129,13 @@ export type Job = {
   /** When the current or last run was started (createdAt for the first run). */
   queuedAt?: string;
   rerankedAt?: string;
-  /** Derived by the server: video + transcript still on disk, job not running. */
+  /** Derived by the server: transcript on disk and the video can be had, job not running. */
   canRerank?: boolean;
+  /** Derived by the server: an upload whose video was deleted; re-rank asks for the file again. */
+  rerankNeedsFile?: boolean;
+  videoTransfer?: VideoTransfer | null;
+  /** Why the laptop downloaded the video: YouTube blocked Modal, or the cloud download failed. */
+  downloadFallback?: "blocked" | "failed" | null;
   /** Derived by the server: a cover image is available at /api/media/<id>/thumbnail. */
   hasThumbnail?: boolean;
   /** Derived by the server: changes when the clip files are replaced (for caching). */

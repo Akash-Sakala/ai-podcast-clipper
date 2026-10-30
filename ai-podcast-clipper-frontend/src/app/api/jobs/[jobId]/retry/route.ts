@@ -12,8 +12,9 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Run a failed job again from the start. A video that was already downloaded
- * is reused, so a YouTube job does not download twice.
+ * Run a failed job again from the start. A failed job keeps its video in the job
+ * folder (an upload, or a YouTube video the laptop downloaded), so it is reused;
+ * otherwise a YouTube video is downloaded on Modal again.
  */
 export async function POST(
   _request: Request,
@@ -48,6 +49,8 @@ export async function POST(
     progress: null,
     mode: "full",
     queuedAt: new Date().toISOString(),
+    videoTransfer: null,
+    downloadFallback: null,
     pid: undefined,
   });
   await startRunner(jobId);

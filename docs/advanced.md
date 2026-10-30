@@ -9,7 +9,7 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 | File | Contents |
 |---|---|
 | `job.json` | Status, progress, clip details, the Gemini `ranking` report and `runs`, the history of every run (stats page) |
-| `input.mp4` | The source video |
+| `input.mp4` | An uploaded video, only until its run finishes (kept after a failed run, for **Try again**). YouTube videos download straight to Modal and never land here |
 | `thumbnail.jpg` | Cover in the video list: YouTube's own thumbnail, or a frame from an uploaded video |
 | `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
 | `moments.json` | Every candidate moment with its scores and reason |
@@ -23,6 +23,8 @@ Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.ex
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `YOUTUBE_DOWNLOAD` | `cloud` | `cloud`: YouTube videos download straight into the Modal volume, and the laptop takes over if YouTube blocks it. `laptop`: always download on the laptop and upload (read by the runner, no redeploy needed) |
+| `YTDLP_VERSION` / `DENO_VERSION` | `2026.10.21` / `2.9.8` | yt-dlp and its JavaScript runtime in the Modal download image. When YouTube downloads start failing, bump `YTDLP_VERSION` and redeploy: only the small download image is rebuilt |
 | `CLIPPER_GPU` | `A10` | GPU for transcription and for each clip's render container. A list such as `L40S,A10` is a fallback order. Needs an NVENC encoder: L4, A10 or L40S, not A100/H100/H200/B200. See [Choose a GPU](#choose-a-gpu) |
 | `RENDER_MAX_CONTAINERS` | `8` | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
 | `RENDER_CPU` | `4` | CPU cores reserved per render container (decoding and framing run on the CPU) |
@@ -55,11 +57,21 @@ python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
 python runner.py --thumbnails          # covers and clip posters for videos made before they existed
 python runner.py --backfill-stats      # run history for videos made before the stats page (once)
+python runner.py --prune-videos --dry-run   # list the videos older versions kept in finished job folders
+python runner.py --prune-videos        # delete them (failed jobs keep theirs for Try again)
 ```
+
+Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards, for example to benchmark it.
+
+## Where the video goes
+
+- **YouTube link:** `download_video` (a small CPU container on Modal) downloads it with yt-dlp straight into the `ai-podcast-clipper-jobs` volume. YouTube sometimes blocks cloud IP addresses; then the runner downloads on the laptop and uploads instead, and the job's details say "On your laptop (YouTube blocked Modal)". `YTDLP_COOKIES_FROM_BROWSER` applies to that laptop download only.
+- **MP4 upload:** the browser sends it to the job folder, and the runner uploads it to the volume.
+- **After a successful run** the runner deletes the video from the volume and from the job folder. After a failed run the volume copy is deleted too, but a video in the job folder stays, so **Try again** does not download or upload twice.
 
 ## Re-rank
 
-**Re-rank** (in the app, or `--rerank` above) reuses the saved video and transcript: no download and no transcription, only Gemini and rendering run again. The current clips stay until the new ones have downloaded. Use it after a Gemini outage left fallback clips, or after editing `prompts/viral_moments.md`.
+**Re-rank** (in the app, or `--rerank` above) reuses the saved transcript: no transcription, only Gemini and rendering run again. A YouTube video is downloaded on Modal again (about a minute). For an uploaded MP4, Re-rank asks for the same file again (or drop it on the home page and choose Re-rank); it must match the original's fingerprint. The current clips stay until the new ones have downloaded. Use it after a Gemini outage left fallback clips, or after editing `prompts/viral_moments.md`.
 
 ## Preview ranking locally
 
@@ -73,11 +85,11 @@ python rank_moments.py "..\data\jobs\<job id>" --max-clips 5   # writes moments.
 
 ## How a job runs in the cloud
 
-`process_job` is a CPU function that runs the job in three steps:
+First the video reaches the volume (see [Where the video goes](#where-the-video-goes)). Then `process_job`, a CPU function, runs the job in three steps:
 
 1. **Transcribe**: one GPU container (`Transcriber`) runs Parakeet on the whole video.
 2. **Rank**: Gemini picks the moments from the CPU function, so no GPU is billed while it ranks.
-3. **Render**: one GPU container (`Renderer`) per clip, all at the same time. Each one seeks straight to its clip in the uploaded video, finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder (libx264 if there is none), with subtitles and the audio fade.
+3. **Render**: one GPU container (`Renderer`) per clip, all at the same time. Each one seeks straight to its clip in the video on the volume, finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder (libx264 if there is none), with subtitles and the audio fade.
 
 Flash frames are removed first (`render.flash_frames`): 1-3 frames of another shot between two hard cuts, found on tiny thumbnails of every frame. Every pass (face detection, speaker scoring, encoding) sees the frame before the flash instead, so face tracks run straight through it and the clip shows a 40-120 ms freeze instead of a jump. A camera change right after a flash stays a hard cut.
 
@@ -91,7 +103,7 @@ A job's details in the app show its processing time and estimated Modal cost (`c
 
 ## Stats page
 
-The chart icon in the header opens `/stats`: Modal spend (all time and this month against the Starter plan's $30 credit), cost and end-to-end time per video (first run plus re-ranks), where a run's time goes (download and upload on the laptop, the cloud work, saving clips), and average step times by podcast length. It refreshes every few seconds while a video is processing.
+The chart icon in the header opens `/stats`: Modal spend (all time and this month against the Starter plan's $30 credit), cost and end-to-end time per video (first run plus re-ranks), where a run's time goes (download and upload on the laptop, the cloud work including a cloud download, saving clips), and average step times by podcast length. It refreshes every few seconds while a video is processing.
 
 - **Run history.** When a run ends (first run, re-rank or failure), the runner appends it to `runs` in `job.json`: mode, result, start and end time, the step timings and the cost (`run_history.py`).
 - **Older videos.** `python runner.py --backfill-stats` rebuilds `runs` once from each job's `runner.log`, which keeps every run's lines. It skips videos that already have a history (`--force` rebuilds them).
@@ -154,7 +166,8 @@ python -m pytest tests -q
 
 | Symptom | Fix |
 |---|---|
-| "YouTube asked to confirm you're not a bot" | Set `YTDLP_COOKIES_FROM_BROWSER=firefox` (or `edge`/`chrome`) in the frontend `.env`, then **Try again** |
+| "YouTube asked to confirm you're not a bot" | YouTube blocked the laptop download too. Set `YTDLP_COOKIES_FROM_BROWSER=firefox` (or `edge`/`chrome`) in the frontend `.env`, then **Try again** |
+| Every YouTube video says "On your laptop" in its details | YouTube is blocking Modal's download; `runner.log` has the reason. Bump `YTDLP_VERSION` and `modal deploy main.py`, or set `YOUTUBE_DOWNLOAD=laptop` to skip the cloud attempt. If the reason is "download_video not found", run `modal deploy main.py` |
 | "The backend Python environment wasn't found" | Create the backend `.venv` (setup step 1) or set `RUNNER_PYTHON` in the frontend `.env` |
 | App or secret `ai-podcast-clipper` not found | Run `modal deploy main.py`, or create the secret (setup step 3) |
 | Clips marked "picked from the transcript" | Gemini was busy. Click **Re-rank** later, or check the model IDs with `rank_moments.py --list-models` |

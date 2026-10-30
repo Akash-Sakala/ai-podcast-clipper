@@ -11,7 +11,7 @@ An entry:
     {"mode": "full" | "rerank", "status": "done" | "no-clips" | "failed",
      "startedAt": ISO UTC, "finishedAt": ISO UTC, "clips": 5,
      "pipeline": "parallel" | "single-gpu", "videoSeconds": 2243.0,
-     "timings": {"download", "upload", "gpu_transcribe", "gpu_select", "gpu_render",
+     "timings": {"download", "upload", "cloud_download", "gpu_transcribe", "gpu_select", "gpu_render",
                  "gpu_total", "total"}  (seconds; a step that did not run is missing),
      "cost": {"usd", "gpuSeconds", "gpu", "containers", "estimated"} | null,
      "recordedBy": "runner" | "log"}

@@ -1,9 +1,11 @@
 """
 AI Podcast Clipper - Modal backend (English).
 
-Deploy once with `modal deploy main.py`. The local runner (runner.py) uploads a
+Deploy once with `modal deploy main.py`. The local runner (runner.py) puts the
 video into the `ai-podcast-clipper-jobs` Modal Volume and calls `process_job`:
 
+    download_video (CPU)                                 YouTube videos: yt-dlp straight into the volume
+                                                         (an uploaded MP4 is sent by runner.py instead)
     process_job (CPU)    Transcriber.transcribe (GPU)    Parakeet TDT 0.6B v2, whole video
                     ->   moments.select_moments          Gemini ranks the moments (no GPU waiting)
                     ->   Renderer.render x N (GPU)       one container per clip, all at once:
@@ -15,10 +17,12 @@ transcript="uploaded"  legacy jobs from the removed Whistle engine: reuse their 
                        re-transcribe each chosen clip with Parakeet for accurate subtitles.
 
 Volume layout (per job):
-    /<job_id>/input.mp4          uploaded by runner.py
+    /<job_id>/input.mp4          downloaded by download_video, or uploaded by runner.py
     /<job_id>/transcript.json    word-level transcript (Parakeet)
     /<job_id>/moments.json       ranked clip moments chosen by Gemini (best first)
     /<job_id>/clips/clip_N.mp4   finished vertical clips with subtitles (clip_0 = best)
+
+runner.py removes /<job_id> as soon as the clips are on the laptop: no video stays in the cloud.
 """
 
 import json
@@ -41,6 +45,9 @@ PARAKEET_DIR = "/opt/parakeet-tdt-0.6b-v2"
 TRANSCRIBER_SCALEDOWN_S = 10
 RENDERER_SCALEDOWN_S = 5
 RENDER_MEMORY_MB = 4096
+DOWNLOAD_CPU = 2.0
+DOWNLOAD_MEMORY_MB = 2048
+DOWNLOAD_SCALEDOWN_S = 5
 POLL_SECONDS = 2
 
 image = (modal.Image.from_registry(
@@ -66,6 +73,14 @@ image = (modal.Image.from_registry(
     .add_local_dir("asd", "/asd", copy=True)
     .add_local_python_source("moments", "settings", "audio_utils", "parakeet_transcriber", "render", "costs")
     .add_local_dir("prompts", "/root/prompts"))
+
+# YouTube downloads run on a small CPU-only image: no GPU waits on the download, and
+# bumping YTDLP_VERSION rebuilds only this image. ffmpeg merges the video and audio
+# streams; Deno is the JavaScript runtime yt-dlp needs for YouTube.
+download_image = (modal.Image.debian_slim(python_version="3.12")
+                  .apt_install(["ffmpeg"])
+                  .pip_install(f"yt-dlp[default]=={settings.YTDLP_VERSION}", f"deno=={settings.DENO_VERSION}")
+                  .add_local_python_source("moments", "settings", "costs", "downloader"))
 
 # Heavy ML libraries only exist inside the containers, so they are imported inside
 # the functions that use them: your laptop only needs `pip install modal` to deploy.
@@ -121,6 +136,55 @@ class UsageTracker:
         self.calls += 1
         return {**self.base, "seconds": round(time.time() - started, 2),
                 "enterSeconds": round(self.enter_seconds, 2) if self.calls == 1 else 0.0}
+
+
+# --------------------------------------------------------------------------- #
+# YouTube download (CPU), straight into the jobs volume
+# --------------------------------------------------------------------------- #
+
+@app.function(image=download_image, cpu=DOWNLOAD_CPU, memory=DOWNLOAD_MEMORY_MB, timeout=1800, retries=0,
+              scaledown_window=DOWNLOAD_SCALEDOWN_S, volumes={str(JOBS_PATH): jobs_volume})
+def download_video(job_id: str, url: str) -> dict:
+    """Download a YouTube video to /<job_id>/input.mp4 in the jobs volume. Never raises:
+    {"ok": False, "error", "blocked"} tells runner.py to download on the laptop instead."""
+    import downloader
+
+    started = time.time()
+    usage = {"container": os.environ.get("MODAL_TASK_ID"), "gpu": None, "cpuOnly": True, "cpu": DOWNLOAD_CPU,
+             "memoryGiB": DOWNLOAD_MEMORY_MB / 1024, "scaledown": DOWNLOAD_SCALEDOWN_S, "enterSeconds": 0.0}
+    work_dir = pathlib.Path("/tmp") / job_id
+    last = [0.0]
+
+    def progress(fraction: float) -> None:
+        if time.time() - last[0] >= 1.5:
+            last[0] = time.time()
+            report_progress(job_id, {"stage": "downloading", "where": "cloud", "fraction": round(fraction, 3)})
+
+    def retry(attempt: int, attempts: int, exc: Exception) -> None:
+        print(f"Download attempt {attempt} failed ({exc}); retrying")
+        report_progress(job_id, {"stage": "downloading", "where": "cloud", "retry": attempt})
+
+    report_progress(job_id, {"stage": "downloading", "where": "cloud"})
+    try:
+        info = downloader.download(url, work_dir, on_progress=progress, on_retry=retry)
+        downloaded = time.time() - started
+        target = JOBS_PATH / job_id / "input.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(work_dir / "input.mp4", target)
+        jobs_volume.commit()
+        size_mb = target.stat().st_size / 1024 / 1024
+        print(f"Downloaded {url} ({size_mb:.0f} MB) in {downloaded:.0f}s, saved in {time.time() - started:.0f}s")
+        return {"ok": True, "meta": downloader.video_meta(info), "sizeMB": round(size_mb, 1),
+                "seconds": round(time.time() - started, 1),
+                "usage": {**usage, "seconds": round(time.time() - started, 2)}}
+    except Exception as exc:  # noqa: BLE001 - the laptop takes over
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"Download failed: {message}")
+        return {"ok": False, "error": message[:2000], "blocked": downloader.is_blocked(message),
+                "seconds": round(time.time() - started, 1),
+                "usage": {**usage, "seconds": round(time.time() - started, 2)}}
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -296,13 +360,15 @@ def render_in_parallel(job_id: str, clip_moments: list, words_per_clip: list) ->
 
 @app.function(timeout=3600, retries=0, secrets=[secret, settings_secret], volumes={str(JOBS_PATH): jobs_volume})
 def process_job(job_id: str, max_clips: int = DEFAULT_MAX_CLIPS, context: dict | None = None,
-                transcript: str = "parakeet") -> dict:
+                transcript: str = "parakeet", extra_usages: list | None = None) -> dict:
+    """extra_usages: containers that ran for this job before it (download_video), so the
+    job's cost includes them."""
     job_started = time.time()
     jobs_volume.reload()
     job_dir = JOBS_PATH / job_id
     if not (job_dir / "input.mp4").exists():
         raise FileNotFoundError(f"{job_dir / 'input.mp4'} not found in the jobs volume")
-    timings, stats, usages = {}, {}, []
+    timings, stats, usages = {}, {}, list(extra_usages or [])
 
     started = time.time()
     if transcript in ("uploaded", "reuse"):

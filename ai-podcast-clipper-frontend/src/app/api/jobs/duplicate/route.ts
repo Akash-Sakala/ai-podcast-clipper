@@ -28,6 +28,7 @@ export async function POST(request: Request) {
           status: job.status,
           clips: job.clips.length,
           canRerank: !!job.canRerank,
+          rerankNeedsFile: !!job.rerankNeedsFile,
           hasThumbnail: !!job.hasThumbnail,
           createdAt: job.createdAt,
         }

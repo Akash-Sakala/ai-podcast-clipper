@@ -8,6 +8,7 @@ import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import { fingerprintFile } from "~/lib/fingerprint";
 import { ACTIVE_STATUSES, type JobStatus } from "~/lib/job-types";
+import { uploadVideo } from "~/lib/upload";
 import { cn } from "~/lib/utils";
 
 type Duplicate = {
@@ -16,6 +17,8 @@ type Duplicate = {
   status: JobStatus;
   clips: number;
   canRerank: boolean;
+  /** An upload whose video was deleted: re-rank sends the dropped file again. */
+  rerankNeedsFile: boolean;
   hasThumbnail: boolean;
 };
 
@@ -41,11 +44,16 @@ async function findDuplicate(query: {
 
 function DuplicateNotice({
   duplicate,
+  file,
   onAgain,
+  onRerankWithFile,
   onClose,
 }: {
   duplicate: Duplicate;
+  /** The dropped file, when the duplicate was found by its fingerprint. */
+  file: File | null;
   onAgain: () => void;
+  onRerankWithFile: (file: File) => void;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -55,7 +63,11 @@ function DuplicateNotice({
   const failed = duplicate.status === "failed";
   const title = duplicate.title.replace(/^https?:\/\/(www\.)?/, "");
 
+  const canRerank =
+    duplicate.canRerank && (!duplicate.rerankNeedsFile || file !== null);
+
   const rerank = async () => {
+    if (duplicate.rerankNeedsFile && file) return onRerankWithFile(file);
     setReranking(true);
     try {
       const response = await fetch(`/api/jobs/${duplicate.id}/rerank`, {
@@ -118,7 +130,7 @@ function DuplicateNotice({
               ? "Open clips"
               : "Open video"}
         </Link>
-        {!active && duplicate.canRerank && (
+        {!active && canRerank && (
           <button
             type="button"
             onClick={rerank}
@@ -155,34 +167,8 @@ const YOUTUBE =
   /^(https?:\/\/)?((www|m|music)\.)?(youtube\.com|youtu\.be)\/.+/i;
 const MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
-function uploadFile(file: File, onProgress: (percent: number) => void) {
-  // XMLHttpRequest (not fetch) so large uploads can show progress.
-  return new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/jobs");
-    xhr.setRequestHeader("Content-Type", "video/mp4");
-    xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) return resolve();
-      let message = `Upload failed (${xhr.status})`;
-      try {
-        message =
-          (JSON.parse(xhr.responseText) as { error?: string }).error ?? message;
-      } catch {}
-      reject(new Error(message));
-    };
-    xhr.onerror = () =>
-      reject(new Error("The connection dropped during upload"));
-    xhr.send(file);
-  });
-}
-
 export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [upload, setUpload] = useState<{
@@ -197,18 +183,26 @@ export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
   } | null>(null);
   const busy = submitting || checking || upload !== null;
 
-  const startUpload = async (file: File) => {
+  /** Uploads a new video, or (rerankJobId) the same video again to re-rank its job. */
+  const startUpload = async (file: File, rerankJobId?: string) => {
     setUpload({ name: file.name, percent: 0 });
     try {
-      await uploadFile(file, (percent) =>
-        setUpload({ name: file.name, percent }),
+      await uploadVideo(
+        rerankJobId ? `/api/jobs/${rerankJobId}/rerank` : "/api/jobs",
+        file,
+        (percent) => setUpload({ name: file.name, percent }),
       );
-      toast.success("Video added", {
-        description: "Clips will appear here when they're ready.",
+      toast.success(rerankJobId ? "Re-ranking" : "Video added", {
+        description: rerankJobId
+          ? "Reusing the transcript. The current clips stay until the new ones are ready."
+          : "Clips will appear here when they're ready.",
       });
-      await onCreated();
+      if (rerankJobId) router.push(`/videos/${rerankJobId}`);
+      else await onCreated();
     } catch (error) {
-      toast.error("Upload failed", { description: (error as Error).message });
+      toast.error(rerankJobId ? "Couldn't re-rank" : "Upload failed", {
+        description: (error as Error).message,
+      });
     } finally {
       setUpload(null);
     }
@@ -390,7 +384,15 @@ export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
       {duplicate && (
         <DuplicateNotice
           duplicate={duplicate.job}
+          file={
+            duplicate.pending.kind === "file" ? duplicate.pending.file : null
+          }
           onAgain={addAgain}
+          onRerankWithFile={(file) => {
+            const id = duplicate.job.id;
+            setDuplicate(null);
+            void startUpload(file, id);
+          }}
           onClose={() => setDuplicate(null)}
         />
       )}

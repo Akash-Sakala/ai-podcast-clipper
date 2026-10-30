@@ -59,7 +59,19 @@ export function renderShare(job: Job): number | null {
   return (p.done ?? 0) / p.total;
 }
 
-/** Steps shown in the progress strip, in order. */
+/** Share of the download done (0-1), while downloading. */
+export function downloadShare(job: Job) {
+  const p = job.progress;
+  if (currentStage(job) !== "downloading" || typeof p?.fraction !== "number")
+    return null;
+  return Math.min(1, Math.max(0, p.fraction));
+}
+
+/**
+ * Steps shown in the progress strip, in order. A YouTube video downloads on Modal
+ * (no upload step) unless the laptop takes over; an upload, or a video still in the
+ * job folder, is uploaded.
+ */
 export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
   const steps: { stage: ProgressStage; label: string }[] = [
     { stage: "downloading", label: "Download" },
@@ -69,9 +81,12 @@ export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
     { stage: "rendering", label: "Render" },
     { stage: "saving", label: "Save" },
   ];
+  const transfer =
+    job.videoTransfer ??
+    (job.source === "youtube" ? "cloud-download" : "upload");
   return steps.filter((step) => {
-    if (step.stage === "downloading")
-      return job.source === "youtube" && job.mode !== "rerank";
+    if (step.stage === "downloading") return transfer !== "upload";
+    if (step.stage === "uploading") return transfer !== "cloud-download";
     if (step.stage === "transcribing") return job.mode !== "rerank";
     return true;
   });
@@ -106,8 +121,19 @@ export function stageSentence(job: Job) {
   switch (stage) {
     case "queued":
       return "Starting";
-    case "downloading":
-      return "Downloading from YouTube";
+    case "downloading": {
+      const where =
+        p?.where === "laptop"
+          ? job.downloadFallback === "blocked"
+            ? "YouTube blocked Modal, downloading on your laptop"
+            : job.downloadFallback
+              ? "Downloading on your laptop instead"
+              : "Downloading from YouTube"
+          : "Downloading from YouTube to Modal";
+      return typeof p?.fraction === "number"
+        ? `${where}, ${Math.round(p.fraction * 100)}%`
+        : where;
+    }
     case "uploading":
       return "Uploading to the GPU";
     case "transcribing":
