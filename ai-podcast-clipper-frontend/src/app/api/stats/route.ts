@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { listJobs } from "~/lib/jobs";
-import { computeStats } from "~/lib/stats";
+import { loadStats } from "~/lib/stats-server";
 
 export const dynamic = "force-dynamic";
 
-/** Cost and time stats across all videos. The stats page polls this. */
-export async function GET() {
-  return NextResponse.json(computeStats(await listJobs()));
+/** Stats for ?period=month (default) or ?period=all. The stats page polls this. */
+export async function GET(request: Request) {
+  const period =
+    new URL(request.url).searchParams.get("period") === "all" ? "all" : "month";
+  return NextResponse.json(await loadStats(period));
 }

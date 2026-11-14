@@ -340,7 +340,13 @@ def make_job(tmp_path, **fields):
 def test_fetch_replay_stores_record_and_title(tmp_path, monkeypatch):
     info = {"id": "abcdefghijk", "title": "A great talk", "channel": "Chan", "duration": DURATION,
             "heatmap": [{"start_time": s, "end_time": e, "value": v} for s, e, v in heatmap_with({50: 0.9})]}
-    monkeypatch.setattr(replay, "fetch_youtube", lambda url, browser: info)
+    seen = {}
+
+    def fetch(url, browser, **kwargs):
+        seen.update(kwargs)
+        return info
+
+    monkeypatch.setattr(replay, "fetch_youtube", fetch)
     monkeypatch.setattr(replay, "fetch_sponsorblock", lambda vid: [])
     monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
     monkeypatch.setattr(runner.settings, "SPONSORBLOCK", True)
@@ -349,6 +355,7 @@ def test_fetch_replay_stores_record_and_title(tmp_path, monkeypatch):
     runner.fetch_replay(job, timings)
 
     saved = json.loads((job.dir / "job.json").read_text())
+    assert seen == {"cookies_file": None, "ipv4": runner.settings.YOUTUBE_IPV4}
     assert saved["title"] == "A great talk" and saved["replay"]["available"]
     assert saved["replay"]["sponsor"] == {"segments": [], "highlight": None} and "replay" in timings
     context = runner.gemini_context(job)
@@ -416,3 +423,26 @@ def test_backfill_replay_reports_hits_and_keeps_updated_at(tmp_path):
 def test_prompt_explains_hotspots(prompt):
     text = (moments.PROMPTS_DIR / prompt).read_text(encoding="utf-8")
     assert "Replay hotspots" in text and "`hotspot`" in text and "do not raise a\nscore" in text
+
+
+def test_graph_from_the_download_when_the_lookup_was_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
+    refused = {"available": False, "heatmap": [], "chapters": [], "peaks": [], "errors": ["YouTube: not a bot"],
+               "sponsor": {"segments": [], "highlight": None}}
+    job = runner.Job(make_job(tmp_path, replay=refused))
+    info = {"duration": DURATION, "view_count": 5000,
+            "heatmap": [{"start_time": s, "end_time": e, "value": v} for s, e, v in heatmap_with({50: 0.9})]}
+    runner.graph_from_download(job, {"duration": DURATION})       # no graph there either: unchanged
+    assert job.data["replay"] is refused or job.data["replay"] == refused
+    runner.graph_from_download(job, info)
+    saved = json.loads((job.dir / "job.json").read_text())["replay"]
+    assert saved["available"] and saved["peaks"][0]["center"] == 1515.0 and saved["errors"] == []
+    assert saved["sponsor"] == refused["sponsor"]
+
+
+def test_graph_from_the_download_leaves_a_good_lookup_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
+    good = {"available": True, "heatmap": [[0, 1, 0.5]], "peaks": [], "errors": []}
+    job = runner.Job(make_job(tmp_path, replay=good))
+    runner.graph_from_download(job, {"heatmap": [{"start_time": 0, "end_time": 1, "value": 1}] * 20})
+    assert job.data["replay"] == good

@@ -50,6 +50,21 @@ export function money(usd: number) {
   return usd < 0.01 ? "Under $0.01" : `$${usd.toFixed(2)}`;
 }
 
+/** An amount kept in both currencies: INR at the rate of the day it was spent. */
+export type Money = { usd: number; inr: number | null };
+
+/** "$0.11" or "₹10.34"; "<$0.01" / "<₹0.01" for tiny amounts. Falls back to dollars
+ * when no rupee rate is known. */
+export function formatMoney(value: Money, currency: "usd" | "inr") {
+  if (currency === "inr" && value.inr !== null) {
+    const inr = value.inr;
+    if (inr > 0 && inr < 0.01) return "<₹0.01";
+    return `₹${inr.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  if (value.usd > 0 && value.usd < 0.005) return "<$0.01";
+  return `$${value.usd.toFixed(2)}`;
+}
+
 /** Share of the rendering step that is done (0-1), or null when unknown. */
 export function renderShare(job: Job): number | null {
   const p = job.progress;
@@ -59,18 +74,21 @@ export function renderShare(job: Job): number | null {
   return (p.done ?? 0) / p.total;
 }
 
-/** Share of the download done (0-1), while downloading. */
-export function downloadShare(job: Job) {
+/** Share of the download or the upload done (0-1), while it runs. */
+export function transferShare(job: Job) {
   const p = job.progress;
-  if (currentStage(job) !== "downloading" || typeof p?.fraction !== "number")
+  const stage = currentStage(job);
+  if (
+    (stage !== "downloading" && stage !== "uploading") ||
+    typeof p?.fraction !== "number"
+  )
     return null;
   return Math.min(1, Math.max(0, p.fraction));
 }
 
 /**
- * Steps shown in the progress strip, in order. A YouTube video downloads on Modal
- * (no upload step) unless the laptop takes over; an upload, or a video still in the
- * job folder, is uploaded.
+ * Steps shown in the progress strip, in order. A YouTube video is downloaded on the
+ * laptop, then uploaded; an uploaded MP4 is only uploaded.
  */
 export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
   const steps: { stage: ProgressStage; label: string }[] = [
@@ -83,10 +101,9 @@ export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
   ];
   const transfer =
     job.videoTransfer ??
-    (job.source === "youtube" ? "cloud-download" : "upload");
+    (job.source === "youtube" ? "laptop-download" : "upload");
   return steps.filter((step) => {
     if (step.stage === "downloading") return transfer !== "upload";
-    if (step.stage === "uploading") return transfer !== "cloud-download";
     if (step.stage === "transcribing") return job.mode !== "rerank";
     return true;
   });
@@ -121,21 +138,19 @@ export function stageSentence(job: Job) {
   switch (stage) {
     case "queued":
       return "Starting";
-    case "downloading": {
-      const where =
-        p?.where === "laptop"
-          ? job.downloadFallback === "blocked"
-            ? "YouTube blocked Modal, downloading on your laptop"
-            : job.downloadFallback
-              ? "Downloading on your laptop instead"
-              : "Downloading from YouTube"
-          : "Downloading from YouTube to Modal";
+    case "downloading":
       return typeof p?.fraction === "number"
-        ? `${where}, ${Math.round(p.fraction * 100)}%`
-        : where;
+        ? `Downloading from YouTube, ${Math.round(p.fraction * 100)}%`
+        : "Downloading from YouTube";
+    case "uploading": {
+      const done =
+        typeof p?.fraction === "number"
+          ? `Uploading to Modal, ${Math.round(p.fraction * 100)}%`
+          : "Uploading to Modal";
+      return p?.stalled
+        ? `${done}: no data moving, retrying the stuck parts`
+        : done;
     }
-    case "uploading":
-      return "Uploading to the GPU";
     case "transcribing":
       return "Transcribing";
     case "ranking":
@@ -161,7 +176,7 @@ export function stageSentence(job: Job) {
 export function failureSentence(job: Job) {
   const error = (job.error ?? "").toLowerCase();
   if (error.includes("sign in") || error.includes("bot"))
-    return "YouTube asked to confirm you're not a bot. Set YTDLP_COOKIES_FROM_BROWSER in .env and try again.";
+    return "YouTube asked to confirm you're not a bot. Set YTDLP_COOKIES_FILE (or YTDLP_COOKIES_FROM_BROWSER=firefox) in .env and try again.";
   if (error.includes("python not found"))
     return "The backend Python environment wasn't found. Create the backend .venv or set RUNNER_PYTHON in .env.";
   if (error.includes("stopped unexpectedly"))

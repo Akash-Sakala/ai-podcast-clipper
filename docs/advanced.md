@@ -9,7 +9,7 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 | File | Contents |
 |---|---|
 | `job.json` | Status, progress, clip details, the Gemini `ranking` report and `runs`, the history of every run (stats page) |
-| `input.mp4` | An uploaded video, only until its run finishes (kept after a failed run, for **Try again**). YouTube videos download straight to Modal and never land here |
+| `input.mp4` | An uploaded video, only until its run finishes (kept after a failed run, for **Try again**). YouTube videos download to a temp folder instead (see [Where the video goes](#where-the-video-goes)) |
 | `thumbnail.jpg` | Cover in the video list: YouTube's own thumbnail, or a frame from an uploaded video |
 | `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
 | `moments.json` | Every candidate moment with its scores and reason |
@@ -17,14 +17,19 @@ Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you 
 | `clips/clip_0.jpg` … | Poster still for each clip, shown before the clip loads |
 | `runner.log` | Everything the runner printed; check this first when a job fails |
 
+The stats page has its own file, `data/stats/runs.jsonl`: one line per run, kept when a video's job folder is deleted (see [Stats page](#stats-page)).
+
+**Delete a video:** stop `npm run dev`, delete its folder in `data/jobs`, start the app again. Its cost and times stay on the stats page.
+
 ## Settings
 
 Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.example`, git-ignored). Values set in the shell override the file. They are read by `modal deploy main.py`, so **redeploy after changing them**.
 
+The app's **Settings page** (gear icon) saves `data/settings.json`: currency, clips per video, Most replayed, audience weight and SponsorBlock. The runner reads it before every run, and its values win over `MOST_REPLAYED`, `SPONSORBLOCK` and `REPLAY_WEIGHT` below. No redeploy is needed for any of them.
+
 | Setting | Default | Meaning |
 |---|---|---|
-| `YOUTUBE_DOWNLOAD` | `cloud` | `cloud`: YouTube videos download straight into the Modal volume, and the laptop takes over if YouTube blocks it. `laptop`: always download on the laptop and upload (read by the runner, no redeploy needed) |
-| `YTDLP_VERSION` / `DENO_VERSION` | `2026.10.21` / `2.9.8` | yt-dlp and its JavaScript runtime in the Modal download image. When YouTube downloads start failing, bump `YTDLP_VERSION` and redeploy: only the small download image is rebuilt |
+| `YOUTUBE_IPV4` | `on` | Download YouTube videos over IPv4, which avoids repeated timeouts to one YouTube server on a broken IPv6 route. `off` lets the system choose (runner, no redeploy) |
 | `MOST_REPLAYED` | `on` | Use YouTube's Most replayed graph: replay hotspots become clip candidates and each clip gets an audience score. Read by the runner, no redeploy needed. See [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock) |
 | `SPONSORBLOCK` | `on` | Keep SponsorBlock-marked sponsor reads, self-promotion, subscribe reminders, intros, outros and previews out of clips (runner, no redeploy) |
 | `REPLAY_WEIGHT` | `0.4` | Share of the final score from the audience, 0-1. `0.4` = 60% Gemini, 40% viewers; `0` = Gemini only (runner, no redeploy) |
@@ -42,7 +47,7 @@ Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.ex
 | `GEMINI_TEMPERATURE` | empty | Empty = model default (recommended for Gemini 3) |
 | `GEMINI_TIMEOUT_SECONDS` / `RANKING_TIME_LIMIT_SECONDS` | `120` / `240` | Per-request timeout and the total ranking budget before the transcript fallback |
 
-Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional): `DATA_DIR`, `RUNNER_PYTHON`, `YTDLP_COOKIES_FROM_BROWSER` (`firefox`, `edge` or `chrome`).
+Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional): `DATA_DIR`, `RUNNER_PYTHON`, and YouTube cookies (see [YouTube cookies](#youtube-cookies)): `YTDLP_COOKIES_FILE` or `YTDLP_COOKIES_FROM_BROWSER`.
 
 To change the Modal secret (for example to set `GEMINI_MODEL`), re-create it with `--force`:
 
@@ -59,8 +64,9 @@ python runner.py --video "C:\path\to\podcast.mp4"
 python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
 python runner.py --thumbnails          # covers and clip posters for videos made before they existed
-python runner.py --backfill-stats      # run history for videos made before the stats page (once)
 python runner.py --backfill-replay     # Most replayed graph + SponsorBlock for older YouTube videos (once; --force re-reads)
+python runner.py --modal-bill          # read this month's Modal bill into data/stats (the stats page also does this)
+python runner.py --check-rates         # Modal's live prices as the cost estimate reads them ("source": "modal" or "built-in")
 python runner.py --prune-videos --dry-run   # list the videos older versions kept in finished job folders
 python runner.py --prune-videos        # delete them (failed jobs keep theirs for Try again)
 ```
@@ -69,7 +75,9 @@ Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards, fo
 
 ## Where the video goes
 
-- **YouTube link:** `download_video` (a small CPU container on Modal) downloads it with yt-dlp straight into the `ai-podcast-clipper-jobs` volume. YouTube sometimes blocks cloud IP addresses; then the runner downloads on the laptop and uploads instead, and the job's details say "On your laptop (YouTube blocked Modal)". `YTDLP_COOKIES_FROM_BROWSER` applies to that laptop download only.
+- **YouTube link:** the runner downloads it with yt-dlp (H.264 up to 1080p) into `%TEMP%\ai-podcast-clipper\<job id>`, outside OneDrive so sync can't lock the file, uploads it to the `ai-podcast-clipper-jobs` volume and deletes the temp folder. A dropped connection is retried with a growing pause and resumes the partial file; if the run still fails, the partial file stays, so **Try again** resumes it. Temp folders left for over two days are cleared at the next run.
+- **The upload** goes to Modal in 8 MiB pieces, 4 at a time (Modal's default of 128 at once makes every piece crawl on a home connection). A piece that takes over 10 minutes, or fails, is retried, and a retry only sends the pieces Modal doesn't have yet. The progress strip shows the percentage and the time left, and "no data moving" after two minutes without progress; `runner.log` gets a line every 10% with the average speed, the stalls, and the total time.
+- **Waiting for the GPU:** if the connection to Modal drops while a job runs there, the runner keeps asking for the result for up to 15 minutes (`runner.log`: "Lost the connection to Modal"), instead of failing the run.
 - **MP4 upload:** the browser sends it to the job folder, and the runner uploads it to the volume.
 - **After a successful run** the runner deletes the video from the volume and from the job folder. After a failed run the volume copy is deleted too, but a video in the job folder stays, so **Try again** does not download or upload twice.
 
@@ -77,7 +85,7 @@ Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards, fo
 
 Before every run of a YouTube video (first run and re-rank), the runner spends a few seconds on the laptop:
 
-- **Most replayed graph:** a metadata-only yt-dlp call (no download, `YTDLP_COOKIES_FROM_BROWSER` if set) returns YouTube's graph as 100 equal segments with a replay intensity from 0 to 1. Only videos with enough views have one, usually tens of thousands. It is read on the laptop because YouTube often strips it from pages it sends to cloud IPs.
+- **Most replayed graph:** a metadata-only yt-dlp call (no download, with your YouTube cookies if set) returns YouTube's graph as 100 equal segments with a replay intensity from 0 to 1. Only videos with enough views have one, usually tens of thousands. It is read on the laptop because YouTube often strips it from pages it sends to cloud IPs. If YouTube refuses that call ("confirm you're not a bot") but the download goes through, the graph is taken from the download instead (`runner.log`: "read from the download").
 - **SponsorBlock:** the hashed API (only the first 4 characters of the video id's SHA-256 leave the laptop) returns the parts viewers marked: sponsor reads, self-promotion, subscribe reminders, intros, outros, previews and a highlight point.
 
 Both go into `job.json` (`replay`). Hotspots (`replay.find_peaks`) are the graph's peaks after three corrections: the first 45 s and last 30 s never count (everyone starts at the beginning), a bump only in the segment where a chapter starts is navigation rather than interest, and sponsor reads are flattened. A peak must stand at least 0.12 above the video's median, and peaks closer than 90 s merge.
@@ -122,12 +130,16 @@ A job's details in the app show its processing time and estimated Modal cost (`c
 
 ## Stats page
 
-The chart icon in the header opens `/stats`: Modal spend (all time and this month against the Starter plan's $30 credit), cost and end-to-end time per video (first run plus re-ranks), where a run's time goes (download and upload on the laptop, the cloud work including a cloud download, saving clips), and average step times by podcast length. It refreshes every few seconds while a video is processing.
+The chart icon in the header opens `/stats`, for this month or all time: Modal's bill for the month against the Starter plan's $30 credit, the average new video and re-rank (cost, time, cost per podcast hour), the average run by stage (time and cost), every run with its result and stage tooltip, and the Most replayed / SponsorBlock sentences. A time-per-video chart appears after 10 new runs. It refreshes every few seconds while a video is processing.
 
-- **Run history.** When a run ends (first run, re-rank or failure), the runner appends it to `runs` in `job.json`: mode, result, start and end time, the step timings and the cost (`run_history.py`).
-- **Older videos.** `python runner.py --backfill-stats` rebuilds `runs` once from each job's `runner.log`, which keeps every run's lines. It skips videos that already have a history (`--force` rebuilds them).
-- **Estimated costs.** Runs from before the parallel renderer ran everything in one GPU container and logged no cost. Their cost is estimated from the logged GPU time at the same prices and marked "est.". The first version (WhisperX, before Parakeet) ran on an L40S, later ones on an A10. Failed runs that stopped before reporting a cost count as $0.
-- **Averages.** "Current pipeline" uses only runs where every clip rendered on its own GPU; "All runs" includes the older ones. End to end counts first runs that made clips; Find moments and Render include re-ranks.
+- **Modal's bill** comes from `modal billing summary` (works on the Starter plan). The runner saves it in `data/stats/modal-bill.json` after every run, and the page asks for a fresh one when it is older than 15 minutes. Modal's billing months are UTC calendar months.
+- **Run costs** are estimates: each container's running time (plus start-up and the idle time before Modal stops it) at Modal's live rates from `modal billing rates`, saved once a day in `data/stats/rates.json`. If Modal's rate names change and can't be read, the built-in prices in `costs.py` are used (`--check-rates` shows which). The Runs card shows how this month's runs compare with what Modal charged for the app.
+- **Stages:** Download (on the laptop: the download, the upload to Modal and the Most replayed lookup; no Modal cost), Transcribe, Rank (Gemini; its cost is the job's own CPU container), Render (time = the slowest clip, cost = all clip GPUs), Save (laptop, no cost) and Overhead (total minus the stages, mostly containers starting).
+- **Rupees:** with Settings > Currency on rupees, each run is converted at the USD to INR rate saved when it finished (`fx.py`, `data/stats/fx.json`: Frankfurter, then ExchangeRate-API's open endpoint; no API key). The month's bill uses today's rate.
+
+- **Run ledger.** When a run ends (first run, re-rank or failure), the runner appends one line to `data/stats/runs.jsonl` (`run_history.py`): the job's id, title and source, the mode, result, start and end time, step timings, cost and Parakeet's speed. The stats page reads only this file, so **deleting a video keeps its runs in the stats**; such videos are listed as "deleted from the app", without a link. The same run also goes into the job's own `job.json` `runs`.
+- **Starting the stats over:** delete `data/stats/runs.jsonl` (or the whole `data/stats` folder). Deleting job folders alone does not reset the stats.
+- **Failed runs** show where they stopped. One that ended before reporting a cost shows "—" and counts as $0. Averages count only runs that made clips, and say how many runs they are based on ("early estimate" below 3).
 
 ## Choose a GPU
 
@@ -181,15 +193,24 @@ pip install pytest
 python -m pytest tests -q
 ```
 
+## YouTube cookies
+
+When YouTube asks to "confirm you're not a bot", yt-dlp can use your YouTube login. Set one of these in the frontend `.env` and restart `npm run dev` (the runner reads them; it checks them once per run and carries on without cookies if they can't be read, with the reason in `runner.log`):
+
+- **`YTDLP_COOKIES_FILE`**: a `cookies.txt` file. This is the way to use **Chrome**: Chrome (and Edge) on Windows encrypt their cookies so that other programs can't read them, so `YTDLP_COOKIES_FROM_BROWSER=chrome` fails ("Failed to decrypt with DPAPI"). Install the "Get cookies.txt LOCALLY" extension, open youtube.com while signed in, export the cookies for youtube.com, and save the file outside OneDrive and the repo, e.g. `C:\Users\<you>\podcast-clipper-cookies\youtube.txt`. The file signs in as you: keep it private. YouTube rotates cookies, so export again if the bot check comes back.
+- **`YTDLP_COOKIES_FROM_BROWSER=firefox`**: Firefox's cookies can be read directly, while you are signed in to YouTube in Firefox.
+
+The file wins when both are set.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| "YouTube asked to confirm you're not a bot" | YouTube blocked the laptop download too. Set `YTDLP_COOKIES_FROM_BROWSER=firefox` (or `edge`/`chrome`) in the frontend `.env`, then **Try again** |
-| Every YouTube video says "On your laptop" in its details | YouTube is blocking Modal's download; `runner.log` has the reason. Bump `YTDLP_VERSION` and `modal deploy main.py`, or set `YOUTUBE_DOWNLOAD=laptop` to skip the cloud attempt. If the reason is "download_video not found", run `modal deploy main.py` |
+| "YouTube asked to confirm you're not a bot" | Set up [YouTube cookies](#youtube-cookies), restart `npm run dev`, then **Try again** |
+| A YouTube download keeps timing out ("Read timed out", "connect timeout") | Your connection to YouTube's video servers is dropping. **Try again** resumes the download where it stopped. Check that `YOUTUBE_IPV4` is `on`, and update yt-dlp with `pip install -U "yt-dlp[default]"` |
 | "The backend Python environment wasn't found" | Create the backend `.venv` (setup step 1) or set `RUNNER_PYTHON` in the frontend `.env` |
 | App or secret `ai-podcast-clipper` not found | Run `modal deploy main.py`, or create the secret (setup step 3) |
-| No Most replayed graph on a popular video | `runner.log` has the reason. "Sign in to confirm you're not a bot": set `YTDLP_COOKIES_FROM_BROWSER`, then **Re-rank**. Otherwise YouTube shows no graph for that video yet |
+| No Most replayed graph on a popular video | `runner.log` has the reason. "Sign in to confirm you're not a bot": set up [YouTube cookies](#youtube-cookies), then **Re-rank**. Otherwise YouTube shows no graph for that video yet |
 | "Gemini was busy, so these clips were picked without it" | They came from the transcript or were cut around a replay peak. Click **Re-rank** later, or check the model IDs with `rank_moments.py --list-models` |
 | HTTP 429 from Hugging Face during the first deploy | Add `HF_TOKEN` to the Modal secret and deploy again |
 | Modal auth or token errors | Run `modal setup` again in the backend venv |

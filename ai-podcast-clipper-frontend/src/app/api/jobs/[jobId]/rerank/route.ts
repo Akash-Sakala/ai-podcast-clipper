@@ -80,7 +80,6 @@ export async function POST(
     mode: "rerank",
     queuedAt: new Date().toISOString(),
     videoTransfer: null,
-    downloadFallback: null,
     pid: undefined, // the old runner's pid is dead; the new runner records its own
   });
   await startRunner(jobId, ["--rerank"]);

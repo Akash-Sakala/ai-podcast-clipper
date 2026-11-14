@@ -101,6 +101,34 @@ Downloading a video on the laptop and uploading it to Modal took about 4 minutes
 - `.env`: `MOST_REPLAYED`, `SPONSORBLOCK` (on/off) and `REPLAY_WEIGHT`, all read by the runner (no redeploy).
 - `render.py` passes the subtitle file to FFmpeg's `ass` filter by name, with FFmpeg started in its folder: a full Windows path (`C:\...`) broke the filter's option parsing, so the CPU render tests failed on Windows. Clips on Modal are unchanged.
 
+**Stats ledger**
+- Every run (first run, re-rank, failure) is appended as one line to `data/stats/runs.jsonl` (`run_history.py`), with the job's id, title and source. The stats page reads this ledger instead of the job folders, so deleting a video keeps its cost and times; it is listed as "deleted from the app".
+- Removed the support for runs from before the parallel renderer: `--backfill-stats` and its `runner.log` parser, the "est." costs, the single-GPU pipeline labels and the "Current pipeline / All runs" switch on the stats page. The stats start from the ledger's first run.
+- The stats page was rebuilt around what is worth checking (decided with an LLM-council review):
+  - a This month / All time switch for the whole page;
+  - three tiles: Modal's own bill for the month (`modal billing summary`, read by `runner.py --modal-bill` and after every run), the average new video (cost, time, cost per podcast hour) and the average re-rank, each with how many runs it is based on;
+  - "By stage": the average new run and re-rank as stacked bars, time and cost side by side. Render time is the slowest clip (wall clock), its cost is all GPUs; Save is laptop time; Overhead is what the stages don't explain (container starts);
+  - "Runs": a table of every run (newest first, 20 at a time) with its result ("Failed at render"), a time bar whose tooltip lists each stage's time and cost, and how this month's runs compare with Modal's charge for the app;
+  - "Clip sources": two sentences on Most replayed and SponsorBlock;
+  - a time-per-new-video dot chart once there are 10 new runs.
+  - Removed: "Where the time goes", averages by podcast length, the insights card, earlier months, "est." marks. Render is magenta; amber stays the UI accent.
+- Costs: each container reports its stage, and the runner prices the job with Modal's live rates (`modal billing rates`, read once a day into `data/stats/rates.json`; the built-in table in `costs.py` is the fallback). The ledger also records each run's stage costs, the failing stage, the clip-source counts, the clips-per-video setting and a short hash of the ranking prompts.
+- Settings page (gear icon, `data/settings.json`, read by the runner before each run and overriding `.env`): currency (dollars or rupees), clips per video (3-8), Most replayed, audience weight (0-60%) and SponsorBlock.
+- Rupees: the runner saves the day's USD to INR rate with every run (`fx.py`: Frankfurter, then ExchangeRate-API's open endpoint, then the last saved rate; free, no API key), so a run's rupee cost never changes. The monthly Modal bill uses today's rate. The video page's Details popover follows the currency too.
+
+**YouTube downloads back on the laptop**
+
+YouTube now blocks Modal's download ("Sign in to confirm you're not a bot"), so the cloud download only added a failed attempt to every run.
+
+- Removed `download_video` and its CPU image from `main.py`, `YOUTUBE_DOWNLOAD`, `YTDLP_VERSION` and `DENO_VERSION`. `process_job` no longer takes `extra_usages`. The job details no longer say where the video was downloaded, and the stats page counts Download as laptop time with no Modal cost.
+- The runner downloads into `%TEMP%\ai-podcast-clipper\<job id>` (outside OneDrive, which locked a partial file and crashed a run), uploads, and deletes the folder. `--keep-video` moves the video into the job folder instead.
+- Flaky connections: a failed attempt keeps its partial file and the next attempt, or **Try again**, resumes it; yt-dlp retries pieces with a growing pause (2 s up to 30 s) and a 30 s socket timeout; IPv4 by default (`YOUTUBE_IPV4`). Cleaning up a partial file can no longer fail a run. Temp folders older than two days are cleared at the next run.
+- `benchmark_gpu.py` downloads a YouTube job's video on the laptop and uploads it.
+- The upload shows a percentage and the time left (Modal's upload progress callback, which `batch_upload` doesn't expose, so `upload_with_progress` builds the upload context itself; without it, the upload runs as before). Retried pieces are subtracted (the first version counted them twice and sat at 99%). `runner.log` gets the average speed every 10%, stalls (no data for 2 min, also shown in the strip) and the total time.
+- Uploads on a slow or flaky connection: 4 pieces in flight instead of Modal's 128, and a 10-minute limit per piece (Modal sets none, so a dead connection could hang a piece forever); stuck pieces are retried by Modal, and a new run only sends the pieces Modal doesn't have.
+- Waiting for the GPU rides out connection drops for up to 15 minutes instead of failing the run with "Deadline exceeded" while the job carries on at Modal.
+- YouTube cookies: `YTDLP_COOKIES_FILE` (a cookies.txt, the way to use Chrome, whose cookies other programs can't read on Windows) or `YTDLP_COOKIES_FROM_BROWSER=firefox`. The runner checks them once per run and carries on without unreadable ones instead of failing the download. The Most replayed lookup uses them and IPv4 too, and when YouTube still refuses it, the graph comes from the download's own page data.
+
 **Repository cleanup**
 - `LICENSE` (was `LICENSE.MD`): template brackets fixed; Andreas Trolle's copyright kept, with a line for this fork's changes.
 - `docs/architecture.excalidraw` replaces the upstream SaaS diagram (Stripe checkout, EC2 vs Modal), which described removed features.

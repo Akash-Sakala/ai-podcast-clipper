@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import NavHeader from "~/components/nav-header";
 import { Toaster } from "~/components/ui/sonner";
 import { VideoPage } from "~/components/video-page";
+import { readSettings } from "~/lib/app-settings";
+import { todayUsdInr } from "~/lib/fx";
 import { getJob } from "~/lib/jobs";
 
 export const dynamic = "force-dynamic";
@@ -17,12 +19,18 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 export default async function VideoRoute({ params }: Params) {
   const job = await getJob((await params).jobId);
   if (!job) notFound();
+  const settings = await readSettings();
+  const rate = settings.currency === "inr" ? await todayUsdInr() : null;
 
   return (
     <div className="flex min-h-screen flex-col">
       <NavHeader />
       <main className="flex-1">
-        <VideoPage initialJob={job} />
+        <VideoPage
+          initialJob={job}
+          currency={settings.currency}
+          rate={rate?.rate ?? null}
+        />
       </main>
       <Toaster />
     </div>

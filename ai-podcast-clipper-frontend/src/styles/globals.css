@@ -33,11 +33,14 @@
   --tally-ink: #2e1f00;
   --tally-soft: #fdf0d6;
   --radius: 0.625rem;
-  /* Stats charts: slots of the validated data-viz palette (light / dark steps). */
-  --viz-download: #2a78d6;
-  --viz-upload: #1baf7a;
-  --viz-cloud: #eda100;
-  --viz-saving: #6250d6;
+  /* Stats charts: pipeline stages, slots of the validated data-viz palette (light /
+     dark steps). Amber stays the UI accent, so Render is magenta. */
+  --stage-download: #2a78d6;
+  --stage-transcribe: #1baf7a;
+  --stage-rank: #6250d6;
+  --stage-render: #e87ba4;
+  --stage-save: #b5bbc6;
+  --stage-overhead: #d5d9e0;
 }
 
 .dark {
@@ -63,10 +66,12 @@
   --tally: #f5a524;
   --tally-ink: #2e1f00;
   --tally-soft: #3a2c12;
-  --viz-download: #3987e5;
-  --viz-upload: #199e70;
-  --viz-cloud: #c98500;
-  --viz-saving: #9085e9;
+  --stage-download: #3987e5;
+  --stage-transcribe: #199e70;
+  --stage-rank: #9085e9;
+  --stage-render: #d55181;
+  --stage-save: #4a505b;
+  --stage-overhead: #353a43;
 }
 
 @theme inline {
@@ -92,10 +97,12 @@
   --color-tally: var(--tally);
   --color-tally-ink: var(--tally-ink);
   --color-tally-soft: var(--tally-soft);
-  --color-viz-download: var(--viz-download);
-  --color-viz-upload: var(--viz-upload);
-  --color-viz-cloud: var(--viz-cloud);
-  --color-viz-saving: var(--viz-saving);
+  --color-stage-download: var(--stage-download);
+  --color-stage-transcribe: var(--stage-transcribe);
+  --color-stage-rank: var(--stage-rank);
+  --color-stage-render: var(--stage-render);
+  --color-stage-save: var(--stage-save);
+  --color-stage-overhead: var(--stage-overhead);
 
   --font-sans:
     var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
@@ -153,4 +160,14 @@
   * {
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Stats: the Overhead stage (container starts), hatched so it never reads as a stage colour. */
+.stage-hatch {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--stage-overhead) 0 4px,
+    transparent 4px 7px
+  );
+  box-shadow: inset 0 0 0 1px var(--stage-overhead);
 }

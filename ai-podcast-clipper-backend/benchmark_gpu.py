@@ -171,7 +171,7 @@ def parity_run(job_id: str, moment: dict, words: list, max_stills: int = 12) -> 
 
 def upload_job(job_dir: pathlib.Path, bench_id: str) -> tuple[list, list]:
     """Put the job's video into the volume as /<bench_id>/input.mp4: uploaded from the job
-    folder if it is still there, else downloaded on Modal again (YouTube jobs)."""
+    folder if it is still there, else downloaded on this laptop again (YouTube jobs)."""
     for name in ("moments.json", "transcript.json"):
         if not (job_dir / name).exists():
             raise SystemExit(f"{job_dir / name} is missing: use a finished job folder")
@@ -183,14 +183,19 @@ def upload_job(job_dir: pathlib.Path, bench_id: str) -> tuple[list, list]:
         with main.jobs_volume.batch_upload(force=True) as batch:
             batch.put_file(str(video), f"/{bench_id}/input.mp4")
     elif job.get("youtubeUrl"):
-        print("Downloading the video on Modal (the deployed download_video) ...")
-        result = modal.Function.from_name(main.APP_NAME, "download_video").remote(bench_id, job["youtubeUrl"])
-        try:
-            main.progress_dict.pop(bench_id)
-        except Exception:  # noqa: BLE001 - the download's progress entry, best effort
-            pass
-        if not result.get("ok"):
-            raise SystemExit(f"Modal could not download the video: {result.get('error')}")
+        import tempfile
+
+        import downloader
+        import imageio_ffmpeg
+
+        folder = pathlib.Path(tempfile.gettempdir()) / "ai-podcast-clipper" / bench_id
+        print("Downloading the video from YouTube ...")
+        downloader.download(job["youtubeUrl"], folder, ffmpeg_location=imageio_ffmpeg.get_ffmpeg_exe(),
+                            ipv4=settings.YOUTUBE_IPV4)
+        print("Uploading it ...")
+        with main.jobs_volume.batch_upload(force=True) as batch:
+            batch.put_file(str(folder / "input.mp4"), f"/{bench_id}/input.mp4")
+        shutil.rmtree(folder, ignore_errors=True)
     else:
         raise SystemExit(f"{video} is missing: copy the uploaded MP4 there as input.mp4, "
                          "or run the job with runner.py --keep-video")

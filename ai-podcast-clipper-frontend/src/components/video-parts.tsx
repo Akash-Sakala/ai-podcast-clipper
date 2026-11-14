@@ -4,9 +4,9 @@ import { AlertCircle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   currentStage,
-  downloadShare,
+  transferShare,
   duration,
-  money,
+  formatMoney,
   renderShare,
   stageSentence,
   stepsFor,
@@ -14,6 +14,7 @@ import {
 } from "~/lib/format";
 import { fingerprintFile } from "~/lib/fingerprint";
 import { isActive, type Job } from "~/lib/job-types";
+import type { Currency } from "~/lib/settings-types";
 import { pickVideoFile, uploadVideo } from "~/lib/upload";
 import { cn } from "~/lib/utils";
 import { toast } from "sonner";
@@ -82,7 +83,7 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
   const startedAt = job.queuedAt ?? job.createdAt;
   const since = Math.max(0, (now - new Date(startedAt).getTime()) / 1000);
   const eta = p?.etaSeconds;
-  const share = stage === "downloading" ? downloadShare(job) : renderShare(job);
+  const share = transferShare(job) ?? renderShare(job);
 
   return (
     <div className="space-y-3">
@@ -141,7 +142,16 @@ export function ProgressStrip({ job, now }: { job: Job; now: number }) {
   );
 }
 
-export function DetailsPanel({ job }: { job: Job }) {
+export function DetailsPanel({
+  job,
+  currency = "usd",
+  rate = null,
+}: {
+  job: Job;
+  currency?: Currency;
+  /** Today's rate, for a run that has no rate of its own. */
+  rate?: number | null;
+}) {
   const rows: { label: string; value: React.ReactNode }[] = [];
   rows.push({
     label: "Added",
@@ -172,19 +182,6 @@ export function DetailsPanel({ job }: { job: Job }) {
     label: "Transcription",
     value: `Parakeet${job.engine?.gpu ? ` on ${job.engine.gpu}` : ""}${speed ? `, ${Math.round(speed)}× real time` : ""}`,
   });
-  const transfer = job.videoTransfer;
-  if (job.source === "youtube" && transfer && !isActive(job))
-    rows.push({
-      label: "Downloaded",
-      value:
-        transfer === "cloud-download"
-          ? "On Modal"
-          : transfer === "laptop-download"
-            ? job.downloadFallback === "blocked"
-              ? "On your laptop (YouTube blocked Modal)"
-              : "On your laptop"
-            : "Earlier, on your laptop",
-    });
   const model = job.ranking?.modelUsed ?? job.ranking?.model;
   if (model) rows.push({ label: "Moments picked by", value: model });
   const replay = job.replay;
@@ -216,7 +213,16 @@ export function DetailsPanel({ job }: { job: Job }) {
   if (job.cost && !isActive(job))
     rows.push({
       label: "Estimated cost",
-      value: `${money(job.cost.usd)}${job.cost.gpu ? ` on ${job.cost.gpu}` : ""}`,
+      value: `${formatMoney(
+        {
+          usd: job.cost.usd,
+          inr:
+            (job.runs?.at(-1)?.usdInr?.rate ?? rate) !== null
+              ? job.cost.usd * (job.runs?.at(-1)?.usdInr?.rate ?? rate ?? 0)
+              : null,
+        },
+        currency,
+      )}${job.cost.gpu ? ` on ${job.cost.gpu}` : ""}`,
     });
   if (job.reranks)
     rows.push({

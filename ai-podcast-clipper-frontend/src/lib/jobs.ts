@@ -339,3 +339,30 @@ export async function startRunner(id: string, extraArgs: string[] = []) {
   child.unref();
   fs.closeSync(logFd);
 }
+
+/**
+ * Runs `runner.py <args>` in the background for a task that has no job (for example
+ * reading the Modal bill), logging to <DATA_DIR>/stats/<logName>. Returns false when
+ * the backend Python environment is missing.
+ */
+export function startRunnerTask(args: string[], logName: string) {
+  if (!fs.existsSync(RUNNER_PYTHON)) return false;
+  const logDir = path.join(DATA_DIR, "stats");
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFd = fs.openSync(path.join(logDir, logName), "a");
+  const child = spawn(
+    runnerInterpreter(),
+    [path.join(BACKEND_DIR, "runner.py"), "--data-dir", DATA_DIR, ...args],
+    {
+      cwd: BACKEND_DIR,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, DATA_DIR, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
+    },
+  );
+  child.on("error", () => undefined);
+  child.unref();
+  fs.closeSync(logFd);
+  return true;
+}

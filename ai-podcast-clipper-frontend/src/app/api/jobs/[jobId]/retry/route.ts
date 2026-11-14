@@ -50,7 +50,6 @@ export async function POST(
     mode: "full",
     queuedAt: new Date().toISOString(),
     videoTransfer: null,
-    downloadFallback: null,
     pid: undefined,
   });
   await startRunner(jobId);

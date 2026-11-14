@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { failureSentence, relativeTime } from "~/lib/format";
 import { isActive, type Job } from "~/lib/job-types";
+import type { Currency } from "~/lib/settings-types";
 import { cn } from "~/lib/utils";
 import { ClipCard } from "./clip-card";
 import { Popover } from "./popover";
@@ -30,7 +31,15 @@ import {
 
 const POLL_INTERVAL_MS = 3000;
 
-export function VideoPage({ initialJob }: { initialJob: Job }) {
+export function VideoPage({
+  initialJob,
+  currency = "usd",
+  rate = null,
+}: {
+  initialJob: Job;
+  currency?: Currency;
+  rate?: number | null;
+}) {
   const [job, setJob] = useState(initialJob);
   const active = isActive(job);
   const now = useNow(active);
@@ -123,7 +132,7 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
             trigger={<Info className="size-4" />}
             align="end"
           >
-            {() => <DetailsPanel job={job} />}
+            {() => <DetailsPanel job={job} currency={currency} rate={rate} />}
           </Popover>
         </div>
       </header>
