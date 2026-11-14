@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { LogoMark } from "./logo";
+import { SettingsLink } from "./settings-link";
 import { StatsLink } from "./stats-link";
 import { ThemeMenu } from "./theme-menu";
 
@@ -16,6 +17,7 @@ const NavHeader = () => {
         </Link>
         <div className="flex items-center gap-1">
           <StatsLink />
+          <SettingsLink />
           <ThemeMenu />
         </div>
       </div>

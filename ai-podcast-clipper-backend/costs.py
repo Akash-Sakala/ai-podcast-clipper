@@ -1,13 +1,15 @@
 """
-Estimated Modal cost of a job, shown in the app next to its processing time.
+Estimated Modal cost of a job, shown in the app and on the stats page.
 
 Modal bills each container per second, from start until it scales down: the GPU,
-plus the CPU cores and memory it reserves. Each GPU call reports how long it ran,
-how long its container took to load models (first call only) and which GPU it got;
-estimate() adds a boot allowance and the idle time before scale-down.
+plus the CPU cores and memory it reserves. Each call reports how long it ran, how
+long its container took to load models (first call only), which GPU it got and its
+stage (transcribe, render); estimate() adds a boot allowance and the idle
+time before scale-down, and counts the job's own CPU container as "rank".
 
-Prices: modal.com/pricing, October 2026 (USD per second). It is an estimate:
-the Modal dashboard has the real bill.
+Prices: the built-in table below (modal.com/pricing, November 2026, USD per second),
+or Modal's live rates from `modal billing rates --json` (runner.py reads them once a
+day, see parse_modal_rates). It is an estimate: `modal billing summary` has the bill.
 """
 
 from __future__ import annotations
@@ -28,6 +30,69 @@ GPU_PRICE_PER_S = {
 CPU_CORE_PRICE_PER_S = 0.0000131
 MEMORY_GIB_PRICE_PER_S = 0.00000222
 BOOT_SECONDS = 5.0            # container start before our code runs (rough)
+STAGES = ("transcribe", "rank", "render")
+
+
+def builtin_rates() -> dict:
+    return {"gpu": dict(GPU_PRICE_PER_S), "cpu": CPU_CORE_PRICE_PER_S, "memory": MEMORY_GIB_PRICE_PER_S,
+            "source": "built-in"}
+
+
+def _per_second(value: float, builtin_per_s: float) -> float | None:
+    """Modal's rate keys don't say their unit: accept per second or per hour, whichever
+    lands within 3x of the built-in price."""
+    for divisor in (1.0, 3600.0):
+        candidate = value / divisor
+        if builtin_per_s / 3 <= candidate <= builtin_per_s * 3:
+            return candidate
+    return None
+
+
+def parse_modal_rates(raw: dict) -> dict | None:
+    """Map `modal billing rates --json` ({name: "price"}) onto our labels. Sandbox rates are
+    ignored. Returns None (use the built-in table) unless CPU, memory and the A10 are found."""
+    rates = builtin_rates()
+    found = set()
+    for key, value in (raw or {}).items():
+        name = str(key).lower().replace("-", "").replace("_", "").replace(" ", "")
+        if "sandbox" in name or "token" in name or "egress" in name or "volume" in name:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        target = None
+        if "cpu" in name:
+            target, builtin = "cpu", CPU_CORE_PRICE_PER_S
+        elif "memory" in name or "mem" in name:
+            target, builtin = "memory", MEMORY_GIB_PRICE_PER_S
+        else:
+            for label in sorted(GPU_PRICE_PER_S, key=len, reverse=True):
+                needle = label.lower().replace("-", "")
+                if needle == "a10":
+                    hit = "a10" in name and "a100" not in name
+                elif needle.startswith("a100"):
+                    hit = "a100" in name and needle[4:6] in name
+                else:
+                    hit = needle in name
+                if hit:
+                    target, builtin = ("gpu", label), GPU_PRICE_PER_S[label]
+                    break
+        if target is None:
+            continue
+        per_s = _per_second(number, builtin)
+        if per_s is None:
+            continue
+        if isinstance(target, tuple):
+            rates["gpu"][target[1]] = per_s
+            found.add(target[1])
+        else:
+            rates[target] = per_s
+            found.add(target)
+    if not {"cpu", "memory", "A10"} <= found:
+        return None
+    rates["source"] = "modal"
+    return rates
 
 
 def gpu_label(name: str | None) -> str | None:
@@ -51,9 +116,12 @@ def container_seconds(usage: dict, scaledown_s: float) -> float:
     return BOOT_SECONDS + float(usage.get("enterSeconds") or 0) + float(usage.get("seconds") or 0) + scaledown_s
 
 
-def estimate(usages: list[dict], orchestrator_seconds: float = 0.0) -> dict:
+def estimate(usages: list[dict], orchestrator_seconds: float = 0.0, rates: dict | None = None) -> dict:
     """usages: one dict per container call {container, gpu, enterSeconds, seconds, cpu, memoryGiB,
-    scaledown, cpuOnly}. Calls served by the same container share its boot and scale-down."""
+    scaledown, cpuOnly, stage}. Calls served by the same container share its boot and scale-down.
+    Returns {usd, gpuSeconds, containers, gpus, stages: {stage: usd}, rates: source}."""
+    rates = rates or builtin_rates()
+    gpu_prices, cpu_price, memory_price = rates["gpu"], rates["cpu"], rates["memory"]
     containers: dict[str, dict] = {}
     for usage in usages:
         key = str(usage.get("container") or id(usage))
@@ -62,16 +130,23 @@ def estimate(usages: list[dict], orchestrator_seconds: float = 0.0) -> dict:
         entry["enterSeconds"] += float(usage.get("enterSeconds") or 0)
 
     usd, gpu_seconds, gpus = 0.0, 0.0, {}
+    stages = {stage: 0.0 for stage in STAGES}
     for entry in containers.values():
         seconds = container_seconds(entry, float(entry.get("scaledown") or 0))
         price = 0.0
-        if not entry.get("cpuOnly"):  # CPU-only containers (the YouTube download) bill no GPU
+        if not entry.get("cpuOnly"):  # a CPU-only container bills no GPU
             label = gpu_label(entry.get("gpu")) or "A10"
-            price = GPU_PRICE_PER_S.get(label, GPU_PRICE_PER_S["A10"])
+            price = gpu_prices.get(label, gpu_prices["A10"])
             gpu_seconds += seconds
             gpus[label] = gpus.get(label, 0) + 1
-        usd += seconds * (price + float(entry.get("cpu") or 0.125) * CPU_CORE_PRICE_PER_S
-                          + float(entry.get("memoryGiB") or 0.125) * MEMORY_GIB_PRICE_PER_S)
-    usd += orchestrator_seconds * (1.0 * CPU_CORE_PRICE_PER_S + 1.0 * MEMORY_GIB_PRICE_PER_S)
+        cost = seconds * (price + float(entry.get("cpu") or 0.125) * cpu_price
+                          + float(entry.get("memoryGiB") or 0.125) * memory_price)
+        usd += cost
+        stage = entry.get("stage") or "render"
+        stages[stage if stage in stages else "render"] += cost
+    orchestrator = orchestrator_seconds * (1.0 * cpu_price + 1.0 * memory_price)
+    usd += orchestrator
+    stages["rank"] += orchestrator            # the job's own CPU container, where Gemini ranks
     return {"usd": round(usd, 4), "gpuSeconds": round(gpu_seconds), "containers": sum(gpus.values()),
-            "gpus": gpus}
+            "gpus": gpus, "stages": {k: round(v, 5) for k, v in stages.items()},
+            "rates": rates.get("source", "built-in")}

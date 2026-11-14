@@ -1,5 +1,5 @@
-"""Offline tests for getting the video to Modal: the cloud download, the laptop fallback,
-deleting the local copy after a run, upload fingerprints and --prune-videos.
+"""Offline tests for getting the video to Modal: the laptop download (temp folder, resume,
+IPv4), deleting the local copy after a run, upload fingerprints and --prune-videos.
 
     python -m pytest tests -q
 """
@@ -13,7 +13,6 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import costs  # noqa: E402
 import downloader  # noqa: E402
 import runner  # noqa: E402
 
@@ -88,16 +87,253 @@ def fake_yt_dlp(monkeypatch, outcomes):
     return calls, DownloadError
 
 
-def test_download_retries_a_failed_piece_with_fresh_urls(tmp_path, monkeypatch):
+def test_download_retry_resumes_the_partial_file(tmp_path, monkeypatch):
     calls, _ = fake_yt_dlp(monkeypatch, ["HTTP Error 403: Forbidden", "ok"])
     retries = []
     info = downloader.download("https://youtu.be/x", tmp_path, ffmpeg_location="ffmpeg", cookies_browser="firefox",
                                on_retry=lambda *a: retries.append(a[0]), sleep=lambda s: None)
     assert len(calls) == 2 and retries == [1]
-    assert (tmp_path / "input.mp4").read_bytes() == b"video" and not (tmp_path / "input.part").exists()
+    assert (tmp_path / "input.mp4").read_bytes() == b"video"
+    assert (tmp_path / "input.part").exists()           # kept for yt-dlp to resume, not deleted
     assert calls[0]["cookiesfrombrowser"] == ("firefox",) and calls[0]["ffmpeg_location"] == "ffmpeg"
+    assert calls[0]["continuedl"] is True and calls[0]["source_address"] == "0.0.0.0"
+    assert calls[0]["retry_sleep_functions"]["http"](10) == 30
     meta = downloader.video_meta(info)
     assert meta["title"] == "A talk" and meta["duration"] == 3600 and len(meta["tags"]) == 30
+
+
+def test_ipv4_can_be_turned_off(tmp_path):
+    assert "source_address" not in downloader.ydl_options(tmp_path, ipv4=False)
+    assert [downloader.backoff(n) for n in (1, 2, 3, 4, 5, 9)] == [2, 4, 8, 16, 30, 30]
+
+
+def test_cookie_options_prefer_a_cookies_file():
+    assert downloader.cookie_options("chrome", "C:/c.txt") == {"cookiefile": "C:/c.txt"}
+    assert downloader.cookie_options("firefox") == {"cookiesfrombrowser": ("firefox",)}
+    assert downloader.cookie_options() == {}
+    options = downloader.ydl_options(pathlib.Path("."), cookies_file="c.txt")
+    assert options["cookiefile"] == "c.txt" and "cookiesfrombrowser" not in options
+
+
+def fake_cookie_jar(monkeypatch, outcome):
+    """yt_dlp stand-in whose cookiejar raises (outcome = message) or holds the given domains."""
+    class DownloadError(Exception):
+        pass
+
+    class YoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        @property
+        def cookiejar(self):
+            if isinstance(outcome, str):
+                raise DownloadError(outcome)
+            return [types.SimpleNamespace(domain=d) for d in outcome]
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(
+        YoutubeDL=YoutubeDL, utils=types.SimpleNamespace(DownloadError=DownloadError)))
+
+
+def test_check_cookies(monkeypatch):
+    assert downloader.check_cookies() is None
+    fake_cookie_jar(monkeypatch, "Failed to decrypt with DPAPI")
+    assert "DPAPI" in downloader.check_cookies(cookies_browser="chrome")
+    fake_cookie_jar(monkeypatch, [".google.com"])
+    assert "no YouTube cookies" in downloader.check_cookies(cookies_browser="firefox")
+    fake_cookie_jar(monkeypatch, [".youtube.com", ".google.com"])
+    assert downloader.check_cookies(cookies_file="c.txt") is None
+
+
+def test_unreadable_chrome_cookies_are_skipped_with_a_hint(monkeypatch):
+    lines = []
+    monkeypatch.setattr(runner, "log", lines.append)
+    monkeypatch.setenv("YTDLP_COOKIES_FROM_BROWSER", "chrome")
+    fake_cookie_jar(monkeypatch, "Failed to decrypt with DPAPI")
+    assert runner.youtube_cookies() == {"browser": None, "file": None}
+    assert "YTDLP_COOKIES_FILE" in lines[-1] and "continuing without them" in lines[-1]
+    fake_cookie_jar(monkeypatch, [".youtube.com"])
+    assert runner.youtube_cookies()["browser"] is None          # checked once per run
+
+
+def test_a_cookies_file_wins_and_a_missing_one_falls_back(tmp_path, monkeypatch):
+    lines = []
+    monkeypatch.setattr(runner, "log", lines.append)
+    fake_cookie_jar(monkeypatch, [".youtube.com"])
+    cookies = tmp_path / "youtube.txt"
+    cookies.write_text("# Netscape HTTP Cookie File")
+    monkeypatch.setenv("YTDLP_COOKIES_FILE", f'"{cookies}"')
+    monkeypatch.setenv("YTDLP_COOKIES_FROM_BROWSER", "firefox")
+    assert runner.youtube_cookies() == {"browser": None, "file": str(cookies)}
+    monkeypatch.setattr(runner, "_COOKIES", None)
+    monkeypatch.setenv("YTDLP_COOKIES_FILE", str(tmp_path / "missing.txt"))
+    assert runner.youtube_cookies() == {"browser": "firefox", "file": None}
+    assert any("not found" in line for line in lines)
+
+
+def test_upload_progress_reports_share_and_eta(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "log", lambda line: None)
+    job = runner.Job(make_job(tmp_path))
+    progress = runner.UploadProgress(job, size=1000, every_s=0)
+    assert progress(name="/x/input.mp4", size=1000) is None       # a new task: no bytes yet
+    progress(None, advance=250)                                   # Modal's partial(cb, task_id)(advance=n)
+    progress(task_id=None, advance=250)
+    data = read(job.dir)["progress"]
+    assert data["stage"] == "uploading" and data["fraction"] == 0.5 and data["etaSeconds"] is not None
+    progress(task_id=None, complete=True)
+    progress(advance=600)
+    assert progress.fraction == 0.99                               # capped until the run moves on
+
+
+def test_a_retried_piece_is_not_counted_twice(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "log", lambda line: None)
+    progress = runner.UploadProgress(runner.Job(make_job(tmp_path)), size=1000, every_s=0)
+    progress(advance=400)
+    progress(advance=-300)            # a failed piece: Modal subtracts what it had sent
+    progress(advance=300)             # and sends it again
+    assert progress.sent == 400
+    progress(reset=True)              # older volumes start the file over
+    assert progress.sent == 0
+    progress(advance=-50)
+    assert progress.sent == 0
+
+
+def test_a_stalled_upload_is_flagged_and_cleared(tmp_path, monkeypatch):
+    lines = []
+    monkeypatch.setattr(runner, "log", lines.append)
+    now = [1000.0]
+    job = runner.Job(make_job(tmp_path))
+    progress = runner.UploadProgress(job, size=1000, every_s=0, clock=lambda: now[0])
+    progress(advance=100)
+    now[0] += runner.UPLOAD_STALL_S - 1
+    progress.check_stall()
+    assert not progress.stalled
+    now[0] += 2
+    progress.check_stall()
+    assert progress.stalled and "no data sent" in lines[-1]
+    assert read(job.dir)["progress"]["stalled"] is True and read(job.dir)["progress"]["etaSeconds"] is None
+    progress(advance=100)
+    assert not progress.stalled and "Upload moving again" in lines
+    assert "stalled" not in read(job.dir)["progress"] or not read(job.dir)["progress"]["stalled"]
+
+
+def test_upload_falls_back_to_a_plain_batch_when_progress_is_unavailable(tmp_path, monkeypatch):
+    put = []
+
+    class _Batch:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def put_file(self, local, remote):
+            put.append(remote)
+
+    class _Volume:
+        def hydrate(self):
+            raise RuntimeError("no such private API")
+
+        def batch_upload(self, force=False):
+            return _Batch()
+
+    monkeypatch.setattr(runner, "log", lambda line: None)
+    monkeypatch.setattr(runner, "limit_upload_piece_time", lambda seconds: True)
+    job = runner.Job(make_job(tmp_path))
+    runner.upload_with_progress(_Volume(), tmp_path / "input.mp4", "/x/input.mp4", runner.UploadProgress(job, 10))
+    assert put == ["/x/input.mp4"]
+
+
+def test_upload_pieces_get_a_time_limit(monkeypatch):
+    import asyncio
+
+    http_utils = pytest.importorskip("modal._utils.http_utils")
+    registry = http_utils.ClientSessionRegistry
+    monkeypatch.setattr(registry, "get_session", registry.get_session)
+    monkeypatch.setattr(registry, "_client_session_active", False, raising=False)
+    monkeypatch.setattr(http_utils, "on_shutdown", lambda coro: coro.close())
+    proxy_support = pytest.importorskip("modal._utils.proxy_support")
+    monkeypatch.setattr(proxy_support, "get_proxy_url", lambda *a, **k: None)   # this sandbox has a proxy
+    assert runner.limit_upload_piece_time(600)
+
+    async def make():
+        session = registry.get_session()
+        timeout = session.timeout.total
+        await session.close()
+        return timeout
+
+    assert asyncio.run(make()) == 600
+    monkeypatch.setattr(registry, "_clipper_timeout", None, raising=False)
+
+
+def test_upload_context_sends_fewer_pieces_at_once(monkeypatch):
+    modal_volume = pytest.importorskip("modal.volume")
+    from modal_proto import api_pb2
+
+    built = {}
+
+    class _Volume:
+        object_id, client = "vo-1", "client"
+
+        def hydrate(self):
+            pass
+
+        def _get_metadata(self):
+            return types.SimpleNamespace(version=api_pb2.VolumeFsVersion.VOLUME_FS_VERSION_V2)
+
+    monkeypatch.setattr(modal_volume, "VolumeUploadContextManager2", lambda *a, **k: built.update(args=a, **k) or "ctx")
+    assert runner.upload_context(_Volume(), progress="cb") == "ctx"
+    assert built["args"] == ("vo-1", "client") and built["put_concurrency"] == runner.UPLOAD_PIECES_AT_ONCE
+    assert built["progress_cb"] == "cb" and built["force"] is True
+
+
+def test_waiting_for_modal_rides_out_a_lost_connection(tmp_path, monkeypatch):
+    modal = pytest.importorskip("modal")
+    lines = []
+    monkeypatch.setattr(runner, "log", lines.append)
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    monkeypatch.setattr(modal.Dict, "from_name", lambda *a, **k: types.SimpleNamespace(
+        get=lambda key: None, pop=lambda key: None))
+    outcomes = [modal.exception.ConnectionError("Deadline exceeded"), modal.exception.ConnectionError("again"),
+                TimeoutError(), {"clips": ["clip_0.mp4"]}]
+
+    class _Call:
+        def get(self, timeout=None):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    assert runner.wait_for(_Call(), runner.Job(make_job(tmp_path))) == {"clips": ["clip_0.mp4"]}
+    assert "Lost the connection to Modal" in lines[0] and lines[-1] == "Connection to Modal is back"
+    assert len([line for line in lines if line.startswith("Lost")]) == 1
+
+
+def test_waiting_for_modal_gives_up_after_a_long_outage(tmp_path, monkeypatch):
+    modal = pytest.importorskip("modal")
+    monkeypatch.setattr(runner, "log", lambda line: None)
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += 60
+
+    monkeypatch.setattr(runner.time, "sleep", sleep)
+    monkeypatch.setattr(runner.time, "time", lambda: now[0])
+    monkeypatch.setattr(modal.Dict, "from_name", lambda *a, **k: types.SimpleNamespace(
+        get=lambda key: None, pop=lambda key: None))
+
+    class _Call:
+        def get(self, timeout=None):
+            raise modal.exception.ConnectionError("Deadline exceeded")
+
+    with pytest.raises(modal.exception.ConnectionError):
+        runner.wait_for(_Call(), runner.Job(make_job(tmp_path)))
+    assert now[0] > runner.MODAL_OUTAGE_S
 
 
 def test_download_gives_up_at_once_when_blocked(tmp_path, monkeypatch):
@@ -111,91 +347,98 @@ def test_download_gives_up_at_once_when_blocked(tmp_path, monkeypatch):
 # Getting the video to Modal
 # --------------------------------------------------------------------------- #
 
-def patch_transfer(monkeypatch, cloud_result):
-    """Stand-ins for the Modal calls; returns a log of what ran."""
+def patch_transfer(monkeypatch, tmp_path):
+    """Stand-ins for the YouTube download and the Modal upload; returns a log of what ran."""
     ran = []
-
-    def cloud(job):
-        ran.append("cloud")
-        return cloud_result
+    monkeypatch.setattr(runner, "DOWNLOADS_DIR", tmp_path / "downloads")
 
     def laptop(job, attempts=3):
         ran.append("laptop")
-        (job.dir / "input.mp4").write_bytes(b"video")
-        runner.apply_meta(job, {"title": "From the laptop"})
+        folder = runner.download_folder(job)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "input.mp4").write_bytes(b"video")
+        runner.apply_meta(job, {"title": "A talk"})
+        return folder / "input.mp4"
 
-    monkeypatch.setattr(runner, "cloud_download", cloud)
+    def upload(job, volume, update_status=True, video=None):
+        ran.append("upload")
+        ran.append((video or job.dir / "input.mp4").read_bytes())
+
     monkeypatch.setattr(runner, "download_youtube", laptop)
-    monkeypatch.setattr(runner, "upload_input", lambda job, volume, update_status=True: ran.append("upload"))
-    monkeypatch.setattr(runner.settings, "YOUTUBE_DOWNLOAD", "cloud")
+    monkeypatch.setattr(runner, "upload_input", upload)
     return ran
 
 
-CLOUD_USAGE = {"container": "ta-1", "cpuOnly": True, "cpu": 2.0, "memoryGiB": 2.0, "seconds": 40.0, "scaledown": 5}
-
-
-def test_youtube_video_downloads_on_modal_and_never_touches_the_laptop(tmp_path, monkeypatch):
+def test_youtube_video_downloads_outside_the_job_folder_and_is_deleted_after_upload(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
-    ran = patch_transfer(monkeypatch, {"ok": True, "meta": {"title": "A talk", "duration": 3600},
-                                       "sizeMB": 500, "usage": CLOUD_USAGE})
-    job, timings, usages = runner.Job(job_dir), {}, []
-    runner.put_video_on_modal(job, None, timings, usages)
-    assert ran == ["cloud"] and usages == [CLOUD_USAGE]
-    assert "cloud_download" in timings and "download" not in timings and "upload" not in timings
+    ran = patch_transfer(monkeypatch, tmp_path)
+    job, timings = runner.Job(job_dir), {}
+    runner.put_video_on_modal(job, None, timings)
+    assert ran == ["laptop", "upload", b"video"]
+    assert {"download", "upload"} <= set(timings)
     data = read(job_dir)
-    assert data["title"] == "A talk" and data["meta"]["duration"] == 3600
-    assert data["videoTransfer"] == "cloud-download" and not (job_dir / "input.mp4").exists()
+    assert data["title"] == "A talk" and data["videoTransfer"] == "laptop-download"
+    assert not list(job_dir.glob("input.*")) and not runner.download_folder(job).exists()
 
 
-def test_blocked_cloud_download_falls_back_to_the_laptop(tmp_path, monkeypatch):
+def test_keep_video_moves_the_download_into_the_job_folder(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
-    ran = patch_transfer(monkeypatch, {"ok": False, "error": "not a bot", "blocked": True, "usage": CLOUD_USAGE})
-    job, timings, usages = runner.Job(job_dir), {}, []
-    runner.put_video_on_modal(job, None, timings, usages)
-    assert ran == ["cloud", "laptop", "upload"] and usages == [CLOUD_USAGE]  # the failed try is still billed
-    assert {"cloud_download", "download", "upload"} <= set(timings)
-    data = read(job_dir)
-    assert data["videoTransfer"] == "laptop-download" and data["downloadFallback"] == "blocked"
-    assert data["title"] == "From the laptop"
-
-
-def test_laptop_setting_skips_the_cloud(tmp_path, monkeypatch):
-    job_dir = make_job(tmp_path)
-    ran = patch_transfer(monkeypatch, {"ok": True})
-    monkeypatch.setattr(runner.settings, "YOUTUBE_DOWNLOAD", "laptop")
-    runner.put_video_on_modal(runner.Job(job_dir), None, {}, [])
-    assert ran == ["laptop", "upload"] and "downloadFallback" not in read(job_dir)
+    patch_transfer(monkeypatch, tmp_path)
+    job = runner.Job(job_dir)
+    runner.put_video_on_modal(job, None, {}, keep_video=True)
+    assert (job_dir / "input.mp4").read_bytes() == b"video" and not runner.download_folder(job).exists()
 
 
 def test_a_video_in_the_job_folder_is_uploaded(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)                 # e.g. a job from before this change
     (job_dir / "input.mp4").write_bytes(b"video")
-    ran = patch_transfer(monkeypatch, {"ok": True})
+    ran = patch_transfer(monkeypatch, tmp_path)
     timings = {}
-    runner.put_video_on_modal(runner.Job(job_dir), None, timings, [])
-    assert ran == ["upload"] and "upload" in timings and read(job_dir)["videoTransfer"] == "upload"
+    runner.put_video_on_modal(runner.Job(job_dir), None, timings)
+    assert ran == ["upload", b"video"] and "upload" in timings and read(job_dir)["videoTransfer"] == "upload"
+    assert (job_dir / "input.mp4").exists()
 
 
 def test_an_upload_without_its_video_asks_for_the_file_again(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path, source="upload", youtubeUrl=None, title="talk.mp4")
-    patch_transfer(monkeypatch, {"ok": True})
+    patch_transfer(monkeypatch, tmp_path)
     with pytest.raises(FileNotFoundError, match="add the same MP4 again"):
-        runner.put_video_on_modal(runner.Job(job_dir), None, {}, [])
+        runner.put_video_on_modal(runner.Job(job_dir), None, {})
 
 
-def test_cloud_download_reports_a_missing_deployment_instead_of_raising(tmp_path, monkeypatch):
+def test_failed_download_keeps_its_partial_file_for_try_again(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
+    monkeypatch.setattr(runner, "DOWNLOADS_DIR", tmp_path / "downloads")
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", types.SimpleNamespace(get_ffmpeg_exe=lambda: "ffmpeg"))
+    monkeypatch.setattr(downloader.time, "sleep", lambda s: None)
+    calls, _ = fake_yt_dlp(monkeypatch, ["Read timed out"] * 3)
+    fake_volume(monkeypatch)
+    monkeypatch.setattr(runner, "fetch_replay", lambda *a, **k: None)
+    assert runner.run_job(job_dir, 5, keep_remote=False) == 1
+    data = read(job_dir)
+    assert data["status"] == "failed" and data["failedStage"] == "downloading" and "timed out" in data["error"]
+    assert len(calls) == 3 and all(c["source_address"] == "0.0.0.0" for c in calls)
+    assert (tmp_path / "downloads" / job_dir.name / "input.part").exists()   # Try again resumes it
+    assert not list(job_dir.glob("input.*"))
 
-    def from_name(app, name):
-        raise RuntimeError(f"{name} not found")
 
-    monkeypatch.setitem(sys.modules, "modal", types.SimpleNamespace(Function=types.SimpleNamespace(
-        from_name=from_name)))
-    result = runner.cloud_download(runner.Job(job_dir))
-    assert result["ok"] is False and "download_video not found" in result["error"]
+def test_old_download_folders_are_cleared(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(runner, "DOWNLOADS_DIR", tmp_path / "downloads")
+    old, new = tmp_path / "downloads" / "old", tmp_path / "downloads" / "new"
+    for folder in (old, new):
+        folder.mkdir(parents=True)
+        (folder / "input.f137.mp4.part").write_bytes(b"x")
+    now = os.path.getmtime(new)
+    os.utime(old, (now - 49 * 3600, now - 49 * 3600))
+    runner.clear_old_downloads(now=now)
+    assert not old.exists() and new.exists()
+    monkeypatch.setattr(runner, "DOWNLOADS_DIR", tmp_path / "missing")
+    runner.clear_old_downloads()                  # no folder yet: nothing to do
 
 
-def test_run_gpu_passes_the_download_usage_only_when_there_is_one(tmp_path, monkeypatch):
+def test_run_gpu_spawns_with_the_four_job_arguments(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
     spawns = []
 
@@ -207,10 +450,8 @@ def test_run_gpu_passes_the_download_usage_only_when_there_is_one(tmp_path, monk
     monkeypatch.setitem(sys.modules, "modal", types.SimpleNamespace(Function=types.SimpleNamespace(
         from_name=lambda app, name: _Function())))
     monkeypatch.setattr(runner, "wait_for", lambda call, job: {"clips": [], "timings": {}})
-    runner.run_gpu(runner.Job(job_dir), 5, "parakeet", {}, [CLOUD_USAGE])
-    runner.run_gpu(runner.Job(job_dir), 5, "parakeet", {}, [])
-    assert spawns[0][1] == {"extra_usages": [CLOUD_USAGE]}
-    assert spawns[1][1] == {} and len(spawns[1][0]) == 4    # works with an older deployment too
+    runner.run_gpu(runner.Job(job_dir), 5, "parakeet", {})
+    assert spawns[0][1] == {} and len(spawns[0][0]) == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -235,8 +476,8 @@ def fake_volume(monkeypatch):
 def fake_gpu(clips):
     seen = {}
 
-    def run(job, max_clips, mode, timings, extra_usages=None):
-        seen["usages"] = extra_usages
+    def run(job, max_clips, mode, timings):
+        seen["mode"] = mode
         return {"clips": clips, "moments": [{"rank": 1}], "errors": [], "gpu": "A10", "ranking": {"valid": 1},
                 "cost": {"usd": 0.1, "gpuSeconds": 200, "containers": 2}}
 
@@ -269,16 +510,18 @@ def test_keep_video_keeps_the_local_copy(tmp_path, monkeypatch):
     assert (job_dir / "input.mp4").exists()
 
 
-def test_youtube_run_bills_the_download_and_cleans_the_volume(tmp_path, monkeypatch):
+def test_youtube_run_cleans_the_volume_and_the_download(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
     removed = fake_volume(monkeypatch)
-    patch_transfer(monkeypatch, {"ok": True, "meta": {"title": "A talk"}, "usage": CLOUD_USAGE})
-    gpu, seen = fake_gpu(["clip_0.mp4"])
+    patch_transfer(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner, "fetch_replay", lambda *a, **k: None)
+    gpu, _ = fake_gpu(["clip_0.mp4"])
     monkeypatch.setattr(runner, "run_gpu", gpu)
     assert runner.run_job(job_dir, 5, keep_remote=False) == 0
     data = read(job_dir)
-    assert seen["usages"] == [CLOUD_USAGE] and "cloud_download" in data["runs"][-1]["timings"]
+    assert {"download", "upload"} <= set(data["runs"][-1]["timings"])
     assert removed == [f"/{job_dir.name}"] and not list(job_dir.glob("input.*"))
+    assert not (tmp_path / "downloads" / job_dir.name).exists()
 
 
 def test_failed_run_keeps_the_video_for_try_again(tmp_path, monkeypatch):
@@ -293,7 +536,7 @@ def test_failed_run_keeps_the_video_for_try_again(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "run_gpu", broken)
     assert runner.run_job(job_dir, 5, keep_remote=False) == 1
-    assert (job_dir / "input.mp4").exists() and removed == [f"/{job_dir.name}"]  # cloud copy still removed
+    assert (job_dir / "input.mp4").exists() and removed == [f"/{job_dir.name}"]  # the volume copy is still removed
 
 
 def test_rerank_of_youtube_job_downloads_again(tmp_path, monkeypatch):
@@ -302,12 +545,13 @@ def test_rerank_of_youtube_job_downloads_again(tmp_path, monkeypatch):
     (job_dir / "clips").mkdir()
     (job_dir / "clips" / "clip_0.mp4").write_bytes(b"old")
     fake_volume(monkeypatch)
-    ran = patch_transfer(monkeypatch, {"ok": True, "meta": {"title": "A talk"}, "usage": CLOUD_USAGE})
+    ran = patch_transfer(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner, "fetch_replay", lambda *a, **k: None)
     monkeypatch.setattr(runner, "upload_transcript", lambda *a, **k: ran.append("transcript"))
     gpu, seen = fake_gpu(["clip_0.mp4"])
     monkeypatch.setattr(runner, "run_gpu", gpu)
     assert runner.run_rerank(job_dir, 5, keep_remote=False) == 0
-    assert ran == ["cloud", "transcript"] and seen["usages"] == [CLOUD_USAGE]
+    assert ran == ["laptop", "upload", b"video", "transcript"] and seen["mode"] == "reuse"
     assert read(job_dir)["reranks"] == 1
 
 
@@ -316,7 +560,7 @@ def test_rerank_of_upload_without_its_video_keeps_the_clips(tmp_path, monkeypatc
                        clips=["clip_0.mp4"])
     (job_dir / "transcript.json").write_text("[]")
     fake_volume(monkeypatch)
-    patch_transfer(monkeypatch, {"ok": True})
+    patch_transfer(monkeypatch, tmp_path)
     assert runner.run_rerank(job_dir, 5, keep_remote=False) == 1
     data = read(job_dir)
     assert data["status"] == "done" and data["clips"] == ["clip_0.mp4"] and "add the same MP4" in data["error"]
@@ -356,19 +600,3 @@ def test_prune_deletes_finished_videos_only(tmp_path, monkeypatch):
     assert (failed / "input.mp4").exists()                    # Try again still has it
     upload = read(done_up)
     assert upload["fingerprint"] and upload["updatedAt"] == "2026-10-20T11:00:00Z"
-
-
-# --------------------------------------------------------------------------- #
-# Cost of the download container
-# --------------------------------------------------------------------------- #
-
-def test_cpu_only_download_is_billed_without_a_gpu():
-    gpu = {"container": "g", "gpu": "NVIDIA A10", "seconds": 60, "cpu": 4, "memoryGiB": 4, "scaledown": 5}
-    with_download = costs.estimate([gpu, CLOUD_USAGE])
-    alone = costs.estimate([gpu])
-    extra = with_download["usd"] - alone["usd"]
-    cpu_seconds = costs.BOOT_SECONDS + 40 + 5
-    assert extra == pytest.approx(cpu_seconds * (2 * costs.CPU_CORE_PRICE_PER_S + 2 * costs.MEMORY_GIB_PRICE_PER_S),
-                                  abs=2e-4)
-    assert with_download["gpuSeconds"] == alone["gpuSeconds"] and with_download["containers"] == 1
-    assert with_download["gpus"] == {"A10": 1}

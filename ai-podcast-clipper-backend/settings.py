@@ -74,17 +74,6 @@ RENDER_MAX_CONTAINERS = get_int("RENDER_MAX_CONTAINERS", 8)
 RENDER_CPU = get_int("RENDER_CPU", 4)
 
 
-# Where YouTube videos are downloaded (read by runner.py for every job):
-#   cloud  - straight into the Modal jobs volume; the laptop takes over if YouTube blocks Modal
-#   laptop - on this laptop, then uploaded to Modal (the old way)
-YOUTUBE_DOWNLOAD = "laptop" if get_str("YOUTUBE_DOWNLOAD", "cloud").strip().lower() == "laptop" else "cloud"
-# yt-dlp and Deno (its JavaScript runtime) in the Modal download image. YouTube changes
-# often: bump YTDLP_VERSION and run `modal deploy main.py` when downloads start failing.
-# Only the small download image is rebuilt, not the GPU image.
-YTDLP_VERSION = get_str("YTDLP_VERSION", "2026.10.21")
-DENO_VERSION = get_str("DENO_VERSION", "2.9.8")
-
-
 def get_switch(name: str, default: bool) -> bool:
     raw = (os.environ.get(name) or "").strip().lower()
     if not raw:
@@ -104,9 +93,44 @@ def get_float(name: str, default: float) -> float:
 #   MOST_REPLAYED  on/off - use the graph's replay hotspots and the audience score
 #   SPONSORBLOCK   on/off - keep sponsor reads, intros, outros and previews out of clips
 #   REPLAY_WEIGHT  share of the final score from the audience, 0-1 (0.4 = 60% Gemini, 40% viewers)
+# YouTube downloads on this laptop use IPv4 (off: let the system choose). Read by runner.py.
+YOUTUBE_IPV4 = get_switch("YOUTUBE_IPV4", True)
+
 MOST_REPLAYED = get_switch("MOST_REPLAYED", True)
 SPONSORBLOCK = get_switch("SPONSORBLOCK", True)
 REPLAY_WEIGHT = min(max(get_float("REPLAY_WEIGHT", 0.4), 0.0), 1.0)
+MAX_CLIPS = 5
+
+# The app's Settings page saves <data>/settings.json; its values win over .env.
+USER_SETTINGS_FILE = "settings.json"
+MAX_CLIPS_RANGE = (3, 8)
+REPLAY_WEIGHT_MAX = 0.6
+
+
+def apply_user_settings(data_dir) -> dict:
+    """Read <data>/settings.json (written by the web app) and apply it to this module:
+    {"maxClips": 5, "mostReplayed": true, "sponsorBlock": true, "replayWeight": 0.4,
+     "currency": "usd" | "inr"}. Missing or invalid values keep the .env / default ones.
+    Returns the settings that were applied."""
+    import json
+    import pathlib
+
+    global MOST_REPLAYED, SPONSORBLOCK, REPLAY_WEIGHT, MAX_CLIPS
+    try:
+        raw = json.loads((pathlib.Path(data_dir) / USER_SETTINGS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    raw = raw if isinstance(raw, dict) else {}
+    if isinstance(raw.get("mostReplayed"), bool):
+        MOST_REPLAYED = raw["mostReplayed"]
+    if isinstance(raw.get("sponsorBlock"), bool):
+        SPONSORBLOCK = raw["sponsorBlock"]
+    if isinstance(raw.get("replayWeight"), (int, float)) and not isinstance(raw["replayWeight"], bool):
+        REPLAY_WEIGHT = min(max(float(raw["replayWeight"]), 0.0), REPLAY_WEIGHT_MAX)
+    if isinstance(raw.get("maxClips"), int) and not isinstance(raw["maxClips"], bool):
+        MAX_CLIPS = min(max(raw["maxClips"], MAX_CLIPS_RANGE[0]), MAX_CLIPS_RANGE[1])
+    return {"maxClips": MAX_CLIPS, "mostReplayed": MOST_REPLAYED, "sponsorBlock": SPONSORBLOCK,
+            "replayWeight": REPLAY_WEIGHT}
 
 
 # Moment-selection and rendering settings, read inside the containers (moments.py,

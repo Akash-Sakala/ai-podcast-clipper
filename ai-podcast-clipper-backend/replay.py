@@ -4,9 +4,10 @@ what to leave out.
 
 The runner fetches both on the laptop before every run of a YouTube job
 (`fetch_signals`): one metadata-only yt-dlp call (no download, about 3 s) and one
-SponsorBlock call. YouTube often strips the graph from pages it sends to cloud IPs,
-which is why this is not taken from the Modal download. The result is stored in
-job.json "replay" and handed to Gemini ranking (moments.py) through the context.
+SponsorBlock call. When YouTube refuses the metadata call ("confirm you're not a
+bot") but not the download, the runner takes the graph from the download's info
+(`with_graph`). The result is stored in job.json "replay" and handed to Gemini
+ranking (moments.py) through the context.
 
     heatmap   100 equal segments of the video, each with a replay intensity 0-1
               (1 = the video's most replayed segment). Only videos with enough views
@@ -103,15 +104,20 @@ def compact_chapters(raw: list | None) -> list[dict]:
     return out
 
 
-def fetch_youtube(url: str, cookies_browser: str | None = None) -> dict:
+def fetch_youtube(url: str, cookies_browser: str | None = None, *, cookies_file: str | None = None,
+                  ipv4: bool = False) -> dict:
     """Metadata only, no download. `process=False` skips format selection, so missing
     formats (YouTube's SABR streaming) cannot fail the call. Raises on yt-dlp errors."""
     import yt_dlp
 
     options = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
                "js_runtimes": {"deno": {}, "node": {}}}
-    if cookies_browser:
+    if cookies_file:
+        options["cookiefile"] = cookies_file
+    elif cookies_browser:
         options["cookiesfrombrowser"] = (cookies_browser,)
+    if ipv4:
+        options["source_address"] = "0.0.0.0"
     with yt_dlp.YoutubeDL(options) as ydl:
         return ydl.extract_info(url, download=False, process=False) or {}
 
@@ -192,6 +198,22 @@ def fetch_signals(url: str, *, cookies_browser: str | None = None, sponsorblock:
     replay["peaks"] = find_peaks(replay["heatmap"], replay["chapters"], skip_segments(replay),
                                  duration=replay.get("duration"), max_peaks=max_peaks)
     return replay, info
+
+
+def with_graph(replay: dict, info: dict | None, max_peaks: int = MAX_PEAKS) -> dict:
+    """The replay record with the graph taken from another yt-dlp info dict (the video
+    download's), for when the metadata-only call was refused. Unchanged if `info` has no
+    graph either."""
+    heatmap = compact_heatmap((info or {}).get("heatmap"))
+    if len(heatmap) < 10:
+        return replay
+    updated = {**replay, "heatmap": heatmap, "chapters": compact_chapters(info.get("chapters")),
+               "duration": info.get("duration") or replay.get("duration"),
+               "views": info.get("view_count") or replay.get("views"), "available": True,
+               "errors": [e for e in replay.get("errors") or [] if not e.startswith("YouTube")]}
+    updated["peaks"] = find_peaks(updated["heatmap"], updated["chapters"], skip_segments(updated),
+                                  duration=updated.get("duration"), max_peaks=max_peaks)
+    return updated
 
 
 def skip_segments(replay: dict | None) -> list[dict]:

@@ -577,7 +577,8 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
     final = _json.loads((job_dir / "job.json").read_text())["progress"]
     assert final["stage"] == "rendering" and final["done"] == 2 and final["total"] == 5
     assert final["fraction"] == 0.62
-    assert runner.job_cost(result) == {"usd": 0.0412, "gpuSeconds": 410, "gpu": "A10", "containers": 6}
+    assert runner.job_cost(result) == {"usd": 0.0412, "gpuSeconds": 410, "gpu": "A10", "containers": 6,
+                                       "stages": None, "rates": "built-in"}
     assert runner.job_cost({"clips": []}) is None
 
 

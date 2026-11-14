@@ -28,15 +28,15 @@ export type JobProgress = {
   /** Share done (0-1): of the download, or of all clips (they render at the same time). */
   fraction?: number;
   etaSeconds?: number | null;
-  /** While downloading: on Modal, or on this laptop (the fallback). */
-  where?: "cloud" | "laptop";
+  /** While uploading: no data has moved for two minutes (the stuck pieces are retried). */
+  stalled?: boolean | null;
 };
 
 /**
- * How the current or last run got the video to Modal: downloaded on Modal (YouTube),
- * downloaded on the laptop and uploaded (fallback), or uploaded from the job folder.
+ * How the current or last run got the video to Modal: downloaded on the laptop and
+ * uploaded (YouTube), or uploaded from the job folder.
  */
-export type VideoTransfer = "cloud-download" | "laptop-download" | "upload";
+export type VideoTransfer = "laptop-download" | "upload";
 
 /** Estimated Modal cost of the last run (see backend costs.py). */
 export type JobCost = {
@@ -44,6 +44,33 @@ export type JobCost = {
   gpuSeconds?: number | null;
   gpu?: string | null;
   containers?: number | null;
+  /** USD per Modal stage (the job's own CPU container counts as rank). */
+  stages?: Partial<Record<CostStage, number>> | null;
+  /** "modal": priced with Modal's live rates; "built-in": costs.py's table. */
+  rates?: "modal" | "built-in";
+};
+
+export type CostStage = "transcribe" | "rank" | "render";
+
+/** 1 USD in INR on the day a run finished (backend fx.py). */
+export type UsdInr = {
+  rate: number;
+  date?: string | null;
+  source?: string;
+  stale?: boolean;
+};
+
+/** Most replayed and SponsorBlock numbers of one run (backend runner.clip_sources). */
+export type ClipSources = {
+  graph: boolean;
+  hotspots: number;
+  clips: number;
+  clipsOnHotspot: number;
+  audienceAvg: number | null;
+  sponsorBlock: boolean;
+  /** Seconds left out per SponsorBlock category. */
+  skippedSeconds: Record<string, number>;
+  droppedForSponsor: number;
 };
 
 /** One run of a job (first run, re-rank or failed attempt), kept for the stats page. */
@@ -53,15 +80,14 @@ export type RunRecord = {
   startedAt: string;
   finishedAt: string;
   clips: number | null;
-  /** "single-gpu": the first versions, before every clip got its own GPU. */
-  pipeline: "parallel" | "single-gpu";
   videoSeconds: number | null;
   /** Seconds per step; a step that did not run is missing. */
   timings: Partial<
     Record<
       | "download"
       | "upload"
-      | "cloud_download"
+      | "replay"
+      | "save"
       | "gpu_transcribe"
       | "gpu_select"
       | "gpu_render"
@@ -70,9 +96,27 @@ export type RunRecord = {
       number
     >
   >;
-  /** estimated: worked out from logged GPU time (runs before per-container usage). */
-  cost: (JobCost & { estimated?: boolean }) | null;
-  recordedBy?: "runner" | "log";
+  cost: JobCost | null;
+  /** Where a failed run stopped (a progress stage such as "rendering"). */
+  failedStage?: string;
+  usdInr?: UsdInr | null;
+  clipSources?: ClipSources;
+  /** Short hash of the ranking prompts the run used. */
+  promptVersion?: string | null;
+  maxClips?: number;
+};
+
+/**
+ * One line of the stats ledger (data/stats/runs.jsonl, written by runner.py): a run
+ * plus the job it belongs to. Lines stay when the job folder is deleted.
+ */
+export type LedgerRun = RunRecord & {
+  jobId: string;
+  title: string | null;
+  source: "youtube" | "upload" | null;
+  youtubeUrl?: string | null;
+  /** Parakeet's speed for this run (x real time), when it transcribed. */
+  realTimeFactor?: number | null;
 };
 
 export type ClipDetail = {
@@ -189,8 +233,6 @@ export type Job = {
   /** Derived by the server: an upload whose video was deleted; re-rank asks for the file again. */
   rerankNeedsFile?: boolean;
   videoTransfer?: VideoTransfer | null;
-  /** Why the laptop downloaded the video: YouTube blocked Modal, or the cloud download failed. */
-  downloadFallback?: "blocked" | "failed" | null;
   /** Derived by the server: a cover image is available at /api/media/<id>/thumbnail. */
   hasThumbnail?: boolean;
   /** Derived by the server: changes when the clip files are replaced (for caching). */
