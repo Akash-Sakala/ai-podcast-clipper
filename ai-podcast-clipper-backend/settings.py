@@ -85,6 +85,30 @@ YTDLP_VERSION = get_str("YTDLP_VERSION", "2026.10.21")
 DENO_VERSION = get_str("DENO_VERSION", "2.9.8")
 
 
+def get_switch(name: str, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "off", "false", "no")
+
+
+def get_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+# YouTube "Most replayed" graph and SponsorBlock (read by runner.py for every run, no
+# redeploy). Both are fetched on this laptop before the video goes to Modal.
+#   MOST_REPLAYED  on/off - use the graph's replay hotspots and the audience score
+#   SPONSORBLOCK   on/off - keep sponsor reads, intros, outros and previews out of clips
+#   REPLAY_WEIGHT  share of the final score from the audience, 0-1 (0.4 = 60% Gemini, 40% viewers)
+MOST_REPLAYED = get_switch("MOST_REPLAYED", True)
+SPONSORBLOCK = get_switch("SPONSORBLOCK", True)
+REPLAY_WEIGHT = min(max(get_float("REPLAY_WEIGHT", 0.4), 0.0), 1.0)
+
+
 # Moment-selection and rendering settings, read inside the containers (moments.py,
 # render.py). main.py forwards them as a Modal secret because the containers have no .env file.
 RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX",

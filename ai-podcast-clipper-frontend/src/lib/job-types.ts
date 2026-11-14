@@ -85,8 +85,54 @@ export type ClipDetail = {
   start: number | null;
   end: number | null;
   scores?: Record<string, number> | null;
-  /** "fallback" = picked from the transcript because Gemini returned too few moments. */
-  source?: "gemini" | "fallback";
+  /**
+   * "fallback" = picked from the transcript because Gemini returned too few moments;
+   * "replay" = cut around a replay hotspot that Gemini could not score.
+   */
+  source?: "gemini" | "fallback" | "replay";
+  /** Gemini's rubric score (0-100) before the audience score was blended in. */
+  gemini?: number | null;
+  /** How much YouTube viewers replay this part: 50 = the video's median, 100 = its peak. */
+  audience?: number | null;
+  /** The replay hotspot (or SponsorBlock highlight) the clip contains. */
+  peak?: ClipPeak | null;
+};
+
+export type ClipPeak = {
+  id: string;
+  rank: number;
+  kind: "replay" | "highlight";
+  center: number;
+  value?: number | null;
+};
+
+/** One replay hotspot found in the Most replayed graph (backend replay.py). */
+export type ReplayPeak = {
+  start: number;
+  end: number;
+  center: number;
+  value: number;
+  lift: number;
+  rank: number;
+};
+
+export type SponsorSegment = {
+  start: number;
+  end: number;
+  category: string;
+};
+
+/** job.json "replay": YouTube's Most replayed graph and SponsorBlock, read by the runner. */
+export type JobReplay = {
+  fetchedAt?: string;
+  available: boolean;
+  /** [start, end, intensity 0-1] for each of the (usually 100) segments. */
+  heatmap: [number, number, number][];
+  peaks: ReplayPeak[];
+  chapters?: { start: number; end: number; title: string }[];
+  duration?: number | null;
+  sponsor?: { segments: SponsorSegment[]; highlight: number | null } | null;
+  errors?: string[];
 };
 
 export type JobRanking = {
@@ -98,6 +144,15 @@ export type JobRanking = {
   errors?: string[];
   timedOut?: boolean;
   seconds?: number;
+  replay?: {
+    available?: boolean;
+    hotspots?: number;
+    skips?: number;
+    droppedForSponsor?: number;
+    cutInCode?: number;
+    chosenOnHotspot?: number;
+    weight?: number;
+  };
 };
 
 export type Job = {
@@ -146,6 +201,8 @@ export type Job = {
   runs?: RunRecord[];
   /** Video facts saved by the runner (YouTube jobs). */
   meta?: { channel?: string | null; duration?: number | null } | null;
+  /** Most replayed graph and SponsorBlock segments (YouTube jobs; left out of job lists). */
+  replay?: JobReplay | null;
 };
 
 export const ACTIVE_STATUSES: JobStatus[] = [

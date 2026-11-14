@@ -2,7 +2,7 @@
 
 Turn a long podcast or interview into ranked, ready-to-post vertical clips for YouTube Shorts, Instagram Reels and TikTok.
 
-Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video, crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on a rented cloud GPU ([Modal](https://modal.com)): YouTube videos download straight to the cloud and are deleted once the clips are made, so only the app and the finished clips live on your machine.
+Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video (helped by YouTube's "Most replayed" graph when the video has one), crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on a rented cloud GPU ([Modal](https://modal.com)): YouTube videos download straight to the cloud and are deleted once the clips are made, so only the app and the finished clips live on your machine.
 
 A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas): no accounts, payments, S3 or database.
 
@@ -15,6 +15,8 @@ A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU t
 ## Features
 
 - **Best moments, not the first ones:** Gemini scores candidates on hook, standalone sense, payoff, emotion, value and shareability; clips come back ranked with their score and the reason.
+- **What viewers actually rewatch:** for popular YouTube videos, the peaks of YouTube's "Most replayed" graph become clip candidates, Gemini cuts each one cleanly, and every clip's score blends Gemini's rubric (60%) with how often viewers replay that part (40%). The clips page shows the graph with your clips marked.
+- **No sponsor reads:** parts that [SponsorBlock](https://sponsor.ajay.app) users marked as sponsor reads, self-promotion, intros, outros or cold-open previews never become clips.
 - **Fast, accurate transcripts:** [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) transcribes 30 minutes of audio in about 16 seconds on an A10 (English).
 - **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame, without split-second jumps between people.
 - **Clips render in parallel:** one GPU container per clip, each clip encoded once on the GPU; every video shows how long it took and what it cost.
@@ -35,7 +37,8 @@ flowchart LR
     end
 
     runner -- "upload MP4" --> vol[("Modal volume")]
-    yt[("YouTube")] -. "fallback if blocked" .-> runner
+    yt[("YouTube")] -. "Most replayed graph;<br/>video if Modal is blocked" .-> runner
+    sb[("SponsorBlock")] -. "parts to skip" .-> runner
 
     subgraph modal["Modal"]
         dl["Download<br/>yt-dlp, CPU"]
@@ -53,8 +56,8 @@ flowchart LR
 ```
 
 1. **Add a video** in the browser. The Next.js app creates a job folder and starts `runner.py` in the background.
-2. **The runner** gets the video onto a Modal volume: a YouTube video downloads there directly on a small CPU container, an uploaded MP4 is sent from your machine. If YouTube blocks the cloud download, the runner downloads on your laptop and uploads instead.
-3. **On Modal**, Parakeet transcribes the audio on a GPU, then Gemini ranks the moments while no GPU is billed. Then every clip renders at the same time in its own GPU container: LR-ASD finds the speaker, and each clip is cropped to 9:16 and encoded once with subtitles on the GPU's video encoder. Progress is reported back as it goes.
+2. **The runner** reads YouTube's Most replayed graph and the SponsorBlock segments on your laptop (a few seconds, no download), then gets the video onto a Modal volume: a YouTube video downloads there directly on a small CPU container, an uploaded MP4 is sent from your machine. If YouTube blocks the cloud download, the runner downloads on your laptop and uploads instead.
+3. **On Modal**, Parakeet transcribes the audio on a GPU, then Gemini ranks the moments, replay hotspots included, while no GPU is billed. Then every clip renders at the same time in its own GPU container: LR-ASD finds the speaker, and each clip is cropped to 9:16 and encoded once with subtitles on the GPU's video encoder. Progress is reported back as it goes.
 4. **The runner** downloads the finished clips into the job folder, and they appear in the app with the job's processing time and estimated cost. Then the video is deleted, from Modal and from the job folder.
 
 ## Requirements
@@ -117,7 +120,8 @@ npm run dev
 Open http://localhost:3000.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with its live status; you can keep adding more while others run.
-- **Clips page:** click a video to see its clips, best first. Hover the rank badge (`#1 86`) for the score breakdown and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing (a YouTube video is downloaded again; for an uploaded MP4 you choose the same file again); **Try again** restarts a failed video.
+- **Clips page:** click a video to see its clips, best first. Popular YouTube videos show the Most replayed graph with each clip marked, and clips on a replay peak get a **Most replayed** badge. Hover the rank badge (`#1 86`) for the score breakdown, the audience score and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing (a YouTube video is downloaded again; for an uploaded MP4 you choose the same file again); **Try again** restarts a failed video.
+- **Older videos:** run `python runner.py --backfill-replay` once in `ai-podcast-clipper-backend` to read their graphs (it also reports how many of their clips already sat on a replay peak); **Re-rank** then uses them.
 - **Stats:** the chart icon in the header shows what each video cost on Modal and how long each step took. For videos processed before it existed, run `python runner.py --backfill-stats` once in `ai-podcast-clipper-backend`.
 
 Finished clips are also saved in `data/jobs/<job id>/clips/`.
@@ -131,4 +135,4 @@ A more detailed, editable architecture diagram: [docs/architecture.excalidraw](d
 
 ## Credits & license
 
-MIT, see [LICENSE](LICENSE). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Fonts: Geist and Bricolage Grotesque (SIL Open Font License). Demo music: "Happy Beats / Business Moves Vol. 1" by Sascha Ende, [ende.app](https://ende.app) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).
+MIT, see [LICENSE](LICENSE). Based on [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas) by Andreas Trolle. Active speaker detection by [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) (MIT). Uses SponsorBlock data licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) from [sponsor.ajay.app](https://sponsor.ajay.app/). Fonts: Geist and Bricolage Grotesque (SIL Open Font License). Demo music: "Happy Beats / Business Moves Vol. 1" by Sascha Ende, [ende.app](https://ende.app) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).

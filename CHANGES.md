@@ -91,6 +91,16 @@ Downloading a video on the laptop and uploading it to Modal took about 4 minutes
 - `benchmark_gpu.py` downloads a YouTube job's video on Modal when the job folder no longer has it.
 - The running timer in the progress strip no longer causes a hydration warning in the browser.
 
+**Most replayed and SponsorBlock**
+- For YouTube videos the runner reads YouTube's "Most replayed" graph on the laptop before every run, re-rank included (`replay.py`: one metadata-only yt-dlp call, no download, browser cookies if set). Cloud IPs often get pages without the graph, so it is not taken from the Modal download.
+- Replay hotspots are found in the graph's 100 segments after removing its biases: the opening (everyone starts there), one-segment bumps where a chapter starts (viewers jump to chapters) and sponsor reads; only peaks well above the video's median count, and peaks closer than 90 s merge.
+- Each hotspot is offered to Gemini, which returns the cleanest 30-60 s clip containing it (set-up included) and scores it on the transcript alone. Hotspots Gemini skips are cut in code around the peak and scored in the re-scoring call. Every clip gets an audience score (50 = the video's median, 100 = its most replayed part), and the final score is 60% Gemini rubric, 40% audience (`REPLAY_WEIGHT`). Videos without a graph rank exactly as before.
+- SponsorBlock (privacy-preserving hashed API): sponsor reads, self-promotion, subscribe reminders, intros, outros and cold-open previews are listed to Gemini as ranges to leave out, and any candidate that runs into them is dropped. A SponsorBlock "highlight" point becomes an extra hotspot.
+- Clips page: the replay graph with every clip's span and rank chip (amber when the clip sits on a peak; click to jump to the clip), and the SponsorBlock ranges left out. Clip cards on a peak get a **Most replayed** badge; the score details add an Audience row and how the score was blended. The Details popover lists the hotspots and SponsorBlock parts.
+- `python runner.py --backfill-replay [--force]` reads the graph and SponsorBlock for older YouTube videos and reports how many of their clips already sat on a hotspot.
+- `.env`: `MOST_REPLAYED`, `SPONSORBLOCK` (on/off) and `REPLAY_WEIGHT`, all read by the runner (no redeploy).
+- `render.py` passes the subtitle file to FFmpeg's `ass` filter by name, with FFmpeg started in its folder: a full Windows path (`C:\...`) broke the filter's option parsing, so the CPU render tests failed on Windows. Clips on Modal are unchanged.
+
 **Repository cleanup**
 - `LICENSE` (was `LICENSE.MD`): template brackets fixed; Andreas Trolle's copyright kept, with a line for this fork's changes.
 - `docs/architecture.excalidraw` replaces the upstream SaaS diagram (Stripe checkout, EC2 vs Modal), which described removed features.

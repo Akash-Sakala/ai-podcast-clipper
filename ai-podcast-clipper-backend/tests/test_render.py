@@ -476,3 +476,32 @@ def test_render_clip_removes_a_flash_frame_on_cpu(tmp_path):
     redness = [float(f[:, :, 2].mean()) - float(f[:, :, 1].mean()) for f in frames]
     assert max(redness[38:43]) < 60                          # no red frame left
     assert np.abs(frames[40].astype(int) - frames[39].astype(int)).mean() < 3   # frame 39 shown again
+
+
+def test_encode_pass_passes_subtitles_without_a_path(tmp_path, monkeypatch):
+    """The ass filter gets only the file name, with FFmpeg started in its folder, so a
+    Windows path ("C:\\Users\\...") never goes through filter-option parsing."""
+    import io
+
+    seen = {}
+
+    class FakeProc:
+        stdin = io.BytesIO()
+
+        def wait(self):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        seen["cmd"], seen["cwd"] = cmd, kwargs.get("cwd")
+        return FakeProc()
+
+    monkeypatch.setattr(render.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(render, "iter_clean_frames", lambda *a, **k: iter(()))
+    work = tmp_path / "work dir"
+    work.mkdir()
+    subtitles = work / "subtitles.ass"
+    render.encode_pass(work / "segment.mp4", 640, 360, [], subtitles, 3.0, work / "out.mp4", "x264", lambda i: None)
+    vf = seen["cmd"][seen["cmd"].index("-vf") + 1]
+    assert vf == "ass=subtitles.ass"
+    assert pathlib.Path(seen["cwd"]) == work.resolve()
+    assert pathlib.Path(seen["cmd"][-1]).is_absolute()

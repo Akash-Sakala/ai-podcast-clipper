@@ -71,7 +71,8 @@ image = (modal.Image.from_registry(
                            "/usr/local/nvidia/lib:/usr/local/nvidia/lib64",
     })
     .add_local_dir("asd", "/asd", copy=True)
-    .add_local_python_source("moments", "settings", "audio_utils", "parakeet_transcriber", "render", "costs")
+    .add_local_python_source("moments", "replay", "settings", "audio_utils", "parakeet_transcriber", "render",
+                             "costs")
     .add_local_dir("prompts", "/root/prompts"))
 
 # YouTube downloads run on a small CPU-only image: no GPU waits on the download, and
@@ -80,7 +81,7 @@ image = (modal.Image.from_registry(
 download_image = (modal.Image.debian_slim(python_version="3.12")
                   .apt_install(["ffmpeg"])
                   .pip_install(f"yt-dlp[default]=={settings.YTDLP_VERSION}", f"deno=={settings.DENO_VERSION}")
-                  .add_local_python_source("moments", "settings", "costs", "downloader"))
+                  .add_local_python_source("moments", "replay", "settings", "costs", "downloader"))
 
 # Heavy ML libraries only exist inside the containers, so they are imported inside
 # the functions that use them: your laptop only needs `pip install modal` to deploy.
