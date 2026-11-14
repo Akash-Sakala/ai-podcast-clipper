@@ -16,6 +16,7 @@ import { isActive, type Job } from "~/lib/job-types";
 import { cn } from "~/lib/utils";
 import { ClipCard } from "./clip-card";
 import { Popover } from "./popover";
+import { ReplayWave } from "./replay-wave";
 import {
   ActionButton,
   DetailsPanel,
@@ -168,10 +169,20 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
         {done && fallbacks > 0 && (
           <Notice action={rerankButton}>
             {fallbacks === job.clips.length
-              ? "Gemini was busy, so these clips were picked from the transcript."
-              : `Gemini was busy, so ${fallbacks} of these clips ${fallbacks === 1 ? "was" : "were"} picked from the transcript.`}{" "}
+              ? "Gemini was busy, so these clips were picked without it."
+              : `Gemini was busy, so ${fallbacks} of these clips ${fallbacks === 1 ? "was" : "were"} picked without it.`}{" "}
             Re-rank to try Gemini again.
           </Notice>
+        )}
+
+        {job.replay?.available && job.clips.length > 0 && (
+          <ReplayWave
+            replay={job.replay}
+            clips={job.clips
+              .map((clip) => details.get(clip))
+              .filter((d) => d !== undefined)}
+            dimmed={active}
+          />
         )}
 
         {job.clips.length > 0 ? (
@@ -188,6 +199,7 @@ export function VideoPage({ initialJob }: { initialJob: Job }) {
                 clip={clip}
                 version={job.clipsVersion ?? job.createdAt}
                 detail={details.get(clip)}
+                replayWeight={job.ranking?.replay?.weight}
               />
             ))}
           </div>

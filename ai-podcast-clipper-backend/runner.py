@@ -11,8 +11,10 @@ it directly from the terminal:
     python runner.py --thumbnails                              (covers and clip posters for older videos)
     python runner.py --backfill-stats                          (run history of older videos, for the stats page)
     python runner.py --prune-videos [--dry-run]                (delete videos kept by older versions)
+    python runner.py --backfill-replay [--force]               (Most replayed graph + SponsorBlock for older videos)
 
-Steps: video into the Modal jobs volume -> run the deployed pipeline -> download clips
+Steps: (YouTube) read the Most replayed graph and SponsorBlock segments on this laptop
+-> video into the Modal jobs volume -> run the deployed pipeline -> download clips
 into <job dir>/clips -> update <job dir>/job.json -> delete the video everywhere.
 
 YouTube videos download straight into the volume (download_video on Modal), so they
@@ -46,6 +48,7 @@ import time
 import traceback
 
 import downloader
+import replay
 import run_history
 import settings  # loads ai-podcast-clipper-backend/.env
 
@@ -124,6 +127,41 @@ def apply_meta(job: Job, meta: dict) -> None:
     job.update(title=meta.get("title") or job.data["title"], meta=meta)
 
 
+def cookies_browser() -> str | None:
+    # Optional: use your browser's YouTube login when YouTube asks to
+    # "confirm you're not a bot". Set YTDLP_COOKIES_FROM_BROWSER=firefox (or edge/chrome).
+    return os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip() or None
+
+
+def fetch_replay(job: Job, timings: dict | None = None) -> None:
+    """YouTube jobs: read the Most replayed graph (metadata only, no download) and the
+    SponsorBlock segments on this laptop, into job.json "replay". Runs before every run,
+    re-rank included, because the graph changes as a video gets more views. Never raises."""
+    if (job.data.get("source") != "youtube" or not job.data.get("youtubeUrl")
+            or not (settings.MOST_REPLAYED or settings.SPONSORBLOCK)):
+        return
+    job.update(message="Reading YouTube's Most replayed graph")
+    start = time.time()
+
+    def no_graph(url, browser):
+        return {}
+
+    record, info = replay.fetch_signals(job.data["youtubeUrl"], cookies_browser=cookies_browser(),
+                                        sponsorblock=settings.SPONSORBLOCK,
+                                        fetch_info=replay.fetch_youtube if settings.MOST_REPLAYED else no_graph,
+                                        log=log)
+    if info and not job.data.get("meta"):
+        apply_meta(job, downloader.video_meta(info))   # the title shows up right away
+    job.update(replay=record)
+    took = round(time.time() - start, 1)
+    if timings is not None:
+        timings["replay"] = took
+    sponsor = record.get("sponsor") or {}
+    log(f"Most replayed: {'graph with ' + str(len(record['peaks'])) + ' hotspot(s)' if record['available'] else 'no graph'}"
+        f"; SponsorBlock: {len(sponsor.get('segments') or [])} segment(s)"
+        + (", a highlight" if sponsor.get("highlight") is not None else "") + f" ({took:.1f}s)")
+
+
 def download_youtube(job: Job, attempts: int = 3) -> None:
     """Laptop download into <job dir>/input.mp4 (the fallback when Modal cannot download)."""
     import imageio_ffmpeg
@@ -131,9 +169,7 @@ def download_youtube(job: Job, attempts: int = 3) -> None:
     url = job.data["youtubeUrl"]
     job.update(status="downloading", message="Downloading from YouTube")
     log(f"Downloading {url}")
-    # Optional: use your browser's YouTube login when YouTube asks to
-    # "confirm you're not a bot". Set YTDLP_COOKIES_FROM_BROWSER=firefox (or edge/chrome).
-    browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "").strip() or None
+    browser = cookies_browser()
     if browser:
         log(f"Using cookies from {browser}")
     last = [0.0]
@@ -347,11 +383,15 @@ def upload_input(job: Job, volume, update_status: bool = True) -> None:
 
 def gemini_context(job: Job) -> dict:
     meta = job.data.get("meta") or {}
-    return {
+    context = {
         "title": meta.get("title") or job.data.get("title"),
         "channel": meta.get("channel"),
         "description": meta.get("description"),
     }
+    signals = replay.ranking_context(job.data.get("replay"), settings.REPLAY_WEIGHT)
+    if signals:
+        context["replay"] = signals
+    return context
 
 
 def upload_transcript(job: Job, volume) -> None:
@@ -476,6 +516,7 @@ def rerank_job(job: Job, volume, max_clips: int, timings: dict) -> tuple[dict, l
     mode = "uploaded" if transcriber == "whistle" else "reuse"
 
     usages: list = []
+    fetch_replay(job, timings)
     put_video_on_modal(job, volume, timings, usages)
     upload_transcript(job, volume)
     previous = job.dir / "moments.json"
@@ -532,6 +573,9 @@ def clip_details(clips: list[str], clip_moments: list[dict]) -> list[dict]:
             "end": moment.get("end"),
             "scores": moment.get("scores"),
             "source": moment.get("source", "gemini"),
+            "gemini": moment.get("gemini"),
+            "audience": moment.get("audience"),
+            "peak": moment.get("peak"),
         })
     return details
 
@@ -651,6 +695,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
 
         job.update(engine={"transcriber": "parakeet", "language": "en", "subtitles": "parakeet"})
         failed_stage = "uploading" if (job.dir / "input.mp4").exists() else "downloading"
+        fetch_replay(job, timings)
         put_video_on_modal(job, volume, timings, usages)
 
         failed_stage = "processing"
@@ -685,6 +730,49 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
     finally:
         if not keep_remote:
             cleanup_remote(job, volume)
+
+
+def backfill_replay(data_dir: pathlib.Path, force: bool = False, pause_s: float = 3.0,
+                    fetch=replay.fetch_signals, sleep=time.sleep) -> int:
+    """Read the Most replayed graph and SponsorBlock segments for older YouTube videos,
+    so their next re-rank uses them, and report how the current clips line up with the
+    replay hotspots (clips chosen by Gemini alone, before this feature)."""
+    totals = {"videos": 0, "withGraph": 0, "clips": 0, "clipsOnPeak": 0, "topPeakCovered": 0}
+    for job_dir in sorted((data_dir / "jobs").glob("*")):
+        if not (job_dir / "job.json").exists():
+            continue
+        job = Job(job_dir)
+        if job.data.get("source") != "youtube" or not job.data.get("youtubeUrl"):
+            continue
+        if job.data.get("replay") and not force:
+            record = job.data["replay"]
+        else:
+            if totals["videos"]:
+                sleep(pause_s)                          # be gentle with YouTube
+            record, _ = fetch(job.data["youtubeUrl"], cookies_browser=cookies_browser(),
+                              sponsorblock=settings.SPONSORBLOCK, log=log)
+            job.data["replay"] = record
+            job.save()  # keeps updatedAt: the video itself did not change
+        totals["videos"] += 1
+        sponsor = record.get("sponsor") or {}
+        skips = len(sponsor.get("segments") or [])
+        if not record.get("available"):
+            reason = "; ".join(record.get("errors") or []) or "YouTube shows no graph for it"
+            log(f"{job.id}: no Most replayed graph ({reason[:120]}); SponsorBlock {skips} segment(s)")
+            continue
+        hits = replay.hit_report(record.get("peaks") or [], job.data.get("clipDetails") or [])
+        totals["withGraph"] += 1
+        totals["clips"] += hits["clips"]
+        totals["clipsOnPeak"] += hits["clipsOnPeak"]
+        totals["topPeakCovered"] += int(hits["topPeakCovered"])
+        log(f"{job.id}: {len(record.get('peaks') or [])} hotspot(s); {hits['clipsOnPeak']} of {hits['clips']} "
+            f"current clip(s) on a hotspot; top hotspot {'covered' if hits['topPeakCovered'] else 'missed'}; "
+            f"SponsorBlock {skips} segment(s){', a highlight' if sponsor.get('highlight') is not None else ''}")
+    log(f"{totals['withGraph']} of {totals['videos']} YouTube video(s) have a Most replayed graph. "
+        f"Before this feature, {totals['clipsOnPeak']} of {totals['clips']} of their clips sat on a hotspot "
+        f"and {totals['topPeakCovered']} of {totals['withGraph']} covered the most replayed one. "
+        "Re-rank a video to use the graph.")
+    return 0
 
 
 def prune_videos(data_dir: pathlib.Path, dry_run: bool = False) -> int:
@@ -732,6 +820,9 @@ def main() -> int:
                         help="Rebuild the run history of older videos in --data-dir from their runner.log, then exit")
     source.add_argument("--prune-videos", action="store_true",
                         help="Delete the input.mp4 of finished jobs in --data-dir (kept by older versions), then exit")
+    source.add_argument("--backfill-replay", action="store_true",
+                        help="Read the Most replayed graph and SponsorBlock segments for older YouTube videos "
+                             "in --data-dir, report how their clips line up with it, then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
                         help="Where job folders are stored (default: ../data)")
     parser.add_argument("--max-clips", type=int, default=5)
@@ -742,7 +833,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="With --prune-videos: only list what would be deleted")
     parser.add_argument("--force", action="store_true",
-                        help="With --backfill-stats: also rebuild videos that already have a run history")
+                        help="With --backfill-stats / --backfill-replay: also redo videos that already have it")
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
     args = parser.parse_args()
@@ -753,6 +844,8 @@ def main() -> int:
         return backfill_stats(pathlib.Path(args.data_dir).resolve(), args.force)
     if args.prune_videos:
         return prune_videos(pathlib.Path(args.data_dir).resolve(), args.dry_run)
+    if args.backfill_replay:
+        return backfill_replay(pathlib.Path(args.data_dir).resolve(), args.force)
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")

@@ -18,8 +18,9 @@ import os
 import pathlib
 import sys
 
-import settings  # noqa: F401 - loads .env before moments reads its settings
+import settings  # loads .env before moments reads its settings
 import moments
+import replay
 
 
 def list_models(client) -> int:
@@ -75,6 +76,9 @@ def main() -> int:
     meta = job.get("meta") or {}
     context = {"title": meta.get("title") or job.get("title"), "channel": meta.get("channel"),
                "description": meta.get("description")}
+    signals = replay.ranking_context(job.get("replay"), settings.REPLAY_WEIGHT)
+    if signals:   # saved by the runner (or runner.py --backfill-replay)
+        context["replay"] = signals
 
     report: dict = {}
     chosen = moments.select_moments(words, args.max_clips, client, args.model, context, report=report)

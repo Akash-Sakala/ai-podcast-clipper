@@ -12,7 +12,13 @@ Pipeline
     4. Code - not the model - snaps clips to sentence boundaries, enforces the
        30-60 s length, computes a weighted score, removes overlaps and returns
        the top `max_clips` sorted by score (clip_0 = best).
-    5. Gemini calls go down the GEMINI_MODELS chain quickly (one retry when a
+    5. YouTube jobs with a "Most replayed" graph (replay.py, fetched on the laptop):
+       each replay hotspot is offered to Gemini, which returns the cleanest clip
+       around it (scored on the transcript alone); hotspots it skips are cut around
+       in code and scored in the re-scoring call. The final score blends Gemini's
+       rubric with the audience score (REPLAY weight, 0.4 by default). Clips that
+       run into SponsorBlock segments (sponsor reads, intros, previews...) are dropped.
+    6. Gemini calls go down the GEMINI_MODELS chain quickly (one retry when a
        model is busy), stream their answers with a low thinking level, and stop
        after RANKING_TIME_LIMIT_SECONDS. If Gemini still delivers fewer than MIN_CLIPS
        moments, the rest are picked from the transcript (source="fallback"), so a
@@ -29,6 +35,8 @@ import os
 import pathlib
 import re
 from concurrent.futures import ThreadPoolExecutor
+
+import replay as replay_signals
 
 PROMPTS_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
 
@@ -183,6 +191,40 @@ def format_context(context: dict | None) -> str:
     return "Video context\n" + "\n".join(parts) + "\n\n" if parts else ""
 
 
+def build_hotspots(replay_context: dict | None) -> list[dict]:
+    """Replay peaks plus the SponsorBlock highlight (when no peak is near it), ids H1, H2..."""
+    if not replay_context:
+        return []
+    spots = [dict(p, kind="replay") for p in replay_context.get("peaks") or []]
+    highlight = replay_context.get("highlight")
+    if highlight is not None and all(abs(float(highlight) - p["center"]) >= replay_signals.PEAK_MERGE_S
+                                     for p in spots):
+        t = float(highlight)
+        spots.append({"start": t, "end": t, "center": t, "value": None, "lift": None,
+                      "rank": len(spots) + 1, "kind": "highlight"})
+    skips = replay_context.get("skips") or []
+    spots = [s for s in spots if not replay_signals.touches_sponsor(s["center"] - 1, s["center"] + 1, skips)]
+    return [dict(s, id=f"H{i + 1}") for i, s in enumerate(spots)]
+
+
+def format_replay(hotspots: list[dict], skips: list[dict]) -> str:
+    """Hotspots and ranges to avoid, for the user message (no replay intensities:
+    Gemini scores the content alone, the audience score is added in code)."""
+    text = ""
+    if hotspots:
+        rows = []
+        for h in hotspots:
+            if h["end"] > h["start"]:
+                rows.append(f"{h['id']}: centre {h['center']:.1f} (viewers replayed {h['start']:.1f}-{h['end']:.1f})")
+            else:
+                rows.append(f"{h['id']}: centre {h['center']:.1f} (marked as the highlight by viewers)")
+        text += "Replay hotspots\n" + "\n".join(rows) + "\n\n"
+    if skips:
+        rows = [f"{s['start']:.1f}-{s['end']:.1f} ({s['category']})" for s in skips]
+        text += "Leave out (sponsor reads, intros, outros, previews)\n" + "\n".join(rows) + "\n\n"
+    return text
+
+
 # --------------------------------------------------------------------------- #
 # Validation, scoring, ranking (pure)
 # --------------------------------------------------------------------------- #
@@ -285,6 +327,7 @@ def normalize_candidates(raw: list[dict], lines: list[dict], min_s: float = MIN_
             "scores": scores,
             "score": weighted_score(scores),
             "source": c.get("source", "gemini"),
+            "hotspot": str(c.get("hotspot") or "").strip()[:8],
         })
     return out
 
@@ -306,9 +349,18 @@ def overlap_ratio(a: dict, b: dict) -> float:
     return max(inter, 0.0) / shorter if shorter > 0 else 0.0
 
 
+# Gemini-scored picks first, then clips cut around a hotspot that Gemini could not
+# score, then transcript fallbacks.
+TIERS = {"fallback": 0, "replay": 1}
+
+
+def tier(candidate: dict) -> int:
+    return TIERS.get(candidate.get("source"), 2)
+
+
 def select_top(candidates: list[dict], max_clips: int) -> list[dict]:
     """Greedy best-first selection without overlaps; ties broken by hook, not by time."""
-    ranked = sorted(candidates, key=lambda c: (c["score"], c["scores"].get("hook", 0),
+    ranked = sorted(candidates, key=lambda c: (tier(c), c["score"], c["scores"].get("hook", 0),
                                                c["scores"].get("payoff", 0)), reverse=True)
     chosen: list[dict] = []
     for cand in ranked:
@@ -405,6 +457,7 @@ def _schemas():
         value: int
         shareability: int
         reason: str
+        hotspot: str
 
     class Rescore(BaseModel):
         id: int
@@ -564,11 +617,11 @@ def parse_json_list(raw: str) -> list[dict]:
 
 def propose_candidates(client, model: str, lines: list[dict], n_candidates: int, context: dict | None,
                        min_s: float, max_s: float, generate=_generate_json, report: dict | None = None,
-                       log=print) -> list[dict]:
+                       log=print, hotspots: list[dict] | None = None, skips: list[dict] | None = None) -> list[dict]:
     Candidate, _ = _schemas()
     system = _load_prompt("viral_moments.md", n_candidates=n_candidates, min_s=int(min_s), max_s=int(max_s),
                           grace_s=int(CLIP_GRACE_S))
-    user = format_context(context) + "Transcript\n" + format_lines(lines)
+    user = format_context(context) + format_replay(hotspots or [], skips or []) + "Transcript\n" + format_lines(lines)
     raw = generate(client, model, system, user, list[Candidate], report=report, log=log)
     for c in raw:  # schema uses hook_score to avoid clashing with the hook text
         c["scores"] = {"hook": c.get("hook_score", c.get("hook") if isinstance(c.get("hook"), (int, float)) else 0),
@@ -599,6 +652,46 @@ def rerank_candidates(client, model: str, candidates: list[dict], lines: list[di
     return out
 
 
+def peak_candidate(hotspot: dict, lines: list[dict], min_s: float, max_s: float) -> dict | None:
+    """A clip cut in code around a hotspot Gemini did not return: about 30 s of set-up
+    before the hotspot's centre and 20 s after, snapped to whole sentences."""
+    centre = float(hotspot["center"])
+    for before, after in ((30.0, 20.0), (20.0, 30.0), (40.0, 15.0)):
+        snapped = snap_to_lines(max(0.0, centre - before), centre + after, lines, min_s, max_s)
+        if snapped and snapped[0] <= centre <= snapped[1]:
+            text = text_between(lines, snapped[0], snapped[1])
+            first = next((l["text"] for l in lines if l["start"] >= snapped[0] - 0.01), text)
+            return {"start": snapped[0], "end": snapped[1], "title": first[:80], "hook": first[:300],
+                    "reason": "Cut around a moment viewers replay most on YouTube.",
+                    "scores": {}, "score": 0.0, "source": "replay", "hotspot": hotspot["id"]}
+    return None
+
+
+def apply_replay(candidates: list[dict], replay_context: dict | None, hotspots: list[dict]) -> None:
+    """Attach the audience score and the hotspot each clip contains, and blend the
+    final score: (1 - weight) x Gemini rubric + weight x audience. Unscored clips
+    (transcript fallbacks, hotspot clips Gemini never scored) keep their tier."""
+    replay_context = replay_context or {}
+    heatmap = replay_context.get("heatmap") or []
+    chapters = replay_context.get("chapters") or []
+    skips = replay_context.get("skips") or []
+    weight = float(replay_context.get("weight", replay_signals.DEFAULT_WEIGHT))
+    for c in candidates:
+        base = c["score"]
+        if c.get("source") == "replay":
+            base = HEURISTIC_CAP                 # no rubric: count it like a fallback pick
+        c["gemini"] = c["score"] if c.get("source") == "gemini" else None
+        c["audience"] = replay_signals.audience_score(c["start"], c["end"], heatmap, chapters, skips)
+        spot = replay_signals.covering_peak(c["start"], c["end"], hotspots)
+        c["peak"] = {"id": spot["id"], "rank": spot["rank"], "kind": spot.get("kind", "replay"),
+                     "center": spot["center"], "value": spot.get("value")} if spot else None
+        c["score"] = replay_signals.blend(base, c["audience"], weight)
+
+
+# Transcript fallback scores are scaled to 0-HEURISTIC_CAP (see heuristic_candidates).
+HEURISTIC_CAP = 45.0
+
+
 def select_moments(words: list[dict], max_clips: int, client, model: str, context: dict | None = None,
                    min_s: float | None = None, max_s: float | None = None, generate=_generate_json,
                    log=print, report: dict | None = None, min_clips: int | None = None) -> list[dict]:
@@ -607,6 +700,8 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
     Never returns fewer than `min_clips` (MIN_CLIPS, default 3) when the video is
     long enough: missing slots are filled from the transcript and marked
     source="fallback". `report` (a dict) receives counts and any Gemini errors.
+    context["replay"] (replay.ranking_context) adds the Most replayed hotspots, the
+    audience score and the SponsorBlock ranges to leave out.
     """
     min_s = MIN_CLIP_S if min_s is None else min_s
     max_s = MAX_CLIP_S if max_s is None else max_s
@@ -619,6 +714,13 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
                    "_deadline": time.monotonic() + RANKING_TIME_LIMIT_S if RANKING_TIME_LIMIT_S else None})
     ranking_started = time.monotonic()
 
+    replay_context = (context or {}).get("replay") or None
+    hotspots = build_hotspots(replay_context)
+    skips = (replay_context or {}).get("skips") or []
+    replay_report = {"available": bool((replay_context or {}).get("heatmap")), "hotspots": len(hotspots),
+                     "skips": len(skips), "droppedForSponsor": 0, "cutInCode": 0,
+                     "weight": float((replay_context or {}).get("weight", replay_signals.DEFAULT_WEIGHT))}
+
     lines = build_lines(words)
     if not lines:
         report["reason"] = "empty transcript"
@@ -628,12 +730,18 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
     # 8 candidates for a 5-clip job: enough to choose from, ~20% less output than 10.
     per_window = max(8, max_clips + 3) if len(windows) == 1 else max(5, max_clips)
     log(f"Moment selection: {len(lines)} lines, {len(windows)} window(s), "
-        f"{per_window} candidates per window, model {model}")
+        f"{per_window} candidates per window, model {model}"
+        + (f", {len(hotspots)} replay hotspot(s)" if hotspots else "")
+        + (f", {len(skips)} SponsorBlock range(s) left out" if skips else ""))
+
+    def window_spots(window):
+        return [h for h in hotspots if window[0]["start"] <= h["center"] <= window[-1]["end"]]
 
     def run(window):
+        spots = window_spots(window)
         try:
-            return propose_candidates(client, model, window, per_window, context, min_s, max_s,
-                                      generate, report, log)
+            return propose_candidates(client, model, window, max(per_window, len(spots) + 3), context, min_s, max_s,
+                                      generate, report, log, hotspots=spots, skips=skips)
         except Exception as exc:  # noqa: BLE001 - one failed window must not lose the others
             log(f"Window {window[0]['start']:.0f}-{window[-1]['end']:.0f}s failed: {exc!r}")
             return []
@@ -641,24 +749,50 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
     with ThreadPoolExecutor(max_workers=min(4, len(windows))) as pool:
         candidates = [dict(c, source="gemini") for batch in pool.map(run, windows) for c in batch]
 
+    # SponsorBlock: sponsor reads, intros, outros and previews never become clips.
+    kept = [c for c in candidates if not replay_signals.touches_sponsor(c["start"], c["end"], skips)]
+    replay_report["droppedForSponsor"] += len(candidates) - len(kept)
+    candidates = kept
+
     # Windows overlap: drop near-duplicates, keeping the higher score.
     unique: list[dict] = []
     for cand in sorted(candidates, key=lambda c: c["score"], reverse=True):
         if all(overlap_ratio(cand, u) < 0.5 for u in unique):
             unique.append(cand)
 
-    if len(windows) > 1 and len(unique) > max_clips:
-        shortlist = sorted(unique, key=lambda c: c["score"], reverse=True)[: max(3 * max_clips, 12)]
+    # Hotspots Gemini did not cover get a clip cut around them in code.
+    built = []
+    for spot in hotspots:
+        if any(c["start"] <= spot["center"] <= c["end"] for c in unique + built):
+            continue
+        cand = peak_candidate(spot, lines, min_s, max_s)
+        if cand and not replay_signals.touches_sponsor(cand["start"], cand["end"], skips):
+            built.append(cand)
+    replay_report["cutInCode"] = len(built)
+    if built:
+        log(f"{len(built)} replay hotspot(s) without a Gemini candidate: cut in code, scored in the re-scoring call")
+
+    if (len(windows) > 1 and len(unique) > max_clips) or built:
+        shortlist = sorted(unique, key=lambda c: c["score"], reverse=True)[: max(3 * max_clips, 12)] + built
+        rest = [c for c in unique if c not in shortlist]
         try:
-            unique = rerank_candidates(client, model, shortlist, lines, generate, report, log)
+            rescored = rerank_candidates(client, model, shortlist, lines, generate, report, log)
+            # A hotspot clip Gemini has now scored competes like any Gemini pick.
+            unique = [dict(c, source="gemini") if c.get("source") == "replay" and c.get("scores") else c
+                      for c in rescored] + rest
         except Exception as exc:  # noqa: BLE001
             log(f"Re-ranking failed, using per-window scores: {exc!r}")
+            unique = unique + built
 
+    apply_replay(unique, replay_context, hotspots)
     chosen = select_top(unique, max_clips)
     if len(chosen) < min_clips:
         log(f"Gemini delivered {len(chosen)} usable moment(s); filling to {min_clips} from the transcript")
         filled = list(chosen)
-        ranked = sorted(heuristic_candidates(lines, min_s, max_s), key=lambda c: c["score"], reverse=True)
+        fallbacks = [c for c in heuristic_candidates(lines, min_s, max_s)
+                     if not replay_signals.touches_sponsor(c["start"], c["end"], skips)]
+        apply_replay(fallbacks, replay_context, hotspots)
+        ranked = sorted(fallbacks, key=lambda c: c["score"], reverse=True)
         # First pass keeps fallback picks >= 2 min apart for variety, second pass fills any gap.
         for gap in (120.0, 0.0):
             for cand in ranked:
@@ -668,15 +802,21 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
                        min(abs(cand["start"] - o["end"]), abs(o["start"] - cand["end"])) >= gap)
                        for o in filled):
                     filled.append(cand)
-        # Gemini picks always rank above transcript fallbacks.
-        filled.sort(key=lambda c: (c.get("source") != "fallback", c["score"]), reverse=True)
+        # Gemini picks always rank above clips cut in code, and those above transcript fallbacks.
+        filled.sort(key=lambda c: (tier(c), c["score"]), reverse=True)
         chosen = [dict(c, rank=i + 1, duration=round(c["end"] - c["start"], 2)) for i, c in enumerate(filled)]
         report["fallback"] = sum(1 for c in chosen if c.get("source") == "fallback")
 
+    replay_report["chosenOnHotspot"] = sum(1 for c in chosen if c.get("peak"))
+    if hotspots or skips:
+        report["replay"] = replay_report
     report["chosen"] = len(chosen)
     report["seconds"] = round(time.monotonic() - ranking_started, 1)
     report.pop("_deadline", None)
     for m in chosen:
-        log(f"  #{m['rank']} score {m['score']:5.1f}  {m['start']:8.2f}-{m['end']:8.2f}  "
-            f"[{m.get('source', 'gemini')}] {m['title']}")
+        m.pop("hotspot", None)
+        audience = f" audience {m['audience']:5.1f}" if m.get("audience") is not None else ""
+        peak = f" [{m['peak']['id']}]" if m.get("peak") else ""
+        log(f"  #{m['rank']} score {m['score']:5.1f}{audience}  {m['start']:8.2f}-{m['end']:8.2f}  "
+            f"[{m.get('source', 'gemini')}]{peak} {m['title']}")
     return chosen

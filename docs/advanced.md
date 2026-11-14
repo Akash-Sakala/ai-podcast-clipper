@@ -25,6 +25,9 @@ Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.ex
 |---|---|---|
 | `YOUTUBE_DOWNLOAD` | `cloud` | `cloud`: YouTube videos download straight into the Modal volume, and the laptop takes over if YouTube blocks it. `laptop`: always download on the laptop and upload (read by the runner, no redeploy needed) |
 | `YTDLP_VERSION` / `DENO_VERSION` | `2026.10.21` / `2.9.8` | yt-dlp and its JavaScript runtime in the Modal download image. When YouTube downloads start failing, bump `YTDLP_VERSION` and redeploy: only the small download image is rebuilt |
+| `MOST_REPLAYED` | `on` | Use YouTube's Most replayed graph: replay hotspots become clip candidates and each clip gets an audience score. Read by the runner, no redeploy needed. See [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock) |
+| `SPONSORBLOCK` | `on` | Keep SponsorBlock-marked sponsor reads, self-promotion, subscribe reminders, intros, outros and previews out of clips (runner, no redeploy) |
+| `REPLAY_WEIGHT` | `0.4` | Share of the final score from the audience, 0-1. `0.4` = 60% Gemini, 40% viewers; `0` = Gemini only (runner, no redeploy) |
 | `CLIPPER_GPU` | `A10` | GPU for transcription and for each clip's render container. A list such as `L40S,A10` is a fallback order. Needs an NVENC encoder: L4, A10 or L40S, not A100/H100/H200/B200. See [Choose a GPU](#choose-a-gpu) |
 | `RENDER_MAX_CONTAINERS` | `8` | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
 | `RENDER_CPU` | `4` | CPU cores reserved per render container (decoding and framing run on the CPU) |
@@ -57,6 +60,7 @@ python runner.py --youtube "https://www.youtube.com/watch?v=..." --max-clips 3
 python runner.py --job-dir "..\data\jobs\<job id>" --rerank
 python runner.py --thumbnails          # covers and clip posters for videos made before they existed
 python runner.py --backfill-stats      # run history for videos made before the stats page (once)
+python runner.py --backfill-replay     # Most replayed graph + SponsorBlock for older YouTube videos (once; --force re-reads)
 python runner.py --prune-videos --dry-run   # list the videos older versions kept in finished job folders
 python runner.py --prune-videos        # delete them (failed jobs keep theirs for Try again)
 ```
@@ -68,6 +72,21 @@ Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards, fo
 - **YouTube link:** `download_video` (a small CPU container on Modal) downloads it with yt-dlp straight into the `ai-podcast-clipper-jobs` volume. YouTube sometimes blocks cloud IP addresses; then the runner downloads on the laptop and uploads instead, and the job's details say "On your laptop (YouTube blocked Modal)". `YTDLP_COOKIES_FROM_BROWSER` applies to that laptop download only.
 - **MP4 upload:** the browser sends it to the job folder, and the runner uploads it to the volume.
 - **After a successful run** the runner deletes the video from the volume and from the job folder. After a failed run the volume copy is deleted too, but a video in the job folder stays, so **Try again** does not download or upload twice.
+
+## Most replayed and SponsorBlock
+
+Before every run of a YouTube video (first run and re-rank), the runner spends a few seconds on the laptop:
+
+- **Most replayed graph:** a metadata-only yt-dlp call (no download, `YTDLP_COOKIES_FROM_BROWSER` if set) returns YouTube's graph as 100 equal segments with a replay intensity from 0 to 1. Only videos with enough views have one, usually tens of thousands. It is read on the laptop because YouTube often strips it from pages it sends to cloud IPs.
+- **SponsorBlock:** the hashed API (only the first 4 characters of the video id's SHA-256 leave the laptop) returns the parts viewers marked: sponsor reads, self-promotion, subscribe reminders, intros, outros, previews and a highlight point.
+
+Both go into `job.json` (`replay`). Hotspots (`replay.find_peaks`) are the graph's peaks after three corrections: the first 45 s and last 30 s never count (everyone starts at the beginning), a bump only in the segment where a chapter starts is navigation rather than interest, and sponsor reads are flattened. A peak must stand at least 0.12 above the video's median, and peaks closer than 90 s merge.
+
+Gemini then gets the hotspots (without their intensities) and returns one cleanly cut clip around each, scored on the transcript alone. Hotspots it skips are cut in code (about 30 s of set-up before the peak) and scored in the re-scoring call. Each clip's audience score is the best segment it covers well, on a scale where 50 is the video's median and 100 its most replayed part (parts viewers skip score below 50). Final score = (1 - `REPLAY_WEIGHT`) x Gemini + `REPLAY_WEIGHT` x audience. On a 60-minute video each segment is about 36 s, so the graph says where to clip and the transcript still decides the exact cut.
+
+If the graph or SponsorBlock cannot be read, the run goes on without it (the reason is in `runner.log` and the job's Details). Uploaded MP4s have neither.
+
+SponsorBlock data is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (non-commercial, attribution); if your channel becomes a commercial use, ask its author ([sponsor.ajay.app](https://sponsor.ajay.app)) for permission or set `SPONSORBLOCK=off`.
 
 ## Re-rank
 
@@ -170,7 +189,8 @@ python -m pytest tests -q
 | Every YouTube video says "On your laptop" in its details | YouTube is blocking Modal's download; `runner.log` has the reason. Bump `YTDLP_VERSION` and `modal deploy main.py`, or set `YOUTUBE_DOWNLOAD=laptop` to skip the cloud attempt. If the reason is "download_video not found", run `modal deploy main.py` |
 | "The backend Python environment wasn't found" | Create the backend `.venv` (setup step 1) or set `RUNNER_PYTHON` in the frontend `.env` |
 | App or secret `ai-podcast-clipper` not found | Run `modal deploy main.py`, or create the secret (setup step 3) |
-| Clips marked "picked from the transcript" | Gemini was busy. Click **Re-rank** later, or check the model IDs with `rank_moments.py --list-models` |
+| No Most replayed graph on a popular video | `runner.log` has the reason. "Sign in to confirm you're not a bot": set `YTDLP_COOKIES_FROM_BROWSER`, then **Re-rank**. Otherwise YouTube shows no graph for that video yet |
+| "Gemini was busy, so these clips were picked without it" | They came from the transcript or were cut around a replay peak. Click **Re-rank** later, or check the model IDs with `rank_moments.py --list-models` |
 | HTTP 429 from Hugging Face during the first deploy | Add `HF_TOKEN` to the Modal secret and deploy again |
 | Modal auth or token errors | Run `modal setup` again in the backend venv |
 

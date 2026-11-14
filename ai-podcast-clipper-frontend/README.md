@@ -18,7 +18,8 @@ See the main [README](../README.md) for full setup.
 | `src/app/stats/page.tsx`, `src/components/stats-page.tsx` | Stats page: Modal spend, times by podcast length, cost and runs per video |
 | `src/components/dashboard-client.tsx`, `video-list.tsx` | Home page logic and the video list with live status |
 | `src/components/new-job-bar.tsx` | YouTube link, MP4 upload, drag and drop, duplicate check |
-| `src/components/video-page.tsx`, `clip-card.tsx` | Clips page, clip player, rank and score badge, downloads |
+| `src/components/video-page.tsx`, `clip-card.tsx` | Clips page, clip player, rank and score badge, Most replayed badge, downloads |
+| `src/components/replay-wave.tsx` | The Most replayed graph on the clips page, with each clip marked |
 | `src/components/video-parts.tsx` | Shared pieces: progress strip, details popover (time and cost), notices, actions |
 | `src/app/api/jobs/...` | List and create jobs; get one; re-rank (takes the MP4 again for an upload); retry; duplicate check |
 | `src/app/api/media/[jobId]/...` | Clips and posters (seeking, caching), ZIP of all clips, video cover |

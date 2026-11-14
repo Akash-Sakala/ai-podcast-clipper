@@ -187,6 +187,29 @@ export function DetailsPanel({ job }: { job: Job }) {
     });
   const model = job.ranking?.modelUsed ?? job.ranking?.model;
   if (model) rows.push({ label: "Moments picked by", value: model });
+  const replay = job.replay;
+  if (job.source === "youtube" && replay && !isActive(job)) {
+    const onPeak = (job.clipDetails ?? []).filter((d) => d.peak).length;
+    const peaks = replay.peaks.length;
+    rows.push({
+      label: "Most replayed",
+      value: replay.available
+        ? peaks
+          ? `${peaks} ${peaks === 1 ? "hotspot" : "hotspots"}, ${onPeak} ${onPeak === 1 ? "clip" : "clips"} on them`
+          : "No clear hotspots"
+        : replay.errors?.some((e) => e.startsWith("YouTube"))
+          ? "Couldn't read it"
+          : "No graph for this video yet",
+    });
+    const skipped = replay.sponsor?.segments.length;
+    if (replay.sponsor)
+      rows.push({
+        label: "SponsorBlock",
+        value: skipped
+          ? `${skipped} ${skipped === 1 ? "part" : "parts"} left out`
+          : "Nothing marked",
+      });
+  }
   const total = job.timings?.total;
   if (typeof total === "number" && !isActive(job))
     rows.push({ label: "Processing time", value: duration(total) });
@@ -251,7 +274,10 @@ export function displayTitle(job: Job) {
 }
 
 export function fallbackCount(job: Job) {
-  return (job.clipDetails ?? []).filter((d) => d.source === "fallback").length;
+  // Transcript picks, and clips cut around a replay hotspot that Gemini could not score.
+  return (job.clipDetails ?? []).filter(
+    (d) => d.source === "fallback" || d.source === "replay",
+  ).length;
 }
 
 /** Re-rank and Try again, with toasts. `onStarted` refreshes the caller's data. */

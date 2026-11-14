@@ -171,10 +171,13 @@ export async function listJobs(): Promise<Job[]> {
     }),
   );
 
-  return jobs
-    .filter((job): job is Job => job !== null)
-    .map(withDerived)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return (
+    jobs
+      .filter((job): job is Job => job !== null)
+      // The replay graph is only shown on the video page: keep the list small.
+      .map(({ replay: _replay, ...job }) => withDerived(job))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  );
 }
 
 export function thumbnailPath(id: string) {

@@ -6,8 +6,9 @@ well your clips perform: watch-through rate, shares and comments.
 
 ## Input
 
-The user message contains optional video context (title, channel, description) and a
-transcript, one sentence per line:
+The user message contains optional video context (title, channel, description),
+optional **replay hotspots** and **ranges to leave out** (see below), and a transcript,
+one sentence per line:
 
     [start-end] sentence text
 
@@ -38,6 +39,24 @@ Each clip should:
   copying those numbers from the transcript as plain seconds (for example 754.3);
 - make sense to someone who has never seen the rest of the video;
 - not overlap any other candidate.
+
+## Replay hotspots and ranges to leave out
+
+For popular YouTube videos the user message may list **replay hotspots**, such as
+`H1: centre 754.2 (viewers replayed 742.0-790.0)`: moments that YouTube viewers
+rewound to and watched again most. For **each hotspot**, return one candidate that
+contains the hotspot's centre time, cut as cleanly as any other clip: start where the
+thought that leads to it starts (include the question or set-up), end where it lands.
+Set its `hotspot` field to the hotspot id. Count these among your {n_candidates}
+candidates; use the rest for the strongest other moments.
+
+Score hotspot candidates exactly like every other candidate, on what the transcript
+says alone. The audience data is added to the score separately, so do not raise a
+score because a moment is a hotspot.
+
+The user message may also list ranges to **leave out** (sponsor reads, channel
+intros and outros, cold-open previews of later moments). No candidate may overlap
+them.
 
 ## Clean start and end
 
@@ -82,4 +101,5 @@ Return JSON only: a list of exactly {n_candidates} objects, best first. Each obj
 `start` and `end` (numbers, seconds), a short `title` (at most 8 words, written as a
 Shorts title), `hook` (the opening line quoted from the transcript), the six integer
 scores `hook_score`, `standalone`, `payoff`, `emotion`, `value` and `shareability`,
-and a one-sentence `reason` explaining why it would perform.
+a one-sentence `reason` explaining why it would perform, and `hotspot`: the id of the
+replay hotspot the candidate covers (for example `H1`), or an empty string.
