@@ -540,14 +540,16 @@ def crop_pass(segment: pathlib.Path, width: int, height: int, tracks: list[dict]
 
 def encode_pass(segment: pathlib.Path, width: int, height: int, chosen: list, subtitles: pathlib.Path,
                 duration: float, out: pathlib.Path, encoder: str, tick, replace: dict[int, int] | None = None) -> None:
+    # FFmpeg runs in the subtitles' folder and gets only the file name: a full path in a
+    # filter would need escaping ("C:\\..." on Windows breaks the ass filter's option parsing).
     cmd = [FFMPEG, "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{TARGET_W}x{TARGET_H}", "-r", str(FPS), "-i", "-",
-           "-i", str(segment), "-map", "0:v:0", "-map", "1:a:0?",
-           "-vf", f"ass={subtitles}", "-af", audio_fade(duration),
-           *ENCODERS[encoder]["final"], "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
+           "-i", str(segment.resolve()), "-map", "0:v:0", "-map", "1:a:0?",
+           "-vf", f"ass={subtitles.name}", "-af", audio_fade(duration),
+           *ENCODERS[encoder]["final"], "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out.resolve())]
     log_path = out.with_suffix(".ffmpeg.log")
     with open(log_path, "w") as log:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log)
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log, cwd=str(subtitles.resolve().parent))
         try:
             for index, frame in enumerate(iter_clean_frames(segment, width, height, replace)):
                 face = chosen[index] if index < len(chosen) else None
