@@ -64,6 +64,13 @@ export function VideoPage({
       clipNames.map((clip) => details.get(clip)).filter((d) => d !== undefined),
     [clipNames, details],
   );
+  // Clips of a running first run appear as soon as they are saved; a re-rank keeps the old
+  // clips (dimmed) until the new set replaces them.
+  const liveClips = useStable(job.liveClips);
+  const live = active && job.mode !== "rerank" && !!liveClips?.length;
+  const liveTotal = live ? (job.progress?.total ?? 0) : 0;
+  const clipVersion = (clip: string) =>
+    job.clipVersions?.[clip] ?? job.clipsVersion ?? job.createdAt;
   const fallbacks = fallbackCount(job);
   const done = job.status === "done";
 
@@ -186,7 +193,30 @@ export function VideoPage({
           <ReplayWave replay={replay} clips={waveClips} dimmed={active} />
         )}
 
-        {job.clips.length > 0 ? (
+        {live ? (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-5">
+            {liveClips?.map((detail) => (
+              <ClipCard
+                key={`${detail.name}-${clipVersion(detail.name)}`}
+                jobId={job.id}
+                clip={detail.name}
+                version={clipVersion(detail.name)}
+                detail={detail}
+                replayWeight={job.ranking?.replay?.weight}
+              />
+            ))}
+            {Array.from(
+              { length: Math.max(0, liveTotal - (liveClips?.length ?? 0)) },
+              (_, i) => (
+                <div
+                  key={`pending-${i}`}
+                  aria-hidden
+                  className="bg-muted aspect-[9/16] rounded-lg"
+                />
+              ),
+            )}
+          </div>
+        ) : job.clips.length > 0 ? (
           <div
             className={cn(
               "grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-5",
@@ -195,10 +225,10 @@ export function VideoPage({
           >
             {job.clips.map((clip) => (
               <ClipCard
-                key={`${clip}-${job.clipsVersion ?? ""}`}
+                key={`${clip}-${clipVersion(clip)}`}
                 jobId={job.id}
                 clip={clip}
-                version={job.clipsVersion ?? job.createdAt}
+                version={clipVersion(clip)}
                 detail={details.get(clip)}
                 replayWeight={job.ranking?.replay?.weight}
               />

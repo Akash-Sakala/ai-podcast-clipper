@@ -627,3 +627,211 @@ def test_a_finished_run_keeps_clip_timings_and_cold_starts(tmp_path, monkeypatch
     [line] = run_history.read_ledger(tmp_path)
     assert line["clipTimings"] == data["clipTimings"] and line["coldStarts"] == data["coldStarts"]
     assert {"usd", "gpuSeconds", "stages"} <= set(line["cost"])        # existing keys unchanged
+
+
+# --------------------------------------------------------------------------- #
+# Saving all clips at once, the download measurement, and live clips
+# --------------------------------------------------------------------------- #
+
+class BlockingVolume(FakeVolume):
+    """Clip reads wait until `need` of them are in flight at the same time (or time out)."""
+
+    def __init__(self, files, need):
+        super().__init__(files)
+        self.barrier = threading.Barrier(need, timeout=10) if need > 1 else None
+        self.lock = threading.Lock()
+        self.inflight = self.peak = 0
+
+    def read_file_into_fileobj(self, path, f):
+        with self.lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+        try:
+            if self.barrier is not None and "/clips/" in path:
+                self.barrier.wait()
+            return super().read_file_into_fileobj(path, f)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+
+
+def test_clip_downloads_at_once_setting_defaults_to_8_and_is_clamped(monkeypatch):
+    import importlib
+    try:
+        for raw, expected in ((None, 8), ("2", 2), ("0", 1), ("-5", 1), ("99", 16), ("abc", 8)):
+            if raw is None:
+                monkeypatch.delenv("CLIP_DOWNLOADS_AT_ONCE", raising=False)
+            else:
+                monkeypatch.setenv("CLIP_DOWNLOADS_AT_ONCE", raw)
+            importlib.reload(settings)
+            assert settings.CLIP_DOWNLOADS_AT_ONCE == expected
+    finally:
+        monkeypatch.delenv("CLIP_DOWNLOADS_AT_ONCE", raising=False)
+        importlib.reload(settings)
+    assert not hasattr(transfer, "CLIP_DOWNLOADS_AT_ONCE")
+
+
+def test_every_clip_downloads_at_once_up_to_the_setting(tmp_path, monkeypatch):
+    names = [f"clip_{i}.mp4" for i in range(4)]
+    job = jobstore.Job(make_job(tmp_path))
+    volume = BlockingVolume(remote_files(names), need=4)
+    monkeypatch.setattr(transfer.settings, "CLIP_DOWNLOADS_AT_ONCE", 4)
+    saver = transfer.ClipSaver(job, volume, job.dir / "clips")
+    assert saver.workers == 4
+    saver.fetch(names)
+    assert saver.finish(names) == names          # the barrier only opens when all 4 are in flight
+    assert volume.peak == 4
+
+    # a smaller pool never goes past its size
+    job2 = jobstore.Job(make_job(tmp_path, job_id="20261114-100001-abcdef"))
+    volume2 = BlockingVolume({k.replace(JOB_ID, job2.id): v for k, v in remote_files(names).items()}, need=2)
+    saver2 = transfer.ClipSaver(job2, volume2, job2.dir / "clips", workers=2)
+    saver2.fetch(names)
+    assert saver2.finish(names) == names and volume2.peak == 2
+
+
+def test_saver_stats_report_size_wall_clock_speed_and_concurrency(tmp_path):
+    job = jobstore.Job(make_job(tmp_path))
+    saver = transfer.ClipSaver(job, FakeVolume(), job.dir / "clips", workers=8)
+    assert saver.stats() is None
+    saver._done = {"clip_0.mp4": {"bytes": 50_000_000, "seconds": 10, "start": 100.0, "end": 110.0},
+                   "clip_1.mp4": {"bytes": 30_000_000, "seconds": 12, "start": 101.0, "end": 113.0}}
+    assert saver.stats() == {"clips": 2, "megabytes": 76.3, "seconds": 13.0, "mbps": 49.2, "atOnce": 8}
+
+
+def test_saver_stats_after_real_downloads_and_the_per_clip_log_line(tmp_path, monkeypatch):
+    lines = []
+    monkeypatch.setattr(transfer, "log", lines.append)
+    job = jobstore.Job(make_job(tmp_path))
+    names = ["clip_0.mp4", "clip_1.mp4"]
+    saver = transfer.ClipSaver(job, FakeVolume(remote_files(names)), job.dir / "clips", workers=2)
+    saver.fetch(names)
+    saver.finish(names)
+    stats = saver.stats()
+    assert stats["clips"] == 2 and stats["atOnce"] == 2 and stats["megabytes"] >= 0
+    assert set(stats) == {"clips", "megabytes", "seconds", "mbps", "atOnce"}
+    assert any(l.startswith("Saved clip_0.mp4 (") and " MB in " in l and " Mbps)" in l for l in lines)
+
+
+def test_on_saved_is_called_after_each_clip_swallows_errors_and_describe_republishes(tmp_path):
+    job = jobstore.Job(make_job(tmp_path))
+    seen = []
+
+    def hook(names):
+        seen.append(names)
+        raise RuntimeError("boom")               # must not fail the download
+
+    saver = transfer.ClipSaver(job, FakeVolume(remote_files()), job.dir / "clips", workers=1, on_saved=hook)
+    saver.fetch(["clip_0.mp4"])
+    saver.finish(["clip_0.mp4"])
+    assert seen == [["clip_0.mp4"]]
+    saver.describe([{"rank": 1}])                # clips are already saved: fires again
+    assert seen[-1] == ["clip_0.mp4"] and saver.moments == [{"rank": 1}]
+
+
+def live_run_world(tmp_path, monkeypatch, outcome="ok", mode="full"):
+    """Runs the full pipeline with a fake Modal step that saves clip by clip like phases.py does,
+    returning job.json's liveClips as seen after each clip."""
+    names = ["clip_0.mp4", "clip_1.mp4"]
+    job_dir = make_job(tmp_path) if mode == "full" else rerank_job_dir(tmp_path)
+    if mode == "full":
+        (job_dir / "input.mp4").write_bytes(b"video")
+        (job_dir / "thumbnail.jpg").write_bytes(b"jpg")
+    install_fake_modal(monkeypatch, FakeVolume(remote_files(names)))
+    monkeypatch.setattr(pipeline, "fetch_replay", lambda *a, **k: None)
+    snapshots = []
+
+    def modal_step(job, max_clips, run_mode, timings, saver, **kwargs):
+        result = gpu_result(names)
+        for m, title in zip(result["moments"], ("First", "Second")):
+            m["title"], m["score"] = title, 80.0
+        saver.describe(result["moments"])
+        for name in names:
+            saver.fetch([name])
+            saver.futures[name].result()
+            snapshots.append(read(job_dir).get("liveClips"))
+        if outcome == "fail":
+            raise RuntimeError("render died")
+        return result
+
+    monkeypatch.setattr(pipeline, "process_on_modal", modal_step)
+    code = pipeline.run_job(job_dir, 5, False) if mode == "full" else pipeline.run_rerank(job_dir, 5, False)
+    return job_dir, code, snapshots
+
+
+def test_live_clips_grow_as_clips_are_saved_and_clear_on_success(tmp_path, monkeypatch):
+    job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch)
+    assert code == 0
+    assert [[c["name"] for c in s] for s in snapshots] == [["clip_0.mp4"], ["clip_0.mp4", "clip_1.mp4"]]
+    first = snapshots[1][0]
+    assert first["title"] == "First" and first["rank"] == 1 and first["score"] == 80.0
+    assert read(job_dir)["liveClips"] is None and len(read(job_dir)["clipDetails"]) == 2
+
+
+def test_live_clips_clear_when_the_run_fails(tmp_path, monkeypatch):
+    job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch, outcome="fail")
+    assert code == 1 and len(snapshots[1]) == 2
+    assert read(job_dir)["status"] == "failed" and read(job_dir)["liveClips"] is None
+
+
+def test_live_clips_clear_when_the_run_is_stopped(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path, liveClips=[{"name": "clip_0.mp4"}])        # stale, from a killed runner
+    (job_dir / "input.mp4").write_bytes(b"video")
+    (job_dir / "thumbnail.jpg").write_bytes(b"jpg")
+    install_fake_modal(monkeypatch, FakeVolume(remote_files()))
+    monkeypatch.setattr(pipeline, "fetch_replay", lambda *a, **k: None)
+
+    def stop(*a, **k):
+        assert read(job_dir)["liveClips"] is None                            # cleared at the start
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(pipeline, "process_on_modal", stop)
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.run_job(job_dir, 5, False)
+    assert read(job_dir)["liveClips"] is None and read(job_dir)["status"] == "failed"
+
+
+def test_a_rerank_never_publishes_live_clips(tmp_path, monkeypatch):
+    job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch, mode="rerank")
+    assert code == 0 and snapshots == [None, None]
+    assert not read(job_dir).get("liveClips")
+
+
+def test_live_clips_during_a_pending_save_resume(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path)
+    (job_dir / "input.mp4").write_bytes(b"video")
+    (job_dir / "thumbnail.jpg").write_bytes(b"jpg")
+    volume = FakeVolume(remote_files())
+    volume.fail[f"/{JOB_ID}/clips/clip_1.mp4"] = -1
+    install_fake_modal(monkeypatch, volume)
+    monkeypatch.setattr(pipeline, "process_on_modal", lambda *a, **k: gpu_result())
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 1
+    volume.fail.clear()
+    published = []
+    real_update = jobstore.Job.update
+
+    def spy(self, **fields):
+        if fields.get("liveClips"):
+            published.append([c["name"] for c in fields["liveClips"]])
+        return real_update(self, **fields)
+
+    monkeypatch.setattr(jobstore.Job, "update", spy)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    assert published and published[-1] == ["clip_0.mp4", "clip_1.mp4"]
+    assert read(job_dir)["liveClips"] is None
+
+
+def test_clip_save_stats_land_in_job_json_and_the_run_record(tmp_path, monkeypatch):
+    job_dir, code, _ = live_run_world(tmp_path, monkeypatch)
+    data = read(job_dir)
+    stats = data["clipSave"]
+    assert code == 0 and stats["clips"] == 2 and stats["atOnce"] == settings.CLIP_DOWNLOADS_AT_ONCE
+    assert "clipSave" not in data["timings"]
+    [line] = run_history.read_ledger(tmp_path)
+    assert line["clipSave"] == stats and data["runs"][-1]["clipSave"] == stats
+
+
+def test_clip_save_stats_for_a_rerank_and_a_resumed_save(tmp_path, monkeypatch):
+    job_dir, code, _ = live_run_world(tmp_path, monkeypatch, mode="rerank")
+    assert code == 0 and read(job_dir)["clipSave"]["clips"] == 2
+    assert read(job_dir)["runs"][-1]["clipSave"]["clips"] == 2

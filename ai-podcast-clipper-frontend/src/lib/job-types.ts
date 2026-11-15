@@ -230,6 +230,8 @@ export type Job = {
   timings?: Record<string, number | boolean>;
   cost?: JobCost | null;
   clipDetails?: ClipDetail[];
+  /** Clips already saved by a running full run (runner.py), best first; null once the run ends. */
+  liveClips?: ClipDetail[] | null;
   ranking?: JobRanking;
   reranks?: number;
   /** What the current or last run did: a full run or a re-rank of the saved transcript. */
@@ -246,6 +248,8 @@ export type Job = {
   hasThumbnail?: boolean;
   /** Derived by the server: changes when the clip files are replaced (for caching). */
   clipsVersion?: string;
+  /** Derived by the server: per clip file, its modified time (base 36), for caching. */
+  clipVersions?: Record<string, string>;
   /** Content fingerprint of an uploaded video (see lib/fingerprint.ts). */
   fingerprint?: string;
   /** Every run of this job, oldest first (runner.py; older jobs: --backfill-stats). */

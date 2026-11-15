@@ -93,6 +93,9 @@ def get_float(name: str, default: float) -> float:
 #   MOST_REPLAYED  on/off - use the graph's replay hotspots and the audience score
 #   SPONSORBLOCK   on/off - keep sponsor reads, intros, outros and previews out of clips
 #   REPLAY_WEIGHT  share of the final score from the audience, 0-1 (0.4 = 60% Gemini, 40% viewers)
+# Rendered clips downloaded from Modal at the same time (1-16). 2 was the old value.
+CLIP_DOWNLOADS_AT_ONCE = min(max(get_int("CLIP_DOWNLOADS_AT_ONCE", 8), 1), 16)
+
 # YouTube downloads on this laptop use IPv4 (off: let the system choose). Read by runner.py.
 YOUTUBE_IPV4 = get_switch("YOUTUBE_IPV4", True)
 

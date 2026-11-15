@@ -93,6 +93,25 @@ function clipsVersion(job: Job) {
   return Math.floor(newest).toString(36);
 }
 
+/** Per clip file (finished or still running): its modified time, so one clip keeps its cache
+ *  entry (and a card its identity) when the job finishes. Missing files are skipped. */
+function clipVersions(job: Job) {
+  const versions: Record<string, string> = {};
+  const names = new Set([
+    ...job.clips,
+    ...(job.liveClips ?? []).map((clip) => clip.name),
+  ]);
+  for (const name of names) {
+    try {
+      const mtime = fs.statSync(clipPath(job.id, name)).mtimeMs;
+      versions[name] = Math.floor(mtime).toString(36);
+    } catch {
+      // missing clip: ignore
+    }
+  }
+  return versions;
+}
+
 function withDerived(job: Job): Job {
   return {
     ...job,
@@ -100,6 +119,7 @@ function withDerived(job: Job): Job {
     rerankNeedsFile: rerankNeedsFile(job),
     hasThumbnail: hasThumbnail(job),
     clipsVersion: clipsVersion(job),
+    clipVersions: clipVersions(job),
   };
 }
 

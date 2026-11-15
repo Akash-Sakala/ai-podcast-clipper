@@ -139,6 +139,11 @@ def save_clips(job: Job, volume, result: dict, saver: ClipSaver, mode: str, timi
             log("The clips are kept on Modal: Try again (or Re-rank) downloads them without rendering again")
         raise
     timings["save"] = round(time.time() - saving, 1)
+    stats = saver.stats()
+    if stats:
+        result["clipSave"] = stats
+        log(f"Saved {stats['clips']} clips: {stats['megabytes']:.1f} MB in {stats['seconds']:.1f}s "
+            f"({stats['mbps']:.1f} Mbps, {stats['atOnce']} at once)")
     return clips
 
 
@@ -186,6 +191,21 @@ def clip_details(clips: list[str], clip_moments: list[dict]) -> list[dict]:
     return details
 
 
+def live_clip_saver(job: Job, volume, target_dir: pathlib.Path) -> ClipSaver:
+    """A ClipSaver that publishes the clips saved so far as job.json "liveClips", so the app
+    shows each clip as soon as it is on this laptop (full runs only)."""
+    holder: list[ClipSaver] = []
+
+    def publish(names: list[str]) -> None:
+        moments = holder[0].moments if holder else None
+        if moments:
+            job.update(liveClips=clip_details(names, moments))
+
+    saver = ClipSaver(job, volume, target_dir, on_saved=publish)
+    holder.append(saver)
+    return saver
+
+
 def forget_video(job: Job) -> None:
     """After a successful run: an upload keeps its fingerprint (to be recognised when it is
     added again), then input.mp4 leaves the job folder."""
@@ -210,6 +230,8 @@ def run_diagnostics(result: dict) -> dict:
               for u in result.get("usages") or [] if isinstance(u, dict) and (u.get("enterSeconds") or 0) > 0]
     if starts:
         out["coldStarts"] = starts
+    if result.get("clipSave"):
+        out["clipSave"] = result["clipSave"]      # download speed (not in timings: the stats page sums those)
     if result.get("resumedFrom"):
         out["resumedFrom"] = result["resumedFrom"]   # clips of an earlier attempt, downloaded now
     return out
@@ -282,14 +304,14 @@ def stopped(job: Job, failed_stage: str, keep_clips: bool) -> None:
     job.update(status="done" if keep_clips else "failed",
                message="Stopped - previous clips kept" if keep_clips else "Stopped",
                error="The runner was stopped before the job finished", progress=None,
-               failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage)
+               failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, liveClips=None)
 
 
 def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video: bool = False) -> int:
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None,
+    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None, liveClips=None,
                message="Re-rank & re-render: getting the video ready")
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {"rerank": True}
@@ -356,7 +378,7 @@ def finish_full_run(job: Job, result: dict, clips: list[str], timings: dict, job
                       timings=timings, cost=cost, clips=clips, details=details, ranking=ranking, extra=extra)
     job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                ranking=ranking, progress=None, clipDetails=details, cost=cost, runs=runs, pendingSave=None,
-               **extra)
+               liveClips=None, **extra)
     log(f"{message}. Timings: {timings}")
     if not keep_video:
         forget_video(job)
@@ -375,7 +397,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None)
+    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, liveClips=None)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {}
     job_start = time.time()
@@ -386,7 +408,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
         result = resume_pending(job, "full", timings)
         if result is not None:
             failed_stage = "saving"
-            saver = ClipSaver(job, volume, job.dir / "clips")
+            saver = live_clip_saver(job, volume, job.dir / "clips")
+            saver.describe(result.get("moments"))
             try:
                 clips = save_clips(job, volume, result, saver, "full", timings, job_start)
             except FileNotFoundError:
@@ -411,7 +434,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
         fetch_replay(job, timings)
 
         failed_stage = "processing"
-        saver = ClipSaver(job, volume, job.dir / "clips")
+        saver = live_clip_saver(job, volume, job.dir / "clips")
         result = run_on_modal(job, volume, max_clips, mode, timings, saver, keep_video)
         job.update(engine={**job.data["engine"], "subtitles": result.get("subtitles", "parakeet"),
                            "gpu": result.get("gpu"),
@@ -427,7 +450,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
                           failed_stage=(job.data.get("progress") or {}).get("stage") or failed_stage)
         job.update(status="failed", message="Failed", error=f"{type(exc).__name__}: {exc}", timings=timings,
                    failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, progress=None,
-                   runs=runs)
+                   runs=runs, liveClips=None)
         discard_extras(job)
         return 1
     except BaseException:   # a stop signal or Ctrl+C

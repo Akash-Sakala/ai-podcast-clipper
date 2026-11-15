@@ -4,8 +4,9 @@ lookup and saving the clips):
 
   phase 1   the audio goes up first (YouTube: the audio stream alone; an upload: copied out
             of the MP4 on this laptop) and Modal transcribes and ranks it. Meanwhile the
-            laptop downloads the YouTube video. A re-rank uploads the saved transcript
-            instead (rank only).
+            laptop downloads the YouTube video: the download starts as soon as the audio
+            stream is on the laptop, so it also runs while the audio uploads
+            (VideoDownload). A re-rank uploads the saved transcript instead (rank only).
   phase 2   for each chosen moment the laptop cuts the clip's footage out of the local video
             (stream copy, checked; cutter.py) and uploads only that; Modal renders it
             exactly as it would have rendered from the whole video (segments.py).
@@ -19,6 +20,7 @@ video (kept until the run succeeds, so Try again needs no new download), audio/ 
 (removed after each run). Timings: "audio" (getting and uploading it), "download" (the
 video, in parallel with phase 1), "downloadWait" (how long the run then waited for it),
 "cut", "clipUpload"; "download" and "upload" as before on the whole-video path.
+"download" starts while the audio uploads, so it overlaps "audio" as well as phase 1.
 """
 
 import shutil
@@ -52,12 +54,12 @@ class Board:
     """job.json "progress" during phase 1: the cloud's stage, with the share of the video
     downloaded so far as "download"; "downloading" once only the download is left."""
 
-    def __init__(self, job: Job, first_stage: str, downloading: bool):
+    def __init__(self, job: Job, first_stage: str, downloading: bool, fraction: float | None = None):
         self.job = job
         self.cloud: dict = {"stage": first_stage}
         self.cloud_done = False
         self.downloading = downloading
-        self.fraction: float | None = None
+        self.fraction = fraction         # the download may be under way already (VideoDownload)
         self.lock = threading.Lock()
 
     def on_cloud(self, current: dict) -> None:
@@ -93,6 +95,85 @@ class Board:
 
 
 # --------------------------------------------------------------------------- #
+# The YouTube video, downloaded on its own thread
+# --------------------------------------------------------------------------- #
+
+class VideoDownload:
+    """The YouTube video download on a background thread, so it can start while the audio
+    still uploads and go on while the cloud transcribes and ranks.
+
+    Its share done goes to whoever shows progress at the time: the audio upload's bar reads
+    `fraction`; phase 1's Board is told through watch(). The download stops itself (the
+    partial file stays, so Try again resumes it) when cancel() is called or the watched
+    cloud call fails or finds nothing to render. wait() hands its outcome to the main thread."""
+
+    def __init__(self, job: Job, audio_format: str | None, timings: dict):
+        self.job, self.audio_format, self.timings = job, audio_format, timings
+        self.fraction: float | None = None
+        self.cloud: BackgroundCall | None = None
+        self.board: Board | None = None
+        self.video = None
+        self.error: BaseException | None = None
+        self.ready_at: float | None = None
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="video-download", daemon=True)
+
+    def start(self) -> "VideoDownload":
+        self.thread.start()
+        return self
+
+    def watch(self, cloud: BackgroundCall, board: Board) -> None:
+        """Phase 1 has started: stop when it fails or has nothing to render, report to its board."""
+        self.cloud, self.board = cloud, board
+        if self.done.is_set():
+            board.end_download()
+
+    def _progress(self, fraction: float) -> None:
+        cloud = self.cloud
+        if self.cancelled.is_set() or (cloud is not None and (cloud.failed or cloud.nothing_to_render)):
+            raise StopVideoDownload()
+        self.fraction = fraction
+        board = self.board
+        if board is not None:
+            board.on_download(fraction)
+
+    def _run(self) -> None:
+        started = time.time()
+        try:
+            self.video = download_youtube(self.job, on_progress=self._progress, audio_format=self.audio_format,
+                                          update_status=False)
+        except StopVideoDownload:
+            log("Stopped the video download: it is not needed")
+        except Exception as exc:  # noqa: BLE001 - raised by the run once phase 1 has finished
+            log(f"The video download failed ({type(exc).__name__}: {exc}); waiting for the cloud's ranking first")
+            self.error = exc
+        except BaseException as exc:  # noqa: BLE001 - handed to wait(), like any other outcome
+            self.error = exc
+        finally:
+            self.ready_at = time.time()
+            self.timings["download"] = round(self.ready_at - started, 1)
+            self.done.set()
+            board = self.board
+            if board is not None:
+                board.end_download()
+
+    def wait(self):
+        """(path or None, the download's error or None, when it ended). A stop signal that
+        ended the download is raised here, on the calling thread."""
+        while not self.done.wait(0.5):    # short waits: a stop signal is handled on this thread
+            pass
+        if self.error is not None and not isinstance(self.error, Exception):
+            raise self.error
+        return self.video, self.error, self.ready_at
+
+    def cancel(self, timeout: float = 5.0) -> None:
+        """The run is ending without the video: stop at the next progress report. Never raises."""
+        self.cancelled.set()
+        self.done.wait(timeout)
+
+
+# --------------------------------------------------------------------------- #
 # Phase 1
 # --------------------------------------------------------------------------- #
 
@@ -104,24 +185,31 @@ def local_upload(job: Job):
     return video
 
 
-def audio_on_modal(job: Job, volume, timings: dict) -> tuple[str, str | None] | None:
+def audio_on_modal(job: Job, volume, timings: dict, start_video=None) -> tuple[str, str | None] | None:
     """Put the video's audio on the volume: (its name there, the YouTube audio format id),
-    or None (with the reason in runner.log) when it can't be had on its own."""
+    or None (with the reason in runner.log) when it can't be had on its own.
+    start_video(format id) is called once a YouTube video's audio stream is on the laptop
+    and returns the VideoDownload it started: the video then downloads while the audio is
+    prepared and uploaded, and the upload's progress carries its share as "download"."""
     started = time.time()
     folder = download_folder(job) / "audio"
     job.update(status="uploading", message="Sending the audio to Modal", videoTransfer=AUDIO_FIRST)
     set_progress(job, "audio")
     upload = None if job.data.get("source") == "youtube" else local_upload(job)   # a missing video raises here
     try:
+        video = None
         if upload is None:
             source, format_id = download_youtube_audio(job)
+            if start_video is not None:
+                video = start_video(format_id)
         else:
             source, format_id = upload, None
         audio = cutter.extract_audio(source, folder)
     except Exception as exc:  # noqa: BLE001 - any failure: the whole video, as before
         log(f"Could not get the audio on its own ({type(exc).__name__}: {exc}); uploading the whole video instead")
         return None
-    upload_files(job, volume, [(audio, f"/{job.id}/{audio.name}")], "audio", "the audio")
+    meanwhile = (lambda: {"download": video.fraction or 0.0}) if video is not None else None
+    upload_files(job, volume, [(audio, f"/{job.id}/{audio.name}")], "audio", "the audio", extra=meanwhile)
     timings["audio"] = round(time.time() - started, 1)
     return audio.name, format_id
 
@@ -188,6 +276,8 @@ def render_on_modal(job: Job, functions: dict, first: dict, footage: list | None
     job.update(status="processing", message="Rendering on the GPU")
     set_progress(job, "rendering")
     started = time.time()
+    if saver is not None and hasattr(saver, "describe"):
+        saver.describe(first["moments"])
     call = spawn(job, functions[RENDER_FUNCTION], job.id, first["moments"], footage, first.get("clipWords"))
     second = wait_for(call, job, on_ready=saver.fetch if saver else None)
     finished(job)
@@ -238,47 +328,40 @@ def whole_video_run(job: Job, volume, functions: dict, max_clips: int, mode: str
     return merge_results(first, render_on_modal(job, functions, first, None, timings, saver))
 
 
-def get_video(job: Job, cloud: BackgroundCall, board: Board, audio_format: str | None, timings: dict):
+def get_video(job: Job, cloud: BackgroundCall, board: Board, audio_format: str | None, timings: dict,
+              download: VideoDownload | None = None):
     """The local video while phase 1 runs: an upload's own file, or the YouTube download
-    (stopped early when phase 1 fails or finds nothing to render). Returns (path or None,
-    the download's error or None, when the video was ready)."""
+    (already under way when it started during the audio upload; stopped early when phase 1
+    fails or finds nothing to render). Returns (path or None, the download's error or None,
+    when the video was ready)."""
     if job.data.get("source") != "youtube":
         return local_upload(job), None, time.time()
-
-    def progress(fraction: float) -> None:
-        if cloud.failed or cloud.nothing_to_render:
-            raise StopVideoDownload()
-        board.on_download(fraction)
-
-    started = time.time()
-    try:
-        video = download_youtube(job, on_progress=progress, audio_format=audio_format, update_status=False)
-        return video, None, time.time()
-    except StopVideoDownload:
-        log("Stopped the video download: it is not needed")
-        return None, None, time.time()
-    except Exception as exc:  # noqa: BLE001 - raised once phase 1 has finished
-        log(f"The video download failed ({type(exc).__name__}: {exc}); waiting for the cloud's ranking first")
-        return None, exc, time.time()
-    finally:
-        timings["download"] = round(time.time() - started, 1)
-        board.end_download()
+    if download is None:
+        download = VideoDownload(job, audio_format, timings)
+        download.watch(cloud, board)
+        download.start()
+    else:
+        download.watch(cloud, board)
+    return download.wait()
 
 
 def two_phase_run(job: Job, volume, functions: dict, max_clips: int, mode: str, context: dict, timings: dict,
-                  saver, media: str | None, audio_format: str | None) -> dict:
-    """Phase 1 in the cloud while the laptop gets the video, then phase 2."""
+                  saver, media: str | None, audio_format: str | None,
+                  download: VideoDownload | None = None) -> dict:
+    """Phase 1 in the cloud while the laptop gets the video (`download`: already started
+    during the audio upload), then phase 2."""
     if mode != "parakeet":
         upload_transcript(job, volume)
     job.update(status="processing", message="Finding the best moments" if mode != "parakeet" else "Transcribing",
                videoTransfer=AUDIO_FIRST)
     youtube = job.data.get("source") == "youtube"
-    board = Board(job, first_stage(mode), downloading=youtube)
+    board = Board(job, first_stage(mode), downloading=youtube,
+                  fraction=download.fraction if download is not None else None)
     board.show()
     started = time.time()
     call = spawn(job, functions[TRANSCRIBE_FUNCTION], job.id, max_clips, context, mode, media or "audio.m4a")
     cloud = BackgroundCall(job, call, board.on_cloud, on_done=board.end_cloud).start()
-    video, video_error, video_ready = get_video(job, cloud, board, audio_format, timings)
+    video, video_error, video_ready = get_video(job, cloud, board, audio_format, timings, download)
     try:
         first = cloud.get()
     except Exception:
@@ -312,14 +395,26 @@ def process_on_modal(job: Job, max_clips: int, mode: str, timings: dict, saver=N
     if mode == "uploaded":
         return whole_video_run(job, volume, functions, max_clips, mode, context, timings, saver, keep_video)
     media, audio_format = None, None
-    if mode == "parakeet":
-        got = audio_on_modal(job, volume, timings)
-        if got is None:
-            return whole_video_run(job, volume, functions, max_clips, mode, context, timings, saver, keep_video)
-        media, audio_format = got
+    early: list[VideoDownload] = []      # the video download started during the audio upload, if any
+
+    def start_video(format_id: str | None) -> VideoDownload:
+        early.append(VideoDownload(job, format_id, timings).start())
+        return early[0]
+
     try:
-        return two_phase_run(job, volume, functions, max_clips, mode, context, timings, saver, media, audio_format)
+        if mode == "parakeet":
+            got = audio_on_modal(job, volume, timings, start_video)
+            if got is None:
+                if early:   # the same file is uploaded whole next: let its download finish first
+                    set_progress(job, "downloading", fraction=early[0].fraction)
+                    early[0].wait()
+                return whole_video_run(job, volume, functions, max_clips, mode, context, timings, saver, keep_video)
+            media, audio_format = got
+        return two_phase_run(job, volume, functions, max_clips, mode, context, timings, saver, media, audio_format,
+                             early[0] if early else None)
     finally:
+        if early and not early[0].done.is_set():   # the run ended without the video (an error, a stop)
+            early[0].cancel()
         shutil.rmtree(download_folder(job) / "audio", ignore_errors=True)
         shutil.rmtree(download_folder(job) / "audio-download", ignore_errors=True)
 
