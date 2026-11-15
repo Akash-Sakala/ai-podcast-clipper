@@ -2,9 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { isValidClipName, isValidJobId, jobDir } from "~/lib/jobs";
-
-export const dynamic = "force-dynamic";
+import { isValidClipName, isValidJobId, jobDir } from "~/lib/paths";
 
 const POSTER_PATTERN = /^clip_\d+\.jpg$/;
 

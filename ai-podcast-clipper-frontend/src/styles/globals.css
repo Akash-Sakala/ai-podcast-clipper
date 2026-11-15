@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -13,21 +12,16 @@
   --background: #f3f4f6;
   --foreground: #16181d;
   --card: #ffffff;
-  --card-foreground: #16181d;
   --popover: #ffffff;
   --popover-foreground: #16181d;
-  --primary: #16181d;
-  --primary-foreground: #ffffff;
-  --secondary: #e9ebef;
-  --secondary-foreground: #16181d;
   --muted: #e9ebef;
   --muted-foreground: #5c6371;
   --accent: #e9ebef;
-  --accent-foreground: #16181d;
   --destructive: #c8372f;
-  --destructive-foreground: #ffffff;
   --border: #dcdfe5;
   --input: #cfd3da;
+  /* Off state of a switch: 3.3:1 against the card (non-text contrast). */
+  --switch-off: #868d9a;
   --ring: #b97400;
   --tally: #f5a524;
   --tally-ink: #2e1f00;
@@ -35,33 +29,32 @@
   --radius: 0.625rem;
   /* Stats charts: pipeline stages, slots of the validated data-viz palette (light /
      dark steps). Amber stays the UI accent, so Render is magenta. */
-  --stage-download: #2a78d6;
+  --stage-download: #2975d3;
   --stage-transcribe: #1baf7a;
   --stage-rank: #6250d6;
   --stage-render: #e87ba4;
   --stage-save: #b5bbc6;
   --stage-overhead: #d5d9e0;
+  /* Text on the stage colours (4.5:1 or better). */
+  --stage-download-ink: #ffffff;
+  --stage-transcribe-ink: #16181d;
+  --stage-rank-ink: #ffffff;
+  --stage-render-ink: #16181d;
 }
 
 .dark {
   --background: #15171c;
   --foreground: #eceef2;
   --card: #1c1f25;
-  --card-foreground: #eceef2;
   --popover: #22262d;
   --popover-foreground: #eceef2;
-  --primary: #eceef2;
-  --primary-foreground: #15171c;
-  --secondary: #262a31;
-  --secondary-foreground: #eceef2;
   --muted: #262a31;
   --muted-foreground: #9aa1ae;
   --accent: #2b3038;
-  --accent-foreground: #eceef2;
   --destructive: #f0645c;
-  --destructive-foreground: #15171c;
   --border: #2c3139;
   --input: #3a404a;
+  --switch-off: #69717e;
   --ring: #f5a524;
   --tally: #f5a524;
   --tally-ink: #2e1f00;
@@ -72,27 +65,25 @@
   --stage-render: #d55181;
   --stage-save: #4a505b;
   --stage-overhead: #353a43;
+  --stage-download-ink: #0a0c10;
+  --stage-transcribe-ink: #0a0c10;
+  --stage-rank-ink: #0a0c10;
+  --stage-render-ink: #0a0c10;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
+  --color-switch-off: var(--switch-off);
   --color-ring: var(--ring);
   --color-tally: var(--tally);
   --color-tally-ink: var(--tally-ink);
@@ -103,14 +94,16 @@
   --color-stage-render: var(--stage-render);
   --color-stage-save: var(--stage-save);
   --color-stage-overhead: var(--stage-overhead);
+  --color-stage-download-ink: var(--stage-download-ink);
+  --color-stage-transcribe-ink: var(--stage-transcribe-ink);
+  --color-stage-rank-ink: var(--stage-rank-ink);
+  --color-stage-render-ink: var(--stage-render-ink);
 
   --font-sans:
     var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     sans-serif;
   --font-display:
     var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, sans-serif;
-
-  --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);

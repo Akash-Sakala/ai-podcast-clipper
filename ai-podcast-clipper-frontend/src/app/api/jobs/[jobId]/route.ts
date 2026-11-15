@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
+import { jsonWithEtag } from "~/lib/http";
 import { getJob } from "~/lib/jobs";
 
-export const dynamic = "force-dynamic";
-
-/** One job. The clips page polls this while the job runs. */
+/** One job. The clips page polls this while the job runs (If-None-Match: 304 when unchanged). */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ jobId: string }> },
 ) {
   const { jobId } = await params;
@@ -13,5 +12,5 @@ export async function GET(
   if (!job) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
-  return NextResponse.json(job);
+  return jsonWithEtag(request, job);
 }

@@ -18,7 +18,7 @@ export function fingerprintRanges(size: number): [number, number][] {
   ];
 }
 
-export function toHex(buffer: ArrayBuffer) {
+function toHex(buffer: ArrayBuffer) {
   return Array.from(new Uint8Array(buffer), (b) =>
     b.toString(16).padStart(2, "0"),
   ).join("");

@@ -5,18 +5,19 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   currentStage,
-  relativeTime,
+  displayTitle,
   renderShare,
   timecode,
   stageSentence,
   stepsFor,
 } from "~/lib/format";
-import { isActive, type Job } from "~/lib/job-types";
+import { isActive, type JobSummary } from "~/lib/job-types";
 import { cn } from "~/lib/utils";
-import { ActionButton, displayTitle, useNow } from "./video-parts";
+import { ActionButton } from "./video/action-button";
+import { RelativeTime } from "./relative-time";
 
 /** Share of the whole job that is done, for the slim bar in a row. */
-function overallProgress(job: Job) {
+function overallProgress(job: JobSummary) {
   const steps = stepsFor(job);
   const stage = currentStage(job);
   const index = Math.max(
@@ -32,9 +33,9 @@ function RowStatus({
   busy,
   onRetry,
 }: {
-  job: Job;
+  job: JobSummary;
   busy: boolean;
-  onRetry: (job: Job) => void;
+  onRetry: (job: JobSummary) => void;
 }) {
   if (isActive(job)) {
     return (
@@ -70,7 +71,7 @@ function RowStatus({
       </div>
     );
   }
-  const count = job.clips.length;
+  const count = job.clipCount;
   return (
     <span
       className={cn(
@@ -83,9 +84,9 @@ function RowStatus({
   );
 }
 
-function Thumbnail({ job }: { job: Job }) {
+function Thumbnail({ job }: { job: JobSummary }) {
   const [failed, setFailed] = useState(false);
-  const seconds = job.meta?.duration ?? job.engine?.parakeet?.audioSeconds;
+  const seconds = job.durationSeconds;
   const Icon = job.source === "youtube" ? Youtube : Upload;
 
   return (
@@ -121,20 +122,14 @@ export function VideoList({
   busy,
   onRetry,
 }: {
-  jobs: Job[];
+  jobs: JobSummary[];
   busy: string | null;
-  onRetry: (job: Job) => void;
+  onRetry: (job: JobSummary) => void;
 }) {
-  const now = useNow(jobs.some(isActive));
-
   return (
     <ul className="bg-card divide-y overflow-hidden rounded-xl border">
       {jobs.map((job) => {
-        const time = (
-          <time dateTime={job.createdAt} suppressHydrationWarning>
-            {relativeTime(job.createdAt, now)}
-          </time>
-        );
+        const time = <RelativeTime iso={job.createdAt} />;
         return (
           <li
             key={job.id}
@@ -145,7 +140,7 @@ export function VideoList({
               <Link
                 href={`/videos/${job.id}`}
                 title={job.title}
-                className="block leading-snug font-medium after:absolute after:inset-0 focus-visible:outline-none"
+                className="block leading-snug font-medium after:absolute after:inset-0 focus-visible:outline-hidden"
               >
                 <span className="line-clamp-2">{displayTitle(job)}</span>
               </Link>

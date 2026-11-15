@@ -10,24 +10,22 @@ import {
   Youtube,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { failureSentence, relativeTime } from "~/lib/format";
+import { useMemo, useState } from "react";
+import { failureSentence, fallbackCount, displayTitle } from "~/lib/format";
 import { isActive, type Job } from "~/lib/job-types";
 import type { Currency } from "~/lib/settings-types";
+import { usePolling } from "~/lib/use-polling";
+import { useStable } from "~/lib/use-stable";
 import { cn } from "~/lib/utils";
-import { ClipCard } from "./clip-card";
-import { Popover } from "./popover";
-import { ReplayWave } from "./replay-wave";
-import {
-  ActionButton,
-  DetailsPanel,
-  displayTitle,
-  fallbackCount,
-  Notice,
-  ProgressStrip,
-  useJobActions,
-  useNow,
-} from "./video-parts";
+import { ClipCard } from "../clip-card";
+import { Popover } from "../popover";
+import { RelativeTime } from "../relative-time";
+import { ReplayWave } from "../replay-wave";
+import { ActionButton } from "./action-button";
+import { DetailsPanel } from "./details-panel";
+import { Notice } from "./notice";
+import { ProgressStrip } from "./progress-strip";
+import { useJobActions } from "./use-job-actions";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -42,28 +40,30 @@ export function VideoPage({
 }) {
   const [job, setJob] = useState(initialJob);
   const active = isActive(job);
-  const now = useNow(active);
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/jobs/${job.id}`, {
-        cache: "no-store",
-      });
-      if (response.ok) setJob((await response.json()) as Job);
-    } catch {
-      // The dev server may be restarting; the next poll tries again.
-    }
-  }, [job.id]);
-
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [active, refresh]);
+  // Polls every 3 s while the job runs. A 304, or a hidden tab, changes nothing.
+  const refresh = usePolling<Job>({
+    url: `/api/jobs/${job.id}`,
+    intervalMs: active ? POLL_INTERVAL_MS : null,
+    onData: setJob,
+  });
 
   const { busy, rerank, retry } = useJobActions(refresh);
   const isBusy = busy === job.id;
-  const details = new Map((job.clipDetails ?? []).map((d) => [d.name, d]));
+  // Parts that rarely change keep their identity between polls, so the clip cards
+  // and the replay wave (memoised) don't re-render while only the progress moves.
+  const clipDetails = useStable(job.clipDetails);
+  const replay = useStable(job.replay);
+  const details = useMemo(
+    () => new Map((clipDetails ?? []).map((d) => [d.name, d])),
+    [clipDetails],
+  );
+  const clipNames = useStable(job.clips);
+  const waveClips = useMemo(
+    () =>
+      clipNames.map((clip) => details.get(clip)).filter((d) => d !== undefined),
+    [clipNames, details],
+  );
   const fallbacks = fallbackCount(job);
   const done = job.status === "done";
 
@@ -111,9 +111,7 @@ export function VideoPage({
             ) : (
               <Upload className="size-3.5" aria-label="Uploaded" />
             )}
-            <time dateTime={job.createdAt} suppressHydrationWarning>
-              {relativeTime(job.createdAt, now)}
-            </time>
+            <RelativeTime iso={job.createdAt} />
           </p>
         </div>
         <div className="-mr-1.5 flex shrink-0 items-center gap-0.5 sm:mr-0">
@@ -140,7 +138,7 @@ export function VideoPage({
       <div className="space-y-6">
         {active && (
           <div className="bg-card rounded-xl border p-4 sm:p-5">
-            <ProgressStrip job={job} now={now} />
+            <ProgressStrip job={job} />
           </div>
         )}
 
@@ -184,14 +182,8 @@ export function VideoPage({
           </Notice>
         )}
 
-        {job.replay?.available && job.clips.length > 0 && (
-          <ReplayWave
-            replay={job.replay}
-            clips={job.clips
-              .map((clip) => details.get(clip))
-              .filter((d) => d !== undefined)}
-            dimmed={active}
-          />
+        {replay?.available && job.clips.length > 0 && (
+          <ReplayWave replay={replay} clips={waveClips} dimmed={active} />
         )}
 
         {job.clips.length > 0 ? (

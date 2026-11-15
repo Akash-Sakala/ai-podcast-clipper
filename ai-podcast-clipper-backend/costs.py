@@ -31,6 +31,10 @@ CPU_CORE_PRICE_PER_S = 0.0000131
 MEMORY_GIB_PRICE_PER_S = 0.00000222
 BOOT_SECONDS = 5.0            # container start before our code runs (rough)
 STAGES = ("transcribe", "rank", "render")
+# Modal's default request per container; main.py requests exactly this for its CPU functions
+# and the Transcriber (one source for the decorators and the estimate).
+MODAL_DEFAULT_CPU = 0.125
+MODAL_DEFAULT_MEMORY_MB = 128
 
 
 def builtin_rates() -> dict:
@@ -116,10 +120,14 @@ def container_seconds(usage: dict, scaledown_s: float) -> float:
     return BOOT_SECONDS + float(usage.get("enterSeconds") or 0) + float(usage.get("seconds") or 0) + scaledown_s
 
 
-def estimate(usages: list[dict], orchestrator_seconds: float = 0.0, rates: dict | None = None) -> dict:
+def estimate(usages: list[dict], orchestrator_seconds: float = 0.0, rates: dict | None = None,
+             orchestrator: dict | None = None) -> dict:
     """usages: one dict per container call {container, gpu, enterSeconds, seconds, cpu, memoryGiB,
-    scaledown, cpuOnly, stage}. Calls served by the same container share its boot and scale-down.
-    Returns {usd, gpuSeconds, containers, gpus, stages: {stage: usd}, rates: source}."""
+    scaledown, cpuOnly, stage}; cpu and memoryGiB are what Modal bills (the larger of the
+    request and the use, as the container measured them). Calls served by the same container
+    share its boot and scale-down. orchestrator: {cpu, memoryGiB} of the CPU functions' own
+    container (default: Modal's default request). Returns {usd, gpuSeconds, containers, gpus,
+    stages: {stage: usd}, rates: source}."""
     rates = rates or builtin_rates()
     gpu_prices, cpu_price, memory_price = rates["gpu"], rates["cpu"], rates["memory"]
     containers: dict[str, dict] = {}
@@ -139,14 +147,30 @@ def estimate(usages: list[dict], orchestrator_seconds: float = 0.0, rates: dict 
             price = gpu_prices.get(label, gpu_prices["A10"])
             gpu_seconds += seconds
             gpus[label] = gpus.get(label, 0) + 1
-        cost = seconds * (price + float(entry.get("cpu") or 0.125) * cpu_price
-                          + float(entry.get("memoryGiB") or 0.125) * memory_price)
+        cost = seconds * (price + float(entry.get("cpu") or MODAL_DEFAULT_CPU) * cpu_price
+                          + float(entry.get("memoryGiB") or MODAL_DEFAULT_MEMORY_MB / 1024) * memory_price)
         usd += cost
         stage = entry.get("stage") or "render"
         stages[stage if stage in stages else "render"] += cost
-    orchestrator = orchestrator_seconds * (1.0 * cpu_price + 1.0 * memory_price)
-    usd += orchestrator
-    stages["rank"] += orchestrator            # the job's own CPU container, where Gemini ranks
+    orchestrator = orchestrator or {}
+    own = orchestrator_seconds * (float(orchestrator.get("cpu") or MODAL_DEFAULT_CPU) * cpu_price
+                                  + float(orchestrator.get("memoryGiB") or MODAL_DEFAULT_MEMORY_MB / 1024)
+                                  * memory_price)
+    usd += own
+    stages["rank"] += own                     # the job's own CPU container, where Gemini ranks
     return {"usd": round(usd, 4), "gpuSeconds": round(gpu_seconds), "containers": sum(gpus.values()),
             "gpus": gpus, "stages": {k: round(v, 5) for k, v in stages.items()},
             "rates": rates.get("source", "built-in")}
+
+
+def combine_orchestrators(parts: list[tuple[float, dict | None]]) -> tuple[float, dict]:
+    """One (seconds, {cpu, memoryGiB}) for several CPU-function containers (phase 1 and
+    phase 2): the seconds add up and cpu and memory are seconds-weighted averages, so
+    estimate() prices the combination exactly as the sum of the parts (it is linear)."""
+    total = sum(max(0.0, float(seconds or 0)) for seconds, _ in parts)
+    if total <= 0:
+        return 0.0, {"cpu": MODAL_DEFAULT_CPU, "memoryGiB": MODAL_DEFAULT_MEMORY_MB / 1024}
+    cpu = sum(max(0.0, float(s or 0)) * float((o or {}).get("cpu") or MODAL_DEFAULT_CPU) for s, o in parts)
+    memory = sum(max(0.0, float(s or 0)) * float((o or {}).get("memoryGiB") or MODAL_DEFAULT_MEMORY_MB / 1024)
+                 for s, o in parts)
+    return round(total, 2), {"cpu": cpu / total, "memoryGiB": memory / total}

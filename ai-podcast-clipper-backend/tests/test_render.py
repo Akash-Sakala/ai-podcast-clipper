@@ -26,7 +26,6 @@ import render  # noqa: E402
 import settings  # noqa: E402
 from render import fast_asd  # noqa: E402
 
-
 # --------------------------------------------------------------------------- #
 # Settings and cost estimate
 # --------------------------------------------------------------------------- #
@@ -63,7 +62,7 @@ def test_cost_estimate_counts_each_container_once():
     r1 = (costs.BOOT_SECONDS + 8 + 110 + 5)
     expected = (t1 * (a10 + 0.125 * costs.CPU_CORE_PRICE_PER_S + 0.125 * costs.MEMORY_GIB_PRICE_PER_S)
                 + r1 * (a10 + 4 * costs.CPU_CORE_PRICE_PER_S + 4 * costs.MEMORY_GIB_PRICE_PER_S)
-                + 100 * (costs.CPU_CORE_PRICE_PER_S + costs.MEMORY_GIB_PRICE_PER_S))
+                + 100 * (0.125 * costs.CPU_CORE_PRICE_PER_S + 0.125 * costs.MEMORY_GIB_PRICE_PER_S))
     assert out["containers"] == 2 and out["gpus"] == {"A10": 2}
     assert math.isclose(out["usd"], round(expected, 4))
     assert out["gpuSeconds"] == round(t1 + r1)

@@ -14,10 +14,15 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import moments  # noqa: E402
 import audio_utils  # noqa: E402
+import billing  # noqa: E402
+import cloud  # noqa: E402
+import jobstore  # noqa: E402
+import maintenance  # noqa: E402
+import media  # noqa: E402
+import moments  # noqa: E402
 import parakeet_transcriber  # noqa: E402
-import runner  # noqa: E402
+import pipeline  # noqa: E402
 
 
 def make_words(n_sentences=400, sentence_s=6.0, words_per_sentence=12):
@@ -437,9 +442,9 @@ def test_prompt_never_allows_empty_list():
 
 
 def test_ranking_message_explains_fallback():
-    msg = runner.ranking_message(["clip_0.mp4"] * 3, [], {"fallback": 2, "valid": 1, "errors": ["x: boom"]})
+    msg = pipeline.ranking_message(["clip_0.mp4"] * 3, [], {"fallback": 2, "valid": 1, "errors": ["x: boom"]})
     assert msg.startswith("3 clip(s) ready") and "2 picked from the transcript" in msg and "boom" in msg
-    assert "Gemini found no usable moments" in runner.ranking_message([], [], {})
+    assert "Gemini found no usable moments" in pipeline.ranking_message([], [], {})
 
 
 # --------------------------------------------------------------------------- #
@@ -469,18 +474,17 @@ def _rerank_setup(tmp_path, monkeypatch, new_clips):
 
     fake_modal = _types.SimpleNamespace(Volume=_types.SimpleNamespace(from_name=lambda *a, **k: _Volume()))
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
-    monkeypatch.setattr(runner, "upload_input", lambda *a, **k: None)
-    monkeypatch.setattr(runner, "upload_transcript", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "fetch_replay", lambda *a, **k: None)
     calls = {}
 
-    def fake_gpu(job, max_clips, mode, timings, extra_usages=None):
+    def fake_gpu(job, max_clips, mode, timings, saver=None, **kwargs):
         calls["mode"] = mode
         moments_out = [{"start": 10.0 * i, "end": 10.0 * i + 40, "rank": i + 1, "score": 80 - i, "title": f"m{i}"}
                        for i in range(len(new_clips))]
         return {"clips": new_clips, "moments": moments_out, "errors": [],
                 "ranking": {"valid": len(new_clips), "fallback": 0, "errors": []}}
 
-    monkeypatch.setattr(runner, "run_gpu", fake_gpu)
+    monkeypatch.setattr(pipeline, "process_on_modal", fake_gpu)
     return job_dir, calls
 
 
@@ -488,7 +492,7 @@ def test_rerank_replaces_clips_and_reuses_transcript(tmp_path, monkeypatch):
     import json as _json
 
     job_dir, calls = _rerank_setup(tmp_path, monkeypatch, ["clip_0.mp4", "clip_1.mp4"])
-    assert runner.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
     job = _json.loads((job_dir / "job.json").read_text())
     assert calls["mode"] == "reuse"                         # Parakeet transcript, no re-transcription
     assert job["status"] == "done" and job["clips"] == ["clip_0.mp4", "clip_1.mp4"] and job["reranks"] == 1
@@ -503,7 +507,7 @@ def test_rerank_keeps_old_clips_when_nothing_new(tmp_path, monkeypatch):
     import json as _json
 
     job_dir, _ = _rerank_setup(tmp_path, monkeypatch, [])
-    assert runner.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
     job = _json.loads((job_dir / "job.json").read_text())
     assert job["clips"] == ["clip_0.mp4"] and job["clipDetails"] == [{"name": "clip_0.mp4", "rank": 1}]
     assert (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"old"
@@ -517,11 +521,11 @@ def test_rerank_of_legacy_whistle_job_refreshes_subtitles(tmp_path, monkeypatch)
     data = _json.loads((job_dir / "job.json").read_text())
     data["engine"] = {"transcriber": "whistle"}
     (job_dir / "job.json").write_text(_json.dumps(data))
-    runner.run_rerank(job_dir, 5, keep_remote=False)
+    pipeline.run_rerank(job_dir, 5, keep_remote=False)
     assert calls["mode"] == "uploaded"
 
 
-def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
+def test_waiting_mirrors_live_progress(tmp_path, monkeypatch):
     import json as _json
     import types as _types
 
@@ -529,7 +533,7 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
     job_dir.mkdir()
     (job_dir / "job.json").write_text(_json.dumps({"id": job_dir.name, "source": "upload", "title": "t",
                                                    "status": "uploading", "clips": []}))
-    job = runner.Job(job_dir)
+    job = jobstore.Job(job_dir)
     seen = []
     states = [{"stage": "transcribing"}, {"stage": "ranking"},
               {"stage": "rendering", "done": 2, "total": 5, "fraction": 0.62, "etaSeconds": 90}]
@@ -553,33 +557,26 @@ def test_run_gpu_mirrors_live_progress(tmp_path, monkeypatch):
         def pop(self, key):
             pass
 
-    spawned = []
-
-    def from_name(app, name):
-        spawned.append((app, name))
-        return _types.SimpleNamespace(spawn=lambda *a: _Call())
-
     fake_modal = _types.SimpleNamespace(
-        Function=_types.SimpleNamespace(from_name=from_name),
         Dict=_types.SimpleNamespace(from_name=lambda *a, **k: _Dict()),
-        exception=_types.SimpleNamespace(TimeoutError=type("ModalTimeout", (Exception,), {})))
+        exception=_types.SimpleNamespace(TimeoutError=type("ModalTimeout", (Exception,), {}),
+                                         ConnectionError=type("ModalConnection", (Exception,), {})))
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     updates = []
     original = job.update
     monkeypatch.setattr(job, "update", lambda **f: (updates.append(f.get("progress")), original(**f)))
 
-    timings = {}
-    result = runner.run_gpu(job, 5, "parakeet", timings)
-    assert spawned == [("ai-podcast-clipper", "process_job")]
-    assert result["gpu"] == "A10" and timings["gpu_render"] == 1.0
+    jobstore.set_progress(job, "transcribing")
+    result = cloud.wait_for(_Call(), job)
+    assert result["gpu"] == "A10"
     stages = [u["stage"] for u in updates if u]
     assert stages[:1] == ["transcribing"] and "ranking" in stages and "rendering" in stages
     final = _json.loads((job_dir / "job.json").read_text())["progress"]
     assert final["stage"] == "rendering" and final["done"] == 2 and final["total"] == 5
     assert final["fraction"] == 0.62
-    assert runner.job_cost(result) == {"usd": 0.0412, "gpuSeconds": 410, "gpu": "A10", "containers": 6,
+    assert billing.job_cost(result) == {"usd": 0.0412, "gpuSeconds": 410, "gpu": "A10", "containers": 6,
                                        "stages": None, "rates": "built-in"}
-    assert runner.job_cost({"clips": []}) is None
+    assert billing.job_cost({"clips": []}) is None
 
 
 
@@ -596,7 +593,7 @@ def test_save_thumbnail_makes_16_9_cover(tmp_path):
                     "-i", "testsrc=size=360x640:duration=3:rate=10", "-pix_fmt", "yuv420p",
                     str(job_dir / "input.mp4")], check=True)
 
-    assert runner.backfill_thumbnails(tmp_path) == 0
+    assert maintenance.backfill_thumbnails(tmp_path) == 0
     cover = job_dir / "thumbnail.jpg"
     assert cover.exists()
     width, height = None, None
@@ -620,28 +617,38 @@ def test_backfill_makes_clip_posters(tmp_path):
                     "-i", "testsrc=size=1080x1920:duration=2:rate=10", "-pix_fmt", "yuv420p",
                     str(job_dir / "clips" / "clip_0.mp4")], check=True)
 
-    runner.backfill_thumbnails(tmp_path)
+    maintenance.backfill_thumbnails(tmp_path)
     assert (job_dir / "clips" / "clip_0.jpg").exists()
     assert not (job_dir / "thumbnail.jpg").exists()  # YouTube covers come from the web app
 
 
-def test_hide_child_windows_is_a_no_op_off_windows(monkeypatch):
+def test_no_window_flag_only_on_windows(monkeypatch):
     import subprocess
 
-    original = subprocess.Popen.__init__
-    monkeypatch.setattr(runner.os, "name", "posix")
-    runner.hide_child_windows()
-    assert subprocess.Popen.__init__ is original
+    monkeypatch.setattr(media.os, "name", "posix")
+    assert media.no_window() == {}
+    monkeypatch.setattr(media.os, "name", "nt")
+    assert media.no_window() == {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
 
 
-def test_hide_child_windows_adds_create_no_window(monkeypatch):
+def test_every_child_process_of_the_runner_hides_its_window(monkeypatch, tmp_path):
+    """No process-wide Popen patch any more: each call site passes no_window()."""
     import subprocess
 
+    original_init = subprocess.Popen.__init__
+    monkeypatch.setattr(media.os, "name", "nt")
     seen = []
-    monkeypatch.setattr(subprocess.Popen, "__init__", lambda self, *a, **kw: seen.append(kw))
-    monkeypatch.setattr(runner.os, "name", "nt")
-    runner.hide_child_windows()
-    subprocess.Popen.__init__(object(), ["ffmpeg"])
-    subprocess.Popen.__init__(object(), ["x"], creationflags=0x00000010)  # CREATE_NEW_CONSOLE kept
-    assert seen[0]["creationflags"] == 0x08000000
-    assert seen[1]["creationflags"] == 0x00000010
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("creationflags"))
+        raise OSError("not really running")
+
+    monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(billing.subprocess, "run", fake_run)
+    media.save_frame(tmp_path / "v.mp4", tmp_path / "f.jpg", 1.0, "scale=10:10")
+    billing.modal_cli_json("billing", "rates")
+    assert seen == [0x08000000, 0x08000000]
+    assert subprocess.Popen.__init__ is original_init
+    import runner
+
+    assert callable(runner.main) and subprocess.Popen.__init__ is original_init   # importing it patches nothing

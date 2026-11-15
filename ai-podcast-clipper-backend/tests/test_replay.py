@@ -10,11 +10,15 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-import moments  # noqa: E402
-import replay  # noqa: E402
-import runner  # noqa: E402
-
 from test_pipeline import make_words  # noqa: E402
+
+import jobstore  # noqa: E402
+import maintenance  # noqa: E402
+import moments  # noqa: E402
+import pipeline  # noqa: E402
+import replay  # noqa: E402
+import settings  # noqa: E402
+import youtube  # noqa: E402
 
 DURATION = 3000.0       # 100 segments of 30 s
 
@@ -348,18 +352,18 @@ def test_fetch_replay_stores_record_and_title(tmp_path, monkeypatch):
 
     monkeypatch.setattr(replay, "fetch_youtube", fetch)
     monkeypatch.setattr(replay, "fetch_sponsorblock", lambda vid: [])
-    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
-    monkeypatch.setattr(runner.settings, "SPONSORBLOCK", True)
-    job = runner.Job(make_job(tmp_path))
+    monkeypatch.setattr(settings, "MOST_REPLAYED", True)
+    monkeypatch.setattr(settings, "SPONSORBLOCK", True)
+    job = jobstore.Job(make_job(tmp_path))
     timings = {}
-    runner.fetch_replay(job, timings)
+    youtube.fetch_replay(job, timings)
 
     saved = json.loads((job.dir / "job.json").read_text())
-    assert seen == {"cookies_file": None, "ipv4": runner.settings.YOUTUBE_IPV4}
+    assert seen == {"cookies_file": None, "ipv4": settings.YOUTUBE_IPV4}
     assert saved["title"] == "A great talk" and saved["replay"]["available"]
     assert saved["replay"]["sponsor"] == {"segments": [], "highlight": None} and "replay" in timings
-    context = runner.gemini_context(job)
-    assert context["replay"]["peaks"][0]["center"] == 1515.0 and context["replay"]["weight"] == runner.settings.REPLAY_WEIGHT
+    context = pipeline.gemini_context(job)
+    assert context["replay"]["peaks"][0]["center"] == 1515.0 and context["replay"]["weight"] == settings.REPLAY_WEIGHT
 
 
 def test_fetch_replay_skips_uploads_and_can_be_switched_off(tmp_path, monkeypatch):
@@ -367,16 +371,16 @@ def test_fetch_replay_skips_uploads_and_can_be_switched_off(tmp_path, monkeypatc
         raise AssertionError("must not be called")
 
     monkeypatch.setattr(replay, "fetch_signals", boom)
-    upload = runner.Job(make_job(tmp_path, source="upload", youtubeUrl=None))
-    runner.fetch_replay(upload)
-    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", False)
-    monkeypatch.setattr(runner.settings, "SPONSORBLOCK", False)
-    runner.fetch_replay(runner.Job(make_job(tmp_path, id="20261030-100000-bbbbbb")))
+    upload = jobstore.Job(make_job(tmp_path, source="upload", youtubeUrl=None))
+    youtube.fetch_replay(upload)
+    monkeypatch.setattr(settings, "MOST_REPLAYED", False)
+    monkeypatch.setattr(settings, "SPONSORBLOCK", False)
+    youtube.fetch_replay(jobstore.Job(make_job(tmp_path, id="20261030-100000-bbbbbb")))
     assert "replay" not in upload.data
 
 
 def test_clip_details_carry_audience_and_peak():
-    details = runner.clip_details(["clip_0.mp4"], [{"rank": 1, "score": 80, "gemini": 70, "audience": 95.0,
+    details = pipeline.clip_details(["clip_0.mp4"], [{"rank": 1, "score": 80, "gemini": 70, "audience": 95.0,
                                                     "peak": {"id": "H1", "rank": 1}, "start": 1, "end": 40}])
     assert details[0]["audience"] == 95.0 and details[0]["peak"]["id"] == "H1" and details[0]["gemini"] == 70
 
@@ -398,12 +402,12 @@ def test_backfill_replay_reports_hits_and_keeps_updated_at(tmp_path):
         return record, None
     fetch.calls = 0
 
-    runner_log = runner.log
+    runner_log = maintenance.log
     try:
-        runner.log = lines.append
-        runner.backfill_replay(tmp_path, fetch=fetch, sleep=sleeps.append)
+        maintenance.log = lines.append
+        maintenance.backfill_replay(tmp_path, fetch=fetch, sleep=sleeps.append)
     finally:
-        runner.log = runner_log
+        maintenance.log = runner_log
     saved = json.loads((tmp_path / "jobs" / "20261030-100000-aaaaaa" / "job.json").read_text())
     assert saved["replay"]["available"] and saved["updatedAt"] == "2026-10-25T00:00:00Z"
     assert fetch.calls == 2 and sleeps == [3.0]
@@ -411,11 +415,11 @@ def test_backfill_replay_reports_hits_and_keeps_updated_at(tmp_path):
     assert "1 of 2 of their clips sat on a hotspot" in lines[-1]
 
     # Already fetched: no second network call without --force.
-    runner.log = lines.append
+    maintenance.log = lines.append
     try:
-        runner.backfill_replay(tmp_path, fetch=fetch, sleep=sleeps.append)
+        maintenance.backfill_replay(tmp_path, fetch=fetch, sleep=sleeps.append)
     finally:
-        runner.log = runner_log
+        maintenance.log = runner_log
     assert fetch.calls == 2
 
 
@@ -426,23 +430,23 @@ def test_prompt_explains_hotspots(prompt):
 
 
 def test_graph_from_the_download_when_the_lookup_was_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
+    monkeypatch.setattr(settings, "MOST_REPLAYED", True)
     refused = {"available": False, "heatmap": [], "chapters": [], "peaks": [], "errors": ["YouTube: not a bot"],
                "sponsor": {"segments": [], "highlight": None}}
-    job = runner.Job(make_job(tmp_path, replay=refused))
+    job = jobstore.Job(make_job(tmp_path, replay=refused))
     info = {"duration": DURATION, "view_count": 5000,
             "heatmap": [{"start_time": s, "end_time": e, "value": v} for s, e, v in heatmap_with({50: 0.9})]}
-    runner.graph_from_download(job, {"duration": DURATION})       # no graph there either: unchanged
+    youtube.graph_from_download(job, {"duration": DURATION})       # no graph there either: unchanged
     assert job.data["replay"] is refused or job.data["replay"] == refused
-    runner.graph_from_download(job, info)
+    youtube.graph_from_download(job, info)
     saved = json.loads((job.dir / "job.json").read_text())["replay"]
     assert saved["available"] and saved["peaks"][0]["center"] == 1515.0 and saved["errors"] == []
     assert saved["sponsor"] == refused["sponsor"]
 
 
 def test_graph_from_the_download_leaves_a_good_lookup_alone(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner.settings, "MOST_REPLAYED", True)
+    monkeypatch.setattr(settings, "MOST_REPLAYED", True)
     good = {"available": True, "heatmap": [[0, 1, 0.5]], "peaks": [], "errors": []}
-    job = runner.Job(make_job(tmp_path, replay=good))
-    runner.graph_from_download(job, {"heatmap": [{"start_time": 0, "end_time": 1, "value": 1}] * 20})
+    job = jobstore.Job(make_job(tmp_path, replay=good))
+    youtube.graph_from_download(job, {"heatmap": [{"start_time": 0, "end_time": 1, "value": 1}] * 20})
     assert job.data["replay"] == good

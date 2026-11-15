@@ -10,6 +10,7 @@ import {
   REPLAY_WEIGHT_MAX,
 } from "~/lib/settings-types";
 import { cn } from "~/lib/utils";
+import { Segmented } from "./ui/segmented";
 
 type SaveState = "saved" | "saving" | "error";
 
@@ -44,19 +45,36 @@ export function SettingsPage({
         body: JSON.stringify(change),
       });
       if (!response.ok) throw new Error(String(response.status));
-      setSettings((await response.json()) as AppSettings);
+      const saved = (await response.json()) as AppSettings;
+      // Newer changes made while this request was in flight stay as they are.
+      if (Object.keys(pending.current).length === 0) setSettings(saved);
       setState("saved");
     } catch {
       setState("error");
     }
   };
 
-  useEffect(
-    () => () => {
+  // Leaving the page (a link, the back button, closing the tab) must not lose a change
+  // made in the last 400 ms: send what is pending with keepalive, which outlives the page.
+  useEffect(() => {
+    const flush = () => {
       if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
+      const change = pending.current;
+      if (Object.keys(change).length === 0) return;
+      pending.current = {};
+      void fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(change),
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
 
   const weight = Math.round(settings.replayWeight * 100);
   const rateText = rate
@@ -80,34 +98,15 @@ export function SettingsPage({
           description={`Rupee costs use the dollar rate on the day each run finished. ${rateText}`}
           stackOnPhone
         >
-          <div
-            role="radiogroup"
-            aria-label="Currency"
-            className="bg-muted inline-flex rounded-lg p-0.5 text-sm"
-          >
-            {(
-              [
-                ["usd", "Dollars ($)"],
-                ["inr", "Rupees (₹)"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={settings.currency === value}
-                onClick={() => update({ currency: value })}
-                className={cn(
-                  "rounded-md px-3 py-1 whitespace-nowrap transition-colors",
-                  settings.currency === value
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            label="Currency"
+            value={settings.currency}
+            options={[
+              ["usd", "Dollars ($)"],
+              ["inr", "Rupees (₹)"],
+            ]}
+            onChange={(currency) => update({ currency })}
+          />
         </Row>
       </Group>
 
@@ -293,7 +292,7 @@ function Toggle({
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-6 w-10 shrink-0 items-center rounded-full transition-colors",
-        checked ? "bg-tally" : "bg-input",
+        checked ? "bg-tally" : "bg-switch-off",
       )}
     >
       <span

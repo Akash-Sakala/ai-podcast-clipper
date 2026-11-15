@@ -11,7 +11,7 @@ What is different is only how the work is done:
 - frames stay in memory (no JPG dump, no XVID face videos, no debug video);
 - S3FD runs on batches of frames, reuses its prior boxes and only runs NMS on the
   boxes that can pass the 0.9 threshold (greedy NMS keeps exactly the same ones,
-  see detect_faces_batch);
+  see detect_faces_batch), with one copy of the kept boxes to the CPU per batch;
 - LR-ASD scores all equal-length windows of a track in one batch.
 """
 
@@ -56,8 +56,9 @@ class Models:
                  load_weights: bool = True):
         import torch
         from loss import lossAV
-        from model.Model import ASD_Model
+
         from model.faceDetector.s3fd.nets import S3FDNet
+        from model.Model import ASD_Model
 
         self.device = device
         self.s3fd = S3FDNet(device=device).to(device)
@@ -129,6 +130,7 @@ def detect_faces_batch(net, batch_chw: np.ndarray, full_w: int, full_h: int, con
     """
     import torch
     from torchvision.ops import nms
+
     from model.faceDetector.s3fd.box_utils import decode, nms_
 
     with torch.no_grad():
@@ -138,16 +140,28 @@ def detect_faces_batch(net, batch_chw: np.ndarray, full_w: int, full_h: int, con
         n, num_priors = scores.shape
         boxes = decode(loc.reshape(-1, 4), priors.to(loc.device).repeat(n, 1), [0.1, 0.2]).view(n, num_priors, 4)
         scale = torch.tensor([full_w, full_h, full_w, full_h], dtype=torch.float32)
-        results = []
+        masks = scores > conf_th
+        has_candidates = masks.any(dim=1).tolist()        # one device sync for the whole batch
+        picked_boxes, picked_scores, counts = [], [], []
         for i in range(n):
-            mask = scores[i] > conf_th
+            if not has_candidates[i]:
+                counts.append(0)
+                continue
+            b, s = boxes[i][masks[i]], scores[i][masks[i]]
+            keep = nms(b, s, 0.3)                          # per frame, exactly as before
+            picked_boxes.append(b[keep])
+            picked_scores.append(s[keep])
+            counts.append(int(keep.shape[0]))
+        if picked_boxes:                                   # one copy to the CPU for the batch
+            all_boxes, all_scores = torch.cat(picked_boxes).cpu(), torch.cat(picked_scores).cpu()
+        results, offset = [], 0
+        for count in counts:
             kept = np.empty(shape=(0, 5))
-            if bool(mask.any()):
-                b, s = boxes[i][mask], scores[i][mask]
-                keep = nms(b, s, 0.3)
-                b = (b[keep].cpu() * scale).numpy()
-                s = s[keep].cpu().numpy()
+            if count:
+                b = (all_boxes[offset:offset + count] * scale).numpy()
+                s = all_scores[offset:offset + count].numpy()
                 kept = np.column_stack([b.astype(np.float64), s.astype(np.float64)])
+                offset += count
             results.append(kept[nms_(kept, 0.1)])
     return results
 

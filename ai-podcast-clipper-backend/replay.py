@@ -37,7 +37,7 @@ import statistics
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable
+from collections.abc import Callable
 
 # --------------------------------------------------------------------------- #
 # Settings (laptop side: runner.py reads them for every run, no redeploy)
@@ -359,15 +359,19 @@ def covering_peak(start: float, end: float, peaks: list | None) -> dict | None:
 # Context for Gemini ranking
 # --------------------------------------------------------------------------- #
 
-def ranking_context(replay: dict | None, weight: float = DEFAULT_WEIGHT) -> dict | None:
-    """The part of job.json "replay" that process_job needs (it travels in `context`)."""
-    if not replay:
+def ranking_context(replay: dict | None, weight: float = DEFAULT_WEIGHT, most_replayed: bool = True,
+                    sponsorblock: bool = True) -> dict | None:
+    """The part of job.json "replay" that transcribe_and_rank needs (it travels in `context`).
+    A source switched off in Settings is left out even if an earlier run saved it: without
+    Most replayed there is no graph, no peaks and no chapters (they come from the same
+    YouTube lookup); without SponsorBlock no skips and no highlight. None when nothing is left."""
+    if not replay or not (most_replayed or sponsorblock):
         return None
-    sponsor = replay.get("sponsor") or {}
-    available = bool(replay.get("available"))
+    sponsor = (replay.get("sponsor") or {}) if sponsorblock else {}
+    available = bool(replay.get("available")) and most_replayed
     context = {
         "heatmap": (replay.get("heatmap") or []) if available else [],
-        "chapters": replay.get("chapters") or [],
+        "chapters": (replay.get("chapters") or []) if most_replayed else [],
         "peaks": (replay.get("peaks") or []) if available else [],
         "skips": sponsor.get("segments") or [],
         "highlight": sponsor.get("highlight"),

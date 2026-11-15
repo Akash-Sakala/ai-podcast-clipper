@@ -1,10 +1,10 @@
 """
-Audio helpers shared by the Parakeet (GPU) and Whistle (local CPU) transcribers.
+Audio helpers for the Parakeet transcriber.
 
-Both models transcribe long podcasts as pause-aligned chunks of at most 28 s:
-cutting inside silences avoids split words, keeps memory flat and lets the GPU
-batch chunks. On TED-LIUM, pause chunks were faster and more accurate than
-letting the Whistle engine window the whole file itself (WER 3.89% vs 4.11%).
+Long podcasts are transcribed as pause-aligned chunks of at most 28 s: cutting
+inside silences avoids split words and keeps memory flat. (On TED-LIUM, pause
+chunks were faster and more accurate than letting an engine window the whole
+file itself: WER 3.89% vs 4.11%.)
 
 numpy is imported lazily so the module imports anywhere.
 """
@@ -66,9 +66,3 @@ def merge_words(words: list[dict]) -> list[dict]:
         if cur["end"] < cur["start"]:
             cur["end"] = cur["start"]
     return words
-
-
-def pcm16_to_float(pcm16):
-    import numpy as np
-
-    return np.asarray(pcm16, dtype=np.int16).astype(np.float32) / 32768.0

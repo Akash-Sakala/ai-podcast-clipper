@@ -1,0 +1,34 @@
+# Tooling only (the backend is not a package): pytest and ruff settings.
+#   pip install -r requirements-dev.txt
+#   python -m pytest tests -q
+#   ruff check .
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # The vendored S3FD reference (asd/model/faceDetector) and PySceneDetect 0.6 (pinned on purpose).
+    "ignore::UserWarning:model.faceDetector.s3fd.box_utils",
+    "ignore:.*VideoManager is deprecated.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["asd/ASD.py", "asd/Columbia_test.py", "asd/loss.py", "asd/model"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Conservative: style rules that would only churn working code are off. B905 (zip strict)
+# and E741 (names like `l`) would change or rename working code; UP017 (datetime.UTC) is
+# cosmetic.
+ignore = ["B905", "E741", "UP017"]
+
+[tool.ruff.lint.per-file-ignores]
+# The old Columbia_test.py code is kept verbatim in the parity tests ({1, 1, 1, 2, ...}).
+"tests/test_render.py" = ["B033"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["audio_utils", "billing", "clipper_names", "cloud", "costs", "cutter", "download_parakeet",
+                     "download_weights", "downloader", "fast_asd", "fx", "jobstore", "main", "maintenance", "media",
+                     "model", "moments", "parakeet_transcriber", "phases", "pipeline", "rank_moments", "render",
+                     "replay", "run_history", "runner", "segments", "settings", "transfer", "youtube"]

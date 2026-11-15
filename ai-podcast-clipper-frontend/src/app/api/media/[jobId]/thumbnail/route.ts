@@ -1,8 +1,7 @@
 import fsp from "node:fs/promises";
-import { isValidJobId, readJob, thumbnailPath } from "~/lib/jobs";
+import { readJob } from "~/lib/job-store";
+import { isValidJobId, thumbnailPath } from "~/lib/paths";
 import { youtubeVideoId } from "~/lib/youtube";
-
-export const dynamic = "force-dynamic";
 
 /**
  * The video's cover for the list. Uploads get a frame saved by runner.py; for

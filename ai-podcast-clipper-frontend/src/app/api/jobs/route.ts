@@ -5,28 +5,21 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { NextResponse } from "next/server";
-import {
-  createJob,
-  fileFingerprint,
-  jobDir,
-  listJobs,
-  startRunner,
-  updateJob,
-} from "~/lib/jobs";
+import { jsonWithEtag } from "~/lib/http";
+import { fileFingerprint } from "~/lib/duplicates";
+import { createJob, updateJob } from "~/lib/job-store";
+import { listJobSummaries } from "~/lib/jobs";
+import { startRunner } from "~/lib/runner";
+import { markUploading } from "~/lib/stale-jobs";
+import { jobDir } from "~/lib/paths";
+import { parseYoutubeLink } from "~/lib/youtube";
 
-export const dynamic = "force-dynamic";
-
-const YOUTUBE_HOSTS = new Set([
-  "youtube.com",
-  "www.youtube.com",
-  "m.youtube.com",
-  "music.youtube.com",
-  "youtu.be",
-]);
-
-/** List all jobs (newest first). The dashboard polls this. */
-export async function GET() {
-  return NextResponse.json(await listJobs());
+/**
+ * List all jobs (newest first) as slim summaries (see JobSummary). The dashboard
+ * polls this with If-None-Match, so an unchanged list is a 304.
+ */
+export async function GET(request: Request) {
+  return jsonWithEtag(request, await listJobSummaries());
 }
 
 /**
@@ -43,13 +36,8 @@ export async function POST(request: Request) {
     } | null;
     const youtubeUrl = body?.youtubeUrl?.trim() ?? "";
 
-    let url: URL;
-    try {
-      url = new URL(youtubeUrl);
-    } catch {
-      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
-    }
-    if (!YOUTUBE_HOSTS.has(url.hostname)) {
+    const url = parseYoutubeLink(youtubeUrl);
+    if (!url) {
       return NextResponse.json(
         { error: "Only YouTube links are supported" },
         { status: 400 },
@@ -65,9 +53,17 @@ export async function POST(request: Request) {
     return NextResponse.json(job, { status: 201 });
   }
 
-  const filename = decodeURIComponent(
-    request.headers.get("x-filename") ?? "video.mp4",
-  );
+  let filename: string;
+  try {
+    filename = decodeURIComponent(
+      request.headers.get("x-filename") ?? "video.mp4",
+    );
+  } catch {
+    return NextResponse.json(
+      { error: "The x-filename header is not valid" },
+      { status: 400 },
+    );
+  }
   if (!filename.toLowerCase().endsWith(".mp4")) {
     return NextResponse.json(
       { error: "Only .mp4 files are supported" },
@@ -81,23 +77,30 @@ export async function POST(request: Request) {
   const job = await createJob({ source: "upload", title: filename });
   const target = path.join(jobDir(job.id), "input.mp4");
 
+  // The job is `queued` without a runner until the upload ends and the runner starts:
+  // tell the stale-runner check that it is not abandoned.
+  const uploadDone = markUploading(job.id);
   try {
-    await pipeline(
-      Readable.fromWeb(request.body as unknown as NodeWebReadableStream),
-      fs.createWriteStream(target),
-    );
-  } catch (error) {
-    await fsp.rm(jobDir(job.id), { recursive: true, force: true });
-    return NextResponse.json(
-      { error: `Upload failed: ${(error as Error).message}` },
-      { status: 500 },
-    );
+    try {
+      await pipeline(
+        Readable.fromWeb(request.body as unknown as NodeWebReadableStream),
+        fs.createWriteStream(target),
+      );
+    } catch (error) {
+      await fsp.rm(jobDir(job.id), { recursive: true, force: true });
+      return NextResponse.json(
+        { error: `Upload failed: ${(error as Error).message}` },
+        { status: 500 },
+      );
+    }
+
+    // Remember what this upload looks like, to recognise it if it is added again.
+    const fingerprint = await fileFingerprint(target);
+    if (fingerprint) await updateJob(job.id, { fingerprint });
+
+    await startRunner(job.id);
+    return NextResponse.json(job, { status: 201 });
+  } finally {
+    uploadDone();
   }
-
-  // Remember what this upload looks like, to recognise it if it is added again.
-  const fingerprint = await fileFingerprint(target);
-  if (fingerprint) await updateJob(job.id, { fingerprint });
-
-  await startRunner(job.id);
-  return NextResponse.json(job, { status: 201 });
 }

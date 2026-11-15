@@ -13,10 +13,12 @@ export type JobStatus =
   | "failed";
 
 export type ProgressStage =
+  | "audio" // two-phase runs: the audio goes to Modal first
   | "downloading"
   | "uploading"
   | "transcribing"
   | "ranking"
+  | "clips" // two-phase runs: each chosen clip's footage goes to Modal
   | "rendering"
   | "saving";
 
@@ -30,13 +32,16 @@ export type JobProgress = {
   etaSeconds?: number | null;
   /** While uploading: no data has moved for two minutes (the stuck pieces are retried). */
   stalled?: boolean | null;
+  /** Two-phase runs: share of the YouTube video downloaded while the cloud transcribes and ranks. */
+  download?: number | null;
 };
 
 /**
  * How the current or last run got the video to Modal: downloaded on the laptop and
- * uploaded (YouTube), or uploaded from the job folder.
+ * uploaded (YouTube), or uploaded from the job folder; "audio-first": the audio went up
+ * first and only each chosen clip's footage followed (two phases).
  */
-export type VideoTransfer = "laptop-download" | "upload";
+export type VideoTransfer = "laptop-download" | "upload" | "audio-first";
 
 /** Estimated Modal cost of the last run (see backend costs.py). */
 export type JobCost = {
@@ -87,6 +92,10 @@ export type RunRecord = {
       | "download"
       | "upload"
       | "replay"
+      | "audio"
+      | "downloadWait"
+      | "cut"
+      | "clipUpload"
       | "save"
       | "gpu_transcribe"
       | "gpu_select"
@@ -258,4 +267,42 @@ export const ACTIVE_STATUSES: JobStatus[] = [
   "saving",
 ];
 
-export const isActive = (job: Job) => ACTIVE_STATUSES.includes(job.status);
+export const isActive = (job: { status: JobStatus }) =>
+  ACTIVE_STATUSES.includes(job.status);
+
+/** The fields the progress helpers in format.ts read (a Job or a JobSummary). */
+export type StageJob = Pick<
+  Job,
+  "status" | "progress" | "videoTransfer" | "source" | "mode"
+>;
+
+/**
+ * What the video list reads of a job: much smaller than a Job (no clip details, runs,
+ * ranking or replay graph), so the list poll and the home page's HTML stay small.
+ */
+export type JobSummary = StageJob & {
+  id: string;
+  title: string;
+  createdAt: string;
+  clipCount: number;
+  hasThumbnail: boolean;
+  /** Length of the video, when known (YouTube metadata or the transcript). */
+  durationSeconds: number | null;
+};
+
+export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
+  return {
+    id: job.id,
+    source: job.source,
+    title: job.title,
+    status: job.status,
+    createdAt: job.createdAt,
+    mode: job.mode,
+    progress: job.progress ?? null,
+    videoTransfer: job.videoTransfer ?? null,
+    clipCount: job.clips.length,
+    hasThumbnail,
+    durationSeconds:
+      job.meta?.duration ?? job.engine?.parakeet?.audioSeconds ?? null,
+  };
+}

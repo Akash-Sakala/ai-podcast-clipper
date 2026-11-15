@@ -2,58 +2,104 @@
 
 Everything beyond setup and everyday use. Backend commands run from `ai-podcast-clipper-backend` with the venv active (`.venv\Scripts\Activate.ps1`).
 
+- [Where files are](#where-files-are)
+- [Settings](#settings)
+- [When to redeploy](#when-to-redeploy)
+- [Command line](#command-line)
+- [How a job runs](#how-a-job-runs)
+- [Fallbacks to the whole video](#fallbacks-to-the-whole-video)
+- [Where the video goes](#where-the-video-goes)
+- [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock)
+- [Re-rank](#re-rank)
+- [Preview ranking locally](#preview-ranking-locally)
+- [Stats page](#stats-page)
+- [Choose a GPU](#choose-a-gpu)
+- [Test deployment](#test-deployment)
+- [Logs](#logs)
+- [Cancel a running job](#cancel-a-running-job)
+- [Tests and CI](#tests-and-ci)
+- [YouTube cookies](#youtube-cookies)
+- [Troubleshooting](#troubleshooting)
+
 ## Where files are
 
 Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you set it):
 
 | File | Contents |
 |---|---|
-| `job.json` | Status, progress, clip details, the Gemini `ranking` report and `runs`, the history of every run (stats page) |
+| `job.json` | Status, progress, clip details, the Gemini `ranking` report, `runs` (the history of every run), `replay`, and run state such as `pendingSave` and `modalCallId` (see [job.json fields](#jobjson-fields)) |
 | `input.mp4` | An uploaded video, only until its run finishes (kept after a failed run, for **Try again**). YouTube videos download to a temp folder instead (see [Where the video goes](#where-the-video-goes)) |
 | `thumbnail.jpg` | Cover in the video list: YouTube's own thumbnail, or a frame from an uploaded video |
-| `transcript.json` | Word-level Parakeet transcript (reused by Re-rank) |
+| `transcript.json` | Word-level Parakeet transcript, saved as soon as phase 1 has transcribed (reused by Re-rank and **Try again**) |
 | `moments.json` | Every candidate moment with its scores and reason |
 | `clips/clip_0.mp4` … | Finished clips, `clip_0` = best |
 | `clips/clip_0.jpg` … | Poster still for each clip, shown before the clip loads |
+| `clips_new/`, `clips_previous/` | Only during a re-rank: the new clips as they arrive, and the old ones while they are swapped file by file |
 | `runner.log` | Everything the runner printed; check this first when a job fails |
 
 The stats page has its own file, `data/stats/runs.jsonl`: one line per run, kept when a video's job folder is deleted (see [Stats page](#stats-page)).
+
+On Modal, each job has a folder in the `ai-podcast-clipper-jobs` volume, removed when the run ends:
+
+| Path | Contents |
+|---|---|
+| `/<job id>/audio.m4a` (or `audio.flac`) | The video's audio, uploaded first: phase 1's input |
+| `/<job id>/input.mp4` | The whole video, only on a [fallback](#fallbacks-to-the-whole-video) |
+| `/<job id>/transcript.json`, `moments.json` | Phase 1's output (a re-rank uploads `transcript.json`) |
+| `/<job id>/footage/clip_N.mp4` | The stream-copied footage of clip N: phase 2's input |
+| `/<job id>/clips/clip_N.mp4` | Finished clips, written by each renderer itself |
 
 **Delete a video:** stop `npm run dev`, delete its folder in `data/jobs`, start the app again. Its cost and times stay on the stats page.
 
 ## Settings
 
-Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.example`, git-ignored). Values set in the shell override the file. They are read by `modal deploy main.py`, so **redeploy after changing them**.
+Backend settings live in `ai-podcast-clipper-backend/.env` (copied from `.env.example`, git-ignored). Values set in the shell override the file. Each row below says when it takes effect:
 
-The app's **Settings page** (gear icon) saves `data/settings.json`: currency, clips per video, Most replayed, audience weight and SponsorBlock. The runner reads it before every run, and its values win over `MOST_REPLAYED`, `SPONSORBLOCK` and `REPLAY_WEIGHT` below. No redeploy is needed for any of them.
+- **runner**: read by `runner.py` when a run starts, no redeploy.
+- **deploy**: read by `modal deploy main.py`, so deploy again after changing it (see [When to redeploy](#when-to-redeploy)).
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `YOUTUBE_IPV4` | `on` | Download YouTube videos over IPv4, which avoids repeated timeouts to one YouTube server on a broken IPv6 route. `off` lets the system choose (runner, no redeploy) |
-| `MOST_REPLAYED` | `on` | Use YouTube's Most replayed graph: replay hotspots become clip candidates and each clip gets an audience score. Read by the runner, no redeploy needed. See [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock) |
-| `SPONSORBLOCK` | `on` | Keep SponsorBlock-marked sponsor reads, self-promotion, subscribe reminders, intros, outros and previews out of clips (runner, no redeploy) |
-| `REPLAY_WEIGHT` | `0.4` | Share of the final score from the audience, 0-1. `0.4` = 60% Gemini, 40% viewers; `0` = Gemini only (runner, no redeploy) |
-| `CLIPPER_GPU` | `A10` | GPU for transcription and for each clip's render container. A list such as `L40S,A10` is a fallback order. Needs an NVENC encoder: L4, A10 or L40S, not A100/H100/H200/B200. See [Choose a GPU](#choose-a-gpu) |
-| `RENDER_MAX_CONTAINERS` | `8` | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
-| `RENDER_CPU` | `4` | CPU cores reserved per render container (decoding and framing run on the CPU) |
-| `FLASH_FRAMES_MAX` | `3` | A run of up to this many frames of another shot between two cuts in the video itself shows the frame before it instead. Remote-podcast edits often flash a frame of the side-by-side layout or a zoomed-out view, which reads as a jump. `0` = off |
-| `SPEAKER_MIN_HOLD_SECONDS` | `0.5` | Shortest time the crop stays on one speaker, or on the whole frame, before it may switch. Removes split-second jumps; cuts in the video itself still switch at once. `0` = off |
-| `MIN_CLIPS` | `3` | A job never ends with fewer clips: missing ones are picked from the transcript and marked "fallback" |
-| `CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS` | `30` / `60` | Clip length limits |
-| `CLIP_GRACE_SECONDS` | `5` | Extra seconds a clip may run past the maximum, only to finish its last sentence |
-| `GEMINI_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | Models tried in order. `GEMINI_MODEL` in the Modal secret, if set, goes first |
-| `GEMINI_BUSY_RETRIES` / `GEMINI_BUSY_WAIT_SECONDS` | `1` / `3` | Quick retries for a busy model (429/503/504) before moving to the next |
-| `GEMINI_THINKING_LEVEL` | `low` | `minimal`, `low`, `medium` or `high`; empty = model default |
-| `GEMINI_TEMPERATURE` | empty | Empty = model default (recommended for Gemini 3) |
-| `GEMINI_TIMEOUT_SECONDS` / `RANKING_TIME_LIMIT_SECONDS` | `120` / `240` | Per-request timeout and the total ranking budget before the transcript fallback |
+The app's **Settings page** (gear icon) saves `data/settings.json`: currency, clips per video, Most replayed, audience weight and SponsorBlock. The runner reads it before every run, and its values win over `MOST_REPLAYED`, `SPONSORBLOCK` and `REPLAY_WEIGHT` below (the weight is capped at 0.6 there).
 
-Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional): `DATA_DIR`, `RUNNER_PYTHON`, and YouTube cookies (see [YouTube cookies](#youtube-cookies)): `YTDLP_COOKIES_FILE` or `YTDLP_COOKIES_FROM_BROWSER`.
+| Setting | Default | When | Meaning |
+|---|---|---|---|
+| `YOUTUBE_IPV4` | `on` | runner | Download YouTube videos over IPv4, which avoids repeated timeouts to one YouTube server on a broken IPv6 route. `off` lets the system choose |
+| `MOST_REPLAYED` | `on` | runner | Use YouTube's Most replayed graph: replay hotspots become clip candidates and each clip gets an audience score. See [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock) |
+| `SPONSORBLOCK` | `on` | runner | Keep SponsorBlock-marked sponsor reads, self-promotion, subscribe reminders, intros, outros and previews out of clips |
+| `REPLAY_WEIGHT` | `0.4` | runner | Share of the final score from the audience, 0-1. `0.4` = 60% Gemini, 40% viewers; `0` = Gemini only |
+| `CLIPPER_GPU` | `A10` | deploy | GPU for transcription and for each clip's render container. A list such as `L40S,A10` is a fallback order. Needs an NVENC encoder: L4, A10 or L40S, not A100/H100/H200/B200. See [Choose a GPU](#choose-a-gpu) |
+| `RENDER_MAX_CONTAINERS` | `8` | deploy | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
+| `RENDER_CPU` | `4` | deploy | CPU cores reserved per render container (decoding and framing run on the CPU) |
+| `FLASH_FRAMES_MAX` | `3` | deploy | A run of up to this many frames of another shot between two cuts in the video itself shows the frame before it instead. Remote-podcast edits often flash a frame of the side-by-side layout or a zoomed-out view, which reads as a jump. `0` = off |
+| `SPEAKER_MIN_HOLD_SECONDS` | `0.5` | deploy | Shortest time the crop stays on one speaker, or on the whole frame, before it may switch. Removes split-second jumps; cuts in the video itself still switch at once. `0` = off |
+| `MIN_CLIPS` | `3` | deploy | A job never ends with fewer clips: missing ones are picked from the transcript and marked "fallback" |
+| `CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS` | `30` / `60` | deploy | Clip length limits |
+| `CLIP_GRACE_SECONDS` | `5` | deploy | Extra seconds a clip may run past the maximum, only to finish its last sentence |
+| `GEMINI_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | deploy | Models tried in order. `GEMINI_MODEL` in the Modal secret, if set, goes first |
+| `GEMINI_BUSY_RETRIES` / `GEMINI_BUSY_WAIT_SECONDS` | `1` / `3` | deploy | Quick retries for a busy model (429/503/504) before moving to the next |
+| `GEMINI_THINKING_LEVEL` | `low` | deploy | `minimal`, `low`, `medium` or `high`; empty = model default |
+| `GEMINI_TEMPERATURE` | empty | deploy | Empty = model default (recommended for Gemini 3) |
+| `CLIPPER_APP` / `CLIPPER_SECRET` | `ai-podcast-clipper` / `ai-podcast-clipper-secret` | deploy and runner | Names of the Modal app and secret, for a [test deployment](#test-deployment) |
+| `YTDLP_COOKIES_FILE` / `YTDLP_COOKIES_FROM_BROWSER` | none | runner | YouTube login for yt-dlp: see [YouTube cookies](#youtube-cookies) |
+| `GEMINI_TIMEOUT_SECONDS` / `RANKING_TIME_LIMIT_SECONDS` | `120` / `240` | deploy | Per-request timeout and the total ranking budget before the transcript fallback |
+
+Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional, read in `src/env.ts`): `DATA_DIR` and `RUNNER_PYTHON`. The cookie settings belong in the backend `.env`; an older frontend `.env` that still sets them keeps working and wins.
 
 To change the Modal secret (for example to set `GEMINI_MODEL`), re-create it with `--force`:
 
 ```powershell
 modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<key> GEMINI_MODEL=<model id> --force
 ```
+
+## When to redeploy
+
+`modal deploy main.py` bakes the code into the Modal image and reads the deploy-time settings. Run it again after changing:
+
+- `main.py`, `requirements.txt` or `download_parakeet.py`;
+- any module `main.py` bundles (its `add_local_python_source` list): `moments.py`, `replay.py`, `settings.py`, `audio_utils.py`, `parakeet_transcriber.py`, `render.py`, `costs.py`, `clipper_names.py`, `segments.py`;
+- the folders `asd/` and `prompts/` (editing a ranking prompt included);
+- a **deploy** setting in `.env` (see [Settings](#settings)).
+
+No redeploy is needed for the laptop-side modules (`runner.py`, `pipeline.py`, `phases.py`, `cloud.py`, `cutter.py`, `transfer.py`, `youtube.py`, `downloader.py`, `jobstore.py`, `media.py`, `billing.py`, `maintenance.py`, `run_history.py`, `fx.py`), for the frontend, or for the **runner** settings. `modal deploy` and `modal run` stop with a message when the S3FD weights are missing (`python download_weights.py` fetches them); `CLIPPER_SKIP_WEIGHT_CHECK=1` skips that check.
 
 ## Command line
 
@@ -75,11 +121,13 @@ Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards, fo
 
 ## Where the video goes
 
-- **YouTube link:** the runner downloads it with yt-dlp (H.264 up to 1080p) into `%TEMP%\ai-podcast-clipper\<job id>`, outside OneDrive so sync can't lock the file, uploads it to the `ai-podcast-clipper-jobs` volume and deletes the temp folder. A dropped connection is retried with a growing pause and resumes the partial file; if the run still fails, the partial file stays, so **Try again** resumes it. Temp folders left for over two days are cleared at the next run.
-- **The upload** goes to Modal in 8 MiB pieces, 4 at a time (Modal's default of 128 at once makes every piece crawl on a home connection). A piece that takes over 10 minutes, or fails, is retried, and a retry only sends the pieces Modal doesn't have yet. The progress strip shows the percentage and the time left, and "no data moving" after two minutes without progress; `runner.log` gets a line every 10% with the average speed, the stalls, and the total time.
-- **Waiting for the GPU:** if the connection to Modal drops while a job runs there, the runner keeps asking for the result for up to 15 minutes (`runner.log`: "Lost the connection to Modal"), instead of failing the run.
-- **MP4 upload:** the browser sends it to the job folder, and the runner uploads it to the volume.
-- **After a successful run** the runner deletes the video from the volume and from the job folder. After a failed run the volume copy is deleted too, but a video in the job folder stays, so **Try again** does not download or upload twice.
+- **YouTube link:** the runner first downloads only the audio, then the video with yt-dlp (H.264 up to 1080p, preferring at most 30 fps at the same resolution, since the render resamples to 25 fps) into `%TEMP%\ai-podcast-clipper\<job id>`, outside OneDrive so sync can't lock the file. A dropped connection is retried with a growing pause and resumes the partial file; if the run still fails, the partial or finished download stays, so **Try again** neither downloads nor transcribes again. The folder is deleted when the run succeeds (`--keep-video` moves the video into the job folder instead), and folders left for over two days are cleared at the next run.
+- **MP4 upload:** the browser sends it to the job folder; the runner copies its audio out and later cuts the footage from it.
+- **Uploads to Modal** go in 8 MiB pieces, 4 at a time (Modal's default of 128 at once makes every piece crawl on a home connection). A piece that takes over 10 minutes, or fails, is retried, and a retry only sends the pieces Modal doesn't have yet. The progress strip shows the percentage and the time left, and "no data moving" after two minutes without progress; `runner.log` gets a line every 10% with the average speed and the total time.
+- **Waiting for the GPU:** if the connection to Modal drops while a function runs there, the runner keeps asking for the result for up to 15 minutes (`runner.log`: "Lost the connection to Modal"), instead of failing the run.
+- **After a successful run** the video, audio and footage are deleted locally and the job's volume folder is removed. After a failed run the volume copy is removed too (except rendered clips, see below), and a video already in the job folder stays for **Try again**.
+- **Clips that rendered but could not be saved** stay on Modal: `job.json` `pendingSave` records them, and **Try again** (or Re-rank) downloads them instead of rendering again. The next run's sweep removes such folders after a day.
+- **Cleanup of killed runs:** at the start of every run the runner sweeps the volume and removes folders of jobs that are finished, failed or gone (cancelling any Modal call still running for them); folders of active jobs are never touched. When a run fails or is interrupted, its running Modal calls are cancelled.
 
 ## Most replayed and SponsorBlock
 
@@ -98,7 +146,7 @@ SponsorBlock data is licensed under [CC BY-NC-SA 4.0](https://creativecommons.or
 
 ## Re-rank
 
-**Re-rank** (in the app, or `--rerank` above) reuses the saved transcript: no transcription, only Gemini and rendering run again. A YouTube video is downloaded on Modal again (about a minute). For an uploaded MP4, Re-rank asks for the same file again (or drop it on the home page and choose Re-rank); it must match the original's fingerprint. The current clips stay until the new ones have downloaded. Use it after a Gemini outage left fallback clips, or after editing `prompts/viral_moments.md`.
+**Re-rank** (in the app, or `--rerank` above) reuses the saved transcript: no transcription, only Gemini and rendering run again. A YouTube video is downloaded again on the laptop (while Gemini ranks). For an uploaded MP4, Re-rank asks for the same file again (or drop it on the home page and choose Re-rank); it must match the original's fingerprint. New clips are downloaded as they render and swapped in file by file at the end, so the current clips stay complete if anything fails. Use it after a Gemini outage left fallback clips, or after editing `prompts/viral_moments.md` (deploy first: the prompts are part of the image).
 
 ## Preview ranking locally
 
@@ -110,13 +158,17 @@ python rank_moments.py --list-models                           # model IDs your 
 python rank_moments.py "..\data\jobs\<job id>" --max-clips 5   # writes moments.preview.json
 ```
 
-## How a job runs in the cloud
+## How a job runs
 
-First the video reaches the volume (see [Where the video goes](#where-the-video-goes)). Then `process_job`, a CPU function, runs the job in three steps:
+Two Modal functions (CPU) do the work, called by `runner.py` (`pipeline.py` and `phases.py`):
 
-1. **Transcribe**: one GPU container (`Transcriber`) runs Parakeet on the whole video.
-2. **Rank**: Gemini picks the moments from the CPU function, so no GPU is billed while it ranks.
-3. **Render**: one GPU container (`Renderer`) per clip, all at the same time. Each one seeks straight to its clip in the video on the volume, finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder (libx264 if there is none), with subtitles and the audio fade.
+**Phase 1, `transcribe_and_rank`**, as soon as the audio is on the volume (YouTube: the audio stream alone; an upload: copied out of the MP4 with FFmpeg, stream copy):
+1. **Transcribe:** one GPU container (`Transcriber`) runs Parakeet on the audio.
+2. **Rank:** Gemini picks the moments from the CPU function, so no GPU is billed while it ranks. The transcript is saved to the job folder as soon as this phase has it.
+
+While phase 1 runs, the laptop downloads the YouTube video. The progress strip shows Send audio, Transcribe, Find moments, Download (the percentage appears next to the cloud stage while both run), Send clips, Render and Save.
+
+**Phase 2, `render_clips`**, once the laptop has cut and uploaded each chosen clip's footage (`cutter.py`, `segments.py`): one stream-copied piece per clip, checked packet by packet, uploaded as `footage/clip_N.mp4`. Then one GPU container (`Renderer`) per clip, all at the same time. Each one seeks into its footage (the arithmetic in `segments.py` makes the result identical to rendering from the whole video), finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder, with subtitles and the audio fade, then writes it straight to the volume. The runner downloads each clip as it appears in the progress `ready` list. A container that starts without a working GPU or NVENC (on a GPU type that has it) fails at start-up instead of rendering slowly on the CPU.
 
 Flash frames are removed first (`render.flash_frames`): 1-3 frames of another shot between two hard cuts, found on tiny thumbnails of every frame. Every pass (face detection, speaker scoring, encoding) sees the frame before the flash instead, so face tracks run straight through it and the clip shows a 40-120 ms freeze instead of a jump. A camera change right after a flash stays a hard cut.
 
@@ -126,7 +178,19 @@ The crop is then steadied (`render.steady_faces`). Inside each shot of the sourc
 
 Cuts in the source are never crossed, so a cut to another camera still switches immediately.
 
-A job's details in the app show its processing time and estimated Modal cost (`costs.py`: GPU, CPU and memory per container, using Modal's October 2026 prices). The Modal dashboard has the real bill.
+A job's details in the app show its processing time and estimated Modal cost (`costs.py`: GPU, CPU and memory per container, using Modal's November 2026 prices when Modal's live rates can't be read). The Modal dashboard has the real bill.
+
+### Fallbacks to the whole video
+
+The whole video is uploaded first (as before the two phases) and both functions read `input.mp4` when:
+- the audio can't be had on its own (the audio download or the FFmpeg extraction fails; the reason is in `runner.log`), or
+- the job is a legacy re-rank of a run from the removed Whistle engine.
+
+Only phase 2 falls back (the whole video is uploaded after ranking, and clips render from it) when the video can't be cut into footage: `cutter.py` handles only MP4/MOV files with H.264 video and one AAC audio stream, and the cut is verified before upload; an FFmpeg error or a failed check also falls back. YouTube downloads are normally H.264 + AAC MP4, so uploads in other formats are the usual case.
+
+### job.json fields
+
+Besides status, progress and clip details: `videoTransfer` (`audio-first`, `laptop-download` or `upload`), `engine` (Parakeet's audio length and speed, GPU), `timings`, `cost`, `runs`, `reranks`, `failedStage`, and run state: `modalCallId` (the running Modal call, so a killed runner's call can be cancelled), `pendingSave` (rendered clips still on Modal), `keepRemote`. A run adds optional `clipTimings` (per clip: seconds, container start-up, render steps, encoder), `coldStarts` (per container that started: stage, start-up seconds, GPU) and `resumedFrom` (clips of an earlier attempt were downloaded instead of rendered). New `timings` keys of a two-phase run: `audio` (getting and uploading the audio), `download` (the video, in parallel with phase 1), `downloadWait` (how long the run then waited for it), `cut`, `clipUpload`; only `downloadWait` of the download adds to the total. The ledger line of a run carries the same run fields.
 
 ## Stats page
 
@@ -134,10 +198,10 @@ The chart icon in the header opens `/stats`, for this month or all time: Modal's
 
 - **Modal's bill** comes from `modal billing summary` (works on the Starter plan). The runner saves it in `data/stats/modal-bill.json` after every run, and the page asks for a fresh one when it is older than 15 minutes. Modal's billing months are UTC calendar months.
 - **Run costs** are estimates: each container's running time (plus start-up and the idle time before Modal stops it) at Modal's live rates from `modal billing rates`, saved once a day in `data/stats/rates.json`. If Modal's rate names change and can't be read, the built-in prices in `costs.py` are used (`--check-rates` shows which). The Runs card shows how this month's runs compare with what Modal charged for the app.
-- **Stages:** Download (on the laptop: the download, the upload to Modal and the Most replayed lookup; no Modal cost), Transcribe, Rank (Gemini; its cost is the job's own CPU container), Render (time = the slowest clip, cost = all clip GPUs), Save (laptop, no cost) and Overhead (total minus the stages, mostly containers starting).
+- **Stages:** Download (on the laptop: audio, the video download beyond what phase 1 hid, cutting, uploads and the Most replayed lookup; no Modal cost), Transcribe, Rank (Gemini; its cost is the job's own CPU container), Render (time = the slowest clip, cost = all clip GPUs), Save (laptop, no cost) and Overhead (total minus the stages, mostly containers starting).
 - **Rupees:** with Settings > Currency on rupees, each run is converted at the USD to INR rate saved when it finished (`fx.py`, `data/stats/fx.json`: Frankfurter, then ExchangeRate-API's open endpoint; no API key). The month's bill uses today's rate.
 
-- **Run ledger.** When a run ends (first run, re-rank or failure), the runner appends one line to `data/stats/runs.jsonl` (`run_history.py`): the job's id, title and source, the mode, result, start and end time, step timings, cost and Parakeet's speed. The stats page reads only this file, so **deleting a video keeps its runs in the stats**; such videos are listed as "deleted from the app", without a link. The same run also goes into the job's own `job.json` `runs`.
+- **Run ledger.** When a run ends (first run, re-rank or failure), the runner appends one line to `data/stats/runs.jsonl` (`run_history.py`): the job's id, title and source, the mode, result, start and end time, step timings, cost and Parakeet's speed. The stats page reads only this file, so **deleting a video keeps its runs in the stats**; such videos are listed as "Deleted video", without a link. The same run also goes into the job's own `job.json` `runs`.
 - **Starting the stats over:** delete `data/stats/runs.jsonl` (or the whole `data/stats` folder). Deleting job folders alone does not reset the stats.
 - **Failed runs** show where they stopped. One that ended before reporting a cost shows "—" and counts as $0. Averages count only runs that made clips, and say how many runs they are based on ("early estimate" below 3).
 
@@ -176,7 +240,7 @@ Stopping `npm run dev` does not stop a job. To cancel one:
 # 1. stop the runner(s) on this laptop
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*runner.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
-# 2. stop the job's containers: process_job, then any Transcriber or Renderer ones
+# 2. stop the job's containers: transcribe_and_rank or render_clips, then any Transcriber or Renderer ones
 #    (an empty list = nothing running, nothing billed)
 modal container list
 modal container stop <container-id>          # never `modal app stop`: that undeploys the app
@@ -186,16 +250,23 @@ modal volume rm ai-podcast-clipper-jobs /<job-id> -r
 Remove-Item -Recurse -Force ..\data\jobs\<job-id>
 ```
 
-## Tests
+## Test deployment
+
+To try changes without touching the real app, set `CLIPPER_APP=ai-podcast-clipper-test` (and optionally `CLIPPER_SECRET`, which otherwise stays the real secret so the key is shared) in `.env` or the shell, then `modal deploy main.py` and run the runner as usual. The test app gets its own volume (`<app>-jobs`) and progress Dict (`<app>-progress`), and the names reach the containers through the settings secret. Remove the line and the runner talks to the real app again; stop the test app from the Modal dashboard (never `modal app stop` on the real one).
+
+## Tests and CI
 
 ```powershell
-pip install pytest
+pip install -r requirements-dev.txt
 python -m pytest tests -q
+ruff check .
 ```
+
+`requirements-dev.txt` has everything the offline suite needs, including `imageio-ffmpeg` (through `requirements-local.txt`); the footage tests also need `ffprobe` on the PATH and skip without them. Their exact-match checks run only when the `ffmpeg` on the PATH (or `FFMPEG_BIN`) is 4.4-6.x like Modal's, because it plays the render container; with a newer one they skip. The torch tests (batched S3FD and LR-ASD) skip without torch (CPU wheels: see the file). Settings for both tools are in `pyproject.toml`. [CI](../.github/workflows/ci.yml) runs the backend (ruff, pytest) and the frontend (`tsc`, `npm run lint`, `npm run format:check`, `npm run build`) on every push.
 
 ## YouTube cookies
 
-When YouTube asks to "confirm you're not a bot", yt-dlp can use your YouTube login. Set one of these in the frontend `.env` and restart `npm run dev` (the runner reads them; it checks them once per run and carries on without cookies if they can't be read, with the reason in `runner.log`):
+When YouTube asks to "confirm you're not a bot", yt-dlp can use your YouTube login. Set one of these in the **backend** `.env` (they are read by the runner, which checks them once per run and carries on without cookies if they can't be read, with the reason in `runner.log`; a variable already set in the frontend `.env` or the shell wins):
 
 - **`YTDLP_COOKIES_FILE`**: a `cookies.txt` file. This is the way to use **Chrome**: Chrome (and Edge) on Windows encrypt their cookies so that other programs can't read them, so `YTDLP_COOKIES_FROM_BROWSER=chrome` fails ("Failed to decrypt with DPAPI"). Install the "Get cookies.txt LOCALLY" extension, open youtube.com while signed in, export the cookies for youtube.com, and save the file outside OneDrive and the repo, e.g. `C:\Users\<you>\podcast-clipper-cookies\youtube.txt`. The file signs in as you: keep it private. YouTube rotates cookies, so export again if the bot check comes back.
 - **`YTDLP_COOKIES_FROM_BROWSER=firefox`**: Firefox's cookies can be read directly, while you are signed in to YouTube in Firefox.
@@ -206,15 +277,13 @@ The file wins when both are set.
 
 | Symptom | Fix |
 |---|---|
-| "YouTube asked to confirm you're not a bot" | Set up [YouTube cookies](#youtube-cookies), restart `npm run dev`, then **Try again** |
+| "YouTube asked to confirm you're not a bot" | Set up [YouTube cookies](#youtube-cookies), then **Try again** |
 | A YouTube download keeps timing out ("Read timed out", "connect timeout") | Your connection to YouTube's video servers is dropping. **Try again** resumes the download where it stopped. Check that `YOUTUBE_IPV4` is `on`, and update yt-dlp with `pip install -U "yt-dlp[default]"` |
-| "The backend Python environment wasn't found" | Create the backend `.venv` (setup step 1) or set `RUNNER_PYTHON` in the frontend `.env` |
-| App or secret `ai-podcast-clipper` not found | Run `modal deploy main.py`, or create the secret (setup step 3) |
+| "The backend Python environment wasn't found" | Create the backend `.venv` (see the README's setup) or set `RUNNER_PYTHON` in the frontend `.env` |
+| App or secret `ai-podcast-clipper` not found | Run `modal deploy main.py`, or create the secret (see the README's setup) |
 | No Most replayed graph on a popular video | `runner.log` has the reason. "Sign in to confirm you're not a bot": set up [YouTube cookies](#youtube-cookies), then **Re-rank**. Otherwise YouTube shows no graph for that video yet |
 | "Gemini was busy, so these clips were picked without it" | They came from the transcript or were cut around a replay peak. Click **Re-rank** later, or check the model IDs with `rank_moments.py --list-models` |
 | HTTP 429 from Hugging Face during the first deploy | Add `HF_TOKEN` to the Modal secret and deploy again |
 | Modal auth or token errors | Run `modal setup` again in the backend venv |
-
-## Transcription accuracy
-
-Measured on this project's podcasts as the difference from earlier WhisperX transcripts (Andrew Ng talk / a conversation with a child): Parakeet v2 5.2% / 11.5%, Parakeet v3 6.6% / 12.4%. Parakeet v2 is used; on an A10, 30 minutes of audio takes about 16 seconds.
+| "Model weights missing or damaged" when deploying | Run `pip install gdown; python download_weights.py` |
+| Clips rendered but saving failed | Click **Try again**: the clips are still on Modal and are downloaded without rendering again |

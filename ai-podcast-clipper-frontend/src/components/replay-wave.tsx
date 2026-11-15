@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { timecode } from "~/lib/format";
 import type { ClipDetail, JobReplay } from "~/lib/job-types";
 import { cn } from "~/lib/utils";
@@ -38,7 +39,7 @@ const SKIP_LABELS: Record<string, string> = {
   preview: "Preview of a later part",
 };
 
-export function ReplayWave({
+export const ReplayWave = memo(function ReplayWave({
   replay,
   clips,
   dimmed = false,
@@ -166,4 +167,4 @@ export function ReplayWave({
       </div>
     </section>
   );
-}
+});

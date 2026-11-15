@@ -1,34 +1,35 @@
-# Podcast Clipper - web UI
+# AI Podcast Clipper: web UI
 
 Local Next.js app for the podcast clipper. No accounts, payments or database:
+
 - each video is a job folder under `../data/jobs/`;
 - `../ai-podcast-clipper-backend/runner.py` processes it on Modal.
 
 ```powershell
 npm install
-npm run dev   # http://localhost:3000
+npm run dev                       # development, http://127.0.0.1:3000
+npm run build; npm run start      # production build for daily use (npm run preview does both)
+npm run lint; npx tsc --noEmit    # checks; also npm run format:check
 ```
 
-See the main [README](../README.md) for full setup.
+The app listens on 127.0.0.1 only. See the main [README](../README.md) for full setup.
 
-| Path | Purpose |
-|---|---|
-| `src/app/page.tsx` | Home: the input bar and **Your videos** |
-| `src/app/videos/[jobId]/page.tsx` | Clips page of one video |
-| `src/app/stats/page.tsx`, `src/components/stats-page.tsx` | Stats page: Modal bill, averages by stage, runs, clip sources |
-| `src/app/settings/page.tsx`, `src/components/settings-page.tsx`, `src/app/api/settings` | Settings page, saved in `data/settings.json` |
-| `src/components/dashboard-client.tsx`, `video-list.tsx` | Home page logic and the video list with live status |
-| `src/components/new-job-bar.tsx` | YouTube link, MP4 upload, drag and drop, duplicate check |
-| `src/components/video-page.tsx`, `clip-card.tsx` | Clips page, clip player, rank and score badge, Most replayed badge, downloads |
-| `src/components/replay-wave.tsx` | The Most replayed graph on the clips page, with each clip marked |
-| `src/components/video-parts.tsx` | Shared pieces: progress strip, details popover (time and cost), notices, actions |
-| `src/app/api/jobs/...` | List and create jobs; get one; re-rank (takes the MP4 again for an upload); retry; duplicate check |
-| `src/app/api/media/[jobId]/...` | Clips and posters (seeking, caching), ZIP of all clips, video cover |
-| `src/lib/jobs.ts` | Job folders, stale-runner detection, starting `runner.py` |
-| `src/lib/format.ts`, `job-types.ts` | Display text (progress, durations, cost) and the `job.json` types |
-| `src/lib/ledger.ts`, `src/lib/stats.ts`, `src/lib/stats-server.ts`, `src/app/api/stats` | Stats worked out from the run ledger `data/stats/runs.jsonl` (kept when a video is deleted) |
-| `src/lib/modal-bill.ts`, `src/lib/fx.ts`, `src/lib/app-settings.ts`, `src/lib/settings-types.ts` | Modal's monthly bill, the USD to INR rate, and the settings file |
-| `src/lib/fingerprint.ts`, `youtube.ts` | Duplicate detection: upload fingerprint and YouTube video ID |
-| `src/lib/upload.ts` | MP4 upload with progress, for new videos and for re-ranking an upload |
-| `src/env.js` | Optional settings: `DATA_DIR`, `RUNNER_PYTHON` |
-| `src/app/icon.svg`, `public/favicon.ico` | App icon (the sound-wave logo) |
+| Path                                                                                                       | Purpose                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `src/app/page.tsx`, `loading.tsx`, `error.tsx`, `not-found.tsx`                                            | Home: the input bar and **Your videos**, plus the loading, error and not-found screens                      |
+| `src/app/videos/[jobId]/page.tsx`, `src/components/video/`                                                 | Clips page of one video: progress strip, details panel, notices, job actions                                |
+| `src/components/clip-card.tsx`, `replay-wave.tsx`                                                          | Clip player, rank and score badge, Most replayed badge and graph                                            |
+| `src/app/stats/page.tsx`, `src/components/stats/`                                                          | Stats page: Modal bill, averages by stage, runs, clip sources                                               |
+| `src/app/settings/page.tsx`, `src/components/settings-page.tsx`, `src/app/api/settings`                    | Settings page, saved in `data/settings.json`                                                                |
+| `src/components/new-job/`                                                                                  | YouTube link, MP4 upload, drag and drop, duplicate notice                                                   |
+| `src/components/dashboard-client.tsx`, `video-list.tsx`                                                    | Home page logic and the video list with live status                                                         |
+| `src/app/api/jobs/...`                                                                                     | List and create jobs; get one; re-rank (takes the MP4 again for an upload); retry; duplicate check          |
+| `src/app/api/media/[jobId]/...`                                                                            | Clips and posters (seeking, caching), ZIP of all clips, video cover                                         |
+| `src/lib/job-store.ts`, `stale-jobs.ts`, `jobs.ts`, `runner.ts`, `paths.ts`                                | Job folders, stale-runner detection, starting `runner.py`                                                   |
+| `src/lib/duplicates.ts`, `fingerprint.ts`, `youtube.ts`                                                    | Duplicate detection: upload fingerprint and YouTube video ID                                                |
+| `src/lib/format.ts`, `job-types.ts`                                                                        | Display text (progress steps, durations, cost) and the `job.json` types                                     |
+| `src/lib/ledger.ts`, `stats.ts`, `stats-math.ts`, `stats-types.ts`, `stats-server.ts`, `src/app/api/stats` | Stats worked out from the run ledger `data/stats/runs.jsonl` (kept when a video is deleted)                 |
+| `src/lib/modal-bill.ts`, `fx.ts`, `app-settings.ts`, `settings-types.ts`                                   | Modal's monthly bill, the USD to INR rate (read from cache, refreshed in the background), the settings file |
+| `src/lib/use-polling.ts`, `upload.ts`                                                                      | Polling with ETag/304 that pauses in hidden tabs; MP4 upload with progress                                  |
+| `src/env.ts`                                                                                               | Optional settings: `DATA_DIR`, `RUNNER_PYTHON` (YouTube cookies go in the backend `.env`)                   |
+| `src/app/icon.svg`, `public/favicon.ico`                                                                   | App icon (the sound-wave logo)                                                                              |

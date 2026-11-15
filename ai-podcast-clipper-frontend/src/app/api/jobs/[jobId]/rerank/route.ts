@@ -6,24 +6,16 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { NextResponse } from "next/server";
 import { ACTIVE_STATUSES } from "~/lib/job-types";
-import {
-  canRerank,
-  fileFingerprint,
-  inputPath,
-  isValidJobId,
-  jobDir,
-  readJob,
-  rerankNeedsFile,
-  startRunner,
-  updateJob,
-} from "~/lib/jobs";
-
-export const dynamic = "force-dynamic";
+import { fileFingerprint } from "~/lib/duplicates";
+import { readJob, updateJob } from "~/lib/job-store";
+import { canRerank, rerankNeedsFile } from "~/lib/jobs";
+import { startRunner } from "~/lib/runner";
+import { inputPath, isValidJobId, jobDir } from "~/lib/paths";
 
 /**
  * Re-rank & re-render a finished job: reuses its saved transcript, so only Gemini
- * and the GPU run again (no transcription). A YouTube video is downloaded on Modal
- * again. An upload whose video was deleted after its run needs the same MP4 again,
+ * and the GPU run again (no transcription). A YouTube video is downloaded again
+ * by the runner on the laptop. An upload whose video was deleted after its run needs the same MP4 again,
  * sent as the raw request body (`Content-Type: video/mp4`); it is checked against
  * the job's fingerprint. The previous clips stay until the new ones are downloaded.
  */

@@ -2,76 +2,71 @@
 
 Turn a long podcast or interview into ranked, ready-to-post vertical clips for YouTube Shorts, Instagram Reels and TikTok.
 
-Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video (helped by YouTube's "Most replayed" graph when the video has one), crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on a rented cloud GPU ([Modal](https://modal.com)), and every video is deleted once its clips are made, so only the app and the finished clips live on your machine.
+Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video (helped by YouTube's "Most replayed" graph when the video has one), crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on rented cloud GPUs ([Modal](https://modal.com)), and every video is deleted once its clips are made, so only the app and the finished clips live on your machine.
 
 A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas): no accounts, payments, S3 or database.
+
+**Stack:** Next.js 15 (React 19, Tailwind 4), Python 3.12, Modal (A10 GPUs), NVIDIA Parakeet TDT 0.6B v2, Gemini, LR-ASD, yt-dlp, FFmpeg.
 
 ## Demo
 
 https://github.com/user-attachments/assets/4f1256f4-8035-4e74-be25-355fda692fc8
 
-A 37-minute podcast became 5 ranked clips in 7 minutes, for about $0.12 of GPU time.
-
-## Features
-
-- **Best moments, not the first ones:** Gemini scores candidates on hook, standalone sense, payoff, emotion, value and shareability; clips come back ranked with their score and the reason.
-- **What viewers actually rewatch:** for popular YouTube videos, the peaks of YouTube's "Most replayed" graph become clip candidates, Gemini cuts each one cleanly, and every clip's score blends Gemini's rubric (60%) with how often viewers replay that part (40%). The clips page shows the graph with your clips marked.
-- **No sponsor reads:** parts that [SponsorBlock](https://sponsor.ajay.app) users marked as sponsor reads, self-promotion, intros, outros or cold-open previews never become clips.
-- **Fast, accurate transcripts:** [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) transcribes 30 minutes of audio in about 16 seconds on an A10 (English).
-- **Speaker-following crop:** [LR-ASD](https://github.com/Junhua-Liao/LR-ASD) active-speaker detection keeps the person talking in frame, without split-second jumps between people.
-- **Clips render in parallel:** one GPU container per clip, each clip encoded once on the GPU; every video shows how long it took and what it cost.
-- **Clean cuts:** clips start where a thought starts and end where it lands, on whole sentences with a short fade.
-- **Nothing big on your laptop:** a YouTube video downloads into a temp folder outside OneDrive, goes up to Modal and is deleted right away; an uploaded MP4 is deleted once its clips are saved. A job folder keeps the clips, transcript, thumbnail and details.
-- **Downloads that survive a bad connection:** a dropped download resumes where it stopped (also on **Try again**) instead of starting over, and uses IPv4 to avoid the timeouts a broken IPv6 route causes. The download and the upload to Modal both show a percentage and the time left.
-- **No repeat work:** adding a video you already clipped (same YouTube video or the same file, even renamed) takes you to its clips or a re-rank instead.
-- **Never empty-handed:** if Gemini is busy, the app falls back through other models and then to transcript-based picks, and lets you re-rank later without transcribing again.
-- **Clean, live UI:** step-by-step progress, one-click download or ZIP of all clips, light and dark themes.
-- **Stats page:** this month's Modal bill, the average cost and time of a new video and of a re-rank (per stage and per podcast hour), every run with its result, and how Most replayed and SponsorBlock shaped the clips. Costs show in dollars or rupees (live exchange rate).
+A 37-minute podcast became 5 ranked clips in 7 minutes for about $0.12 of GPU time (measured on the earlier pipeline that uploaded the whole video).
 
 ## How it works
 
 ```mermaid
 flowchart LR
     subgraph laptop["Your machine"]
-        ui["Browser<br/>localhost:3000"] --> app["Next.js app<br/>job folders in data/jobs"]
+        ui["Browser<br/>127.0.0.1:3000"] --> app["Next.js app<br/>job folders in data/jobs"]
         app --> runner["runner.py"]
     end
 
-    runner -- "upload video" --> vol[("Modal volume")]
-    yt[("YouTube")] -- "video, Most replayed graph" --> runner
-    sb[("SponsorBlock")] -. "parts to skip" .-> runner
+    yt[("YouTube")] -- "audio, then video" --> runner
+    sb[("SponsorBlock, Most replayed")] -. "parts to skip, hotspots" .-> runner
+    runner -- "1. audio" --> vol[("Modal volume")]
+    runner -- "2. footage of each chosen clip" --> vol
 
     subgraph modal["Modal"]
-        asr["Transcribe<br/>Parakeet v2, 1 GPU"] --> rank["Rank moments<br/>CPU"]
-        rank --> r1["Clip 1<br/>GPU"]
-        rank --> r2["Clip 2<br/>GPU"]
-        rank --> rn["Clip N<br/>GPU"]
+        p1["Phase 1: transcribe_and_rank<br/>Parakeet v2 on 1 GPU, then Gemini on CPU"]
+        p2["Phase 2: render_clips<br/>one GPU container per clip, in parallel"]
+        p1 --> p2
     end
 
-    vol --> asr
-    rank <-. "API" .-> gemini["Gemini"]
-    r1 & r2 & rn --> vol
-    vol -- "download clips" --> runner
+    vol --> p1
+    p1 <-. "API" .-> gemini["Gemini"]
+    vol --> p2
+    p2 -- "clips" --> vol
+    vol -- "each clip as it is ready" --> runner
 ```
 
-1. **Add a video** in the browser. The Next.js app creates a job folder and starts `runner.py` in the background.
-2. **The runner** reads YouTube's Most replayed graph and the SponsorBlock segments on your laptop (a few seconds, no download), then gets the video onto a Modal volume: a YouTube video is downloaded with yt-dlp into a temp folder outside OneDrive and uploaded, an uploaded MP4 is sent from its job folder.
-3. **On Modal**, Parakeet transcribes the audio on a GPU, then Gemini ranks the moments, replay hotspots included, while no GPU is billed. Then every clip renders at the same time in its own GPU container: LR-ASD finds the speaker, and each clip is cropped to 9:16 and encoded once with subtitles on the GPU's video encoder. Progress is reported back as it goes.
-4. **The runner** downloads the finished clips into the job folder, and they appear in the app with the job's processing time and estimated cost. Then the video is deleted, from Modal and from the job folder.
+1. **Add a video.** The Next.js app creates a job folder and starts `runner.py` in the background. The runner reads the Most replayed graph and SponsorBlock segments (a few seconds, no download).
+2. **Phase 1.** The audio goes to Modal first. Parakeet transcribes it and Gemini ranks the moments (no GPU is billed while it ranks). Meanwhile the laptop downloads the YouTube video.
+3. **Phase 2.** For each chosen clip the laptop cuts that clip's footage out of the video (no re-encode) and uploads only that. Every clip then renders at once in its own GPU container: LR-ASD finds the speaker, and the clip is cropped to 9:16 and encoded once with subtitles.
+4. **Save.** The runner downloads each clip as soon as it is ready, then deletes the video, the audio and the footage, from Modal and from your machine.
+
+The two phases overlap the video download with transcription. On `main`, one real 30-minute 1080p60 video took 13 minutes, 468 s of it uploading the whole video. With the two-phase flow, a video of about 40 minutes took 6.8 minutes and one of about 100 minutes took 7.4 minutes (first real runs, on a 4-8 Mbps uplink).
+
+## How it's built
+
+- **Parallel GPU containers:** one A10 per clip, each clip encoded once on NVENC; every video shows its time and estimated cost.
+- **Audio first, then only the footage you need:** the video is never uploaded whole unless it has to be (see [advanced.md](docs/advanced.md#fallbacks-to-the-whole-video)).
+- **Parakeet TDT 0.6B v2:** about 111x real time on an A10, English only; chosen over Whisper-family and Parakeet v3 on this project's own podcasts.
+- **Gemini plus the audience:** Gemini scores candidates on a six-part rubric; for YouTube videos the score blends 60% Gemini with 40% how often viewers replay that part.
+- **Delete after use:** no video stays on Modal or on your machine after a successful run; Re-rank reuses only the transcript.
+- **Run ledger:** every run is appended to `data/stats/runs.jsonl`, so the stats page keeps its numbers when you delete a video.
 
 ## Requirements
 
 - Windows, macOS or Linux (no local GPU needed)
 - [Node.js](https://nodejs.org) 20+, [Python 3.12](https://www.python.org/downloads/) and Git
-- A [Modal](https://modal.com) account (the Starter plan includes $30/month of credits; an A10 costs about $1.10/hour)
-- A [Gemini API key](https://aistudio.google.com/apikey)
+- A [Modal](https://modal.com) account (the Starter plan includes $30/month of credits) and a [Gemini API key](https://aistudio.google.com/apikey)
 - Optional: a [Hugging Face token](https://huggingface.co/settings/tokens), if the first deploy hits download rate limits
 
 ## One-time setup
 
 Commands are for PowerShell. On macOS/Linux, activate the venv with `source .venv/bin/activate` and use `cp` instead of `Copy-Item`.
-
-**1. Clone and install the backend tools**
 
 ```powershell
 git clone https://github.com/Akash-Sakala/ai-podcast-clipper.git
@@ -81,57 +76,59 @@ py -3.12 -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements-local.txt
 Copy-Item .env.example .env
-```
 
-**2. Download the face-detector weights** (about 90 MB; the rest of LR-ASD is already in `asd/`)
-
-```powershell
 pip install gdown
-gdown 1KafnHz7ccT-3IyddBsL5yi2xGtxAKypt -O asd\model\faceDetector\s3fd\sfd_face.pth
-```
+python download_weights.py          # face-detector weights (about 90 MB), checked by SHA-256
 
-**3. Connect Modal and deploy the GPU backend** (still in `ai-podcast-clipper-backend`)
-
-```powershell
 modal setup
 modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<your key> HF_TOKEN=<optional token>
-modal deploy main.py
-```
+modal deploy main.py                # refuses to deploy if the weights are missing
 
-The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while; later deploys are quick. Re-run `modal deploy main.py` after changing `main.py`, `render.py`, `asd/` or `.env`. Updating from an older version? Run `python runner.py --prune-videos` once to delete the videos it kept in finished job folders.
-
-**4. Install the frontend**
-
-```powershell
 cd ..\ai-podcast-clipper-frontend
 npm install
 ```
 
-With the standard folder layout no frontend `.env` is needed. Copy `.env.example` to `.env` only to change where job data is stored (`DATA_DIR`, best kept outside OneDrive), which Python runs the runner (`RUNNER_PYTHON`), or to let yt-dlp use your YouTube login when YouTube asks to confirm you're not a bot (`YTDLP_COOKIES_FILE`, a cookies.txt exported from Chrome, or `YTDLP_COOKIES_FROM_BROWSER=firefox`).
+The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) and takes a while. After changing settings or bundled code, deploy again: see [what needs a redeploy](docs/advanced.md#when-to-redeploy). With the standard folder layout no frontend `.env` is needed.
 
-## Running the app
+## Running
+
+Daily use (production build, listens on 127.0.0.1 only):
 
 ```powershell
 cd ai-podcast-clipper-frontend
-npm run dev
+npm run build
+npm run start
 ```
 
-Open http://localhost:3000.
+`npm run preview` does both in one go. For development with hot reload use `npm run dev`. Open http://127.0.0.1:3000.
 
-- **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with its live status; you can keep adding more while others run.
-- **Clips page:** click a video to see its clips, best first. Popular YouTube videos show the Most replayed graph with each clip marked, and clips on a replay peak get a **Most replayed** badge. Hover the rank badge (`#1 86`) for the score breakdown, the audience score and Gemini's reason. Download one clip, or everything as a ZIP with **Download all**. **Re-rank** asks Gemini again without re-transcribing (a YouTube video is downloaded again; for an uploaded MP4 you choose the same file again); **Try again** restarts a failed video.
-- **Older videos:** run `python runner.py --backfill-replay` once in `ai-podcast-clipper-backend` to read their graphs (it also reports how many of their clips already sat on a replay peak); **Re-rank** then uses them.
-- **Stats:** the chart icon in the header shows what each video cost on Modal and how long each stage took, for this month or all time. Every run is kept in `data/stats/runs.jsonl`, so a video you delete from `data/jobs` stays in the stats.
-- **Settings:** the gear icon sets the currency (dollars or rupees), clips per video, Most replayed, the audience weight and SponsorBlock. They apply to the next video or re-rank.
+- **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with live status.
+- **Clips page:** clips best first, with score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing; **Try again** restarts a failed video.
+- **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock).
 
-Finished clips are also saved in `data/jobs/<job id>/clips/`.
+Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line, cancelling a job and troubleshooting: [docs/advanced.md](docs/advanced.md).
 
-Stopping `npm run dev` does not stop a running video; it keeps going and the app catches up when you start it again.
+## Limitations
 
-## More
+- English only. Needs a Modal account and a Gemini key.
+- YouTube sometimes asks to confirm you're not a bot: set up [cookies](docs/advanced.md#youtube-cookies).
+- Videos that are not H.264 MP4/MOV with one AAC track upload whole in phase 2 (slower, same result).
+- SponsorBlock data is non-commercial (CC BY-NC-SA 4.0); turn it off for commercial use.
+- First real runs passed on Modal and Windows; an uploaded MP4 and the recovery paths have only been tested offline.
 
-Settings, command-line use, re-ranking, cancelling a running job, tests and troubleshooting: [docs/advanced.md](docs/advanced.md). What changed from the original project: [CHANGES.md](CHANGES.md).
-A more detailed, editable architecture diagram: [docs/architecture.excalidraw](docs/architecture.excalidraw) (open it at [excalidraw.com](https://excalidraw.com)).
+## Development
+
+```powershell
+cd ai-podcast-clipper-backend
+pip install -r requirements-dev.txt
+python -m pytest tests -q          # offline; torch tests skip without torch
+ruff check .
+
+cd ..\ai-podcast-clipper-frontend
+npx tsc --noEmit; npm run lint; npm run format:check; npm run build
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs both on every push. The backend folder is flat on purpose: Modal bundles modules by name. What changed from the original project: [CHANGES.md](CHANGES.md). An editable version of the diagram: [docs/architecture.excalidraw](docs/architecture.excalidraw) (open it at [excalidraw.com](https://excalidraw.com)).
 
 ## Credits & license
 

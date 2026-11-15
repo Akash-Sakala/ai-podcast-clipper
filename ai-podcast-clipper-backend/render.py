@@ -9,7 +9,8 @@ clip three times. The speaker decisions use the same algorithm and parameters
 (see asd/fast_asd.py); the clip is now encoded once, on the GPU's NVENC encoder
 when it has one, and keeps the original audio (it used to be 16 kHz mono).
 
-    segment.mkv   the clip at 25 fps, near-lossless (decoded three times below)
+    segment.mkv   the clip at 25 fps, near-lossless (decoded five times: thumbnails, PySceneDetect,
+                  detect, crop and encode; PySceneDetect runs in a thread next to pass 1)
     pass 0        tiny thumbnails -> flash frames (1-3 frames of another shot), shown as the
                   frame before them in every pass below (see flash_frames)
     pass 1        scene cuts + S3FD faces on batches of frames
@@ -27,7 +28,9 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -36,6 +39,7 @@ if str(ASD_DIR) not in sys.path:
     sys.path.insert(0, str(ASD_DIR))
 
 import fast_asd  # noqa: E402
+import segments  # noqa: E402
 
 FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_BIN", "ffprobe")
@@ -61,20 +65,41 @@ ENCODERS = {
 }
 # Share of a clip's work per step, for live progress.
 STEP_WEIGHTS = {"cut": 0.05, "detect": 0.45, "score": 0.15, "render": 0.35}
+# PySceneDetect decodes the segment with OpenCV in a thread while pass 1 (S3FD) runs: same
+# input, same code, same scene list; only the waiting overlaps. False = one after the other.
+SCENE_DETECT_IN_THREAD = True
 
 
 class RenderError(RuntimeError):
     pass
 
 
+class DecodeError(RenderError):
+    """FFmpeg could not decode the segment (not an encoder problem: no x264 retry)."""
+
+
 # --------------------------------------------------------------------------- #
 # FFmpeg helpers
 # --------------------------------------------------------------------------- #
 
+def _tail(stderr) -> str:
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return (stderr or "").strip()[-600:]
+
+
 def run(cmd: list[str]) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RenderError(f"{pathlib.Path(cmd[0]).name} failed: {result.stderr.strip()[-600:]}")
+        raise RenderError(f"{pathlib.Path(cmd[0]).name} failed: {_tail(result.stderr)}")
+
+
+def capture(cmd: list[str]) -> bytes:
+    """stdout of a command; a RenderError with the end of its stderr if it fails."""
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RenderError(f"{pathlib.Path(cmd[0]).name} failed (exit {result.returncode}): {_tail(result.stderr)}")
+    return result.stdout
 
 
 def probe_encoder(prefer: str = "nvenc") -> str:
@@ -92,41 +117,75 @@ def probe_encoder(prefer: str = "nvenc") -> str:
 
 
 def video_size(path: pathlib.Path) -> tuple[int, int]:
-    out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
-                          "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
-                         capture_output=True, text=True, check=True).stdout.strip()
+    out = capture([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                   "stream=width,height", "-of", "csv=p=0:s=x", str(path)]).decode().strip()
+    if not out:
+        raise RenderError(f"ffprobe found no video stream in {path.name}")
     width, height = out.splitlines()[0].split("x")[:2]
     return int(width), int(height)
 
 
-def cut_segment(source: pathlib.Path, start: float, duration: float, out: pathlib.Path, encoder: str) -> None:
+def cut_segment(source: pathlib.Path, start: float, duration: float, out: pathlib.Path, encoder: str,
+                target_us: int | None = None) -> None:
     """The clip at 25 fps. -ss before -i seeks straight to the clip (still frame-accurate,
-    because the video is re-encoded) instead of decoding everything before it."""
-    run([FFMPEG, "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(source), "-t", f"{duration:.3f}",
-         "-map", "0:v:0", "-map", "0:a:0?", "-r", str(FPS), *ENCODERS[encoder]["segment"],
+    because the video is re-encoded) instead of decoding everything before it.
+    source is the whole video, or the clip's footage with target_us (segments.py): the
+    same frames and samples either way."""
+    run([FFMPEG, "-y", "-loglevel", "error", *segments.input_seek_args(start, target_us), "-i", str(source),
+         "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "0:a:0?", "-r", str(FPS), *ENCODERS[encoder]["segment"],
          "-c:a", "flac", str(out)])
 
 
+# Same idea as cutter._packets/_first (laptop) and segments.first_packets; kept apart on purpose (this file
+# runs in the Modal containers and must not import cutter.py).
+def first_packets(args: list[str], per_stream: int = 12) -> dict[int, list[tuple]]:
+    """The first packets per stream that FFmpeg reads with these input arguments."""
+    listing = capture([FFMPEG, "-loglevel", "error", *args, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                       "-copyts", "-f", "framemd5", "-"]).decode("utf-8", "replace")
+    return segments.first_packets(segments.parse_packets(listing), per_stream)
+
+
+def check_footage_seek(footage: pathlib.Path, start: float, target_us: int) -> None:
+    """Clip footage starts with the packets the whole video's seek decodes from (the laptop
+    checked that); the render's seek inside it must land on those first packets too."""
+    window = ["-t", "3"]
+    from_start = first_packets([*window, "-i", str(footage)])
+    sought = first_packets([*segments.input_seek_args(start, target_us), *window, "-i", str(footage)])
+    if not from_start or sought != from_start:
+        raise RenderError(f"seeking in the clip footage ({footage.name}) did not land on its first packets")
+
+
 def read_audio_16k(path: pathlib.Path) -> np.ndarray:
-    raw = subprocess.run([FFMPEG, "-loglevel", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
-                          "-f", "s16le", "-"], capture_output=True, check=True).stdout
+    raw = capture([FFMPEG, "-loglevel", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000",
+                   "-f", "s16le", "-"])
     return np.frombuffer(raw, dtype=np.int16)
 
 
 def iter_frames(path: pathlib.Path, width: int, height: int):
-    """Decoded BGR frames, one at a time, straight from FFmpeg (nothing written to disk)."""
+    """Decoded BGR frames, one at a time, straight from FFmpeg (nothing written to disk).
+    Raises RenderError (with the end of FFmpeg's messages) if the decode fails, so a broken
+    decode is never taken for a shorter clip. A reader that stops early ends the decoder."""
     size = width * height * 3
-    proc = subprocess.Popen([FFMPEG, "-loglevel", "error", "-i", str(path), "-f", "rawvideo",
-                             "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, bufsize=size * 2)
-    try:
-        while True:
-            buf = proc.stdout.read(size)
-            if len(buf) < size:
-                break
-            yield np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
-    finally:
-        proc.stdout.close()
-        proc.wait()
+    with tempfile.TemporaryFile() as errors:       # a file, not a pipe: FFmpeg can never block on it
+        proc = subprocess.Popen([FFMPEG, "-loglevel", "error", "-i", str(path), "-f", "rawvideo",
+                                 "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, stderr=errors,
+                                bufsize=size * 2)
+        finished = False
+        try:
+            while True:
+                buf = proc.stdout.read(size)
+                if len(buf) < size:
+                    finished = True
+                    break
+                yield np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
+        finally:
+            if not finished:
+                proc.kill()
+            proc.stdout.close()
+            code = proc.wait()
+        if code != 0:
+            errors.seek(0)
+            raise DecodeError(f"decoding {path.name} failed (exit {code}): {_tail(errors.read())}")
 
 
 # --------------------------------------------------------------------------- #
@@ -146,9 +205,8 @@ def flash_max_frames() -> int:
 
 def frame_thumbs(path: pathlib.Path) -> np.ndarray:
     """A tiny grey thumbnail of every frame, for spotting cuts (one fast decode)."""
-    raw = subprocess.run([FFMPEG, "-loglevel", "error", "-i", str(path), "-vf",
-                          f"scale={THUMB_W}:{THUMB_H}:flags=area", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-                         capture_output=True, check=True).stdout
+    raw = capture([FFMPEG, "-loglevel", "error", "-i", str(path), "-vf",
+                   f"scale={THUMB_W}:{THUMB_H}:flags=area", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
     return np.frombuffer(raw, dtype=np.uint8).reshape(-1, THUMB_H, THUMB_W)
 
 
@@ -477,7 +535,7 @@ def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathl
     style.primarycolor = pysubs2.Color(255, 255, 255)
     style.outline, style.shadow = 2.0, 2.0
     style.shadowcolor = pysubs2.Color(0, 0, 0, 128)
-    style.alignment = 2
+    style.alignment = pysubs2.Alignment.BOTTOM_CENTER        # ASS alignment 2
     style.marginl = style.marginr = style.marginv = 50
     style.spacing = 0.0
     subs.styles["Default"] = style
@@ -550,24 +608,42 @@ def encode_pass(segment: pathlib.Path, width: int, height: int, chosen: list, su
     log_path = out.with_suffix(".ffmpeg.log")
     with open(log_path, "w") as log:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=log, cwd=str(subtitles.resolve().parent))
+        frames = iter_clean_frames(segment, width, height, replace)
         try:
-            for index, frame in enumerate(iter_clean_frames(segment, width, height, replace)):
-                face = chosen[index] if index < len(chosen) else None
-                proc.stdin.write(vertical_frame(frame, face).tobytes())
-                if index % 50 == 0:
-                    tick(index)
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        code = proc.wait()
+            try:
+                for index, frame in enumerate(frames):
+                    face = chosen[index] if index < len(chosen) else None
+                    # The frame's own buffer, not a .tobytes() copy: the same bytes reach FFmpeg.
+                    proc.stdin.write(memoryview(np.ascontiguousarray(vertical_frame(frame, face))).cast("B"))
+                    if index % 50 == 0:
+                        tick(index)
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            code = proc.wait()
+        except BaseException:
+            # Anything else (a decode error, a bug, a stop): no stray encoder left behind.
+            proc.kill()
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            proc.wait()
+            raise
+        finally:
+            close = getattr(frames, "close", None)     # ends the decoder if the loop stopped early
+            if close:
+                close()
     if code != 0:
         raise RenderError(f"encoding failed ({encoder}): {log_path.read_text()[-600:]}")
 
 
 def render_clip(models, source: pathlib.Path, start: float, end: float, words: list, out_path: pathlib.Path,
                 work_dir: pathlib.Path, encoder: str = "nvenc", progress=None, conf_th: float = fast_asd.CONF_TH,
-                debug_dir: pathlib.Path | None = None) -> dict:
+                debug_dir: pathlib.Path | None = None, target_us: int | None = None) -> dict:
     """Render source[start:end] as a 1080x1920 clip with subtitles at out_path.
+    source is the whole video, or the clip's footage with target_us (see segments.py);
+    start and end are times in the whole video either way.
     `progress(fraction)` is called as the work advances. Returns timings and counts."""
     work_dir.mkdir(parents=True, exist_ok=True)
     duration = end - start
@@ -581,13 +657,15 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
 
     t = time.time()
     segment = work_dir / "segment.mkv"
+    if target_us is not None:
+        check_footage_seek(source, start, target_us)
     try:
-        cut_segment(source, start, duration, segment, encoder)
+        cut_segment(source, start, duration, segment, encoder, target_us)
     except RenderError:
         if encoder != "nvenc":
             raise
         encoder = "x264"
-        cut_segment(source, start, duration, segment, encoder)
+        cut_segment(source, start, duration, segment, encoder, target_us)
     width, height = video_size(segment)
     audio = read_audio_16k(segment)
     thumbs = frame_thumbs(segment)
@@ -597,9 +675,17 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
     report("cut", 1)
 
     t = time.time()
-    scenes = drop_flash_cuts(fast_asd.scene_detect(str(segment)), flashes, thumbs)
-    faces = detect_pass(models, segment, width, height, conf_th,
-                        lambda n: report("detect", n / expected_frames), flashes)
+    if SCENE_DETECT_IN_THREAD:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="scenes") as pool:
+            pending_scenes = pool.submit(fast_asd.scene_detect, str(segment))
+            faces = detect_pass(models, segment, width, height, conf_th,
+                                lambda n: report("detect", n / expected_frames), flashes)
+            source_scenes = pending_scenes.result()
+    else:
+        source_scenes = fast_asd.scene_detect(str(segment))
+        faces = detect_pass(models, segment, width, height, conf_th,
+                            lambda n: report("detect", n / expected_frames), flashes)
+    scenes = drop_flash_cuts(source_scenes, flashes, thumbs)
     n_frames = len(faces)
     timings["detect"] = time.time() - t
     report("detect", 1)
@@ -627,8 +713,8 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
     tick = lambda i: report("render", i / max(1, n_frames))  # noqa: E731
     try:
         encode_pass(segment, width, height, chosen, subtitles, duration, tmp_out, encoder, tick, flashes)
-    except RenderError:
-        if encoder != "nvenc":
+    except RenderError as exc:
+        if encoder != "nvenc" or isinstance(exc, DecodeError):
             raise
         print("NVENC encode failed, retrying with libx264")
         encoder = "x264"
@@ -713,7 +799,7 @@ def differing_segments(old: list, new: list, source_height: int, offset: int = 0
     return segments
 
 
-__all__ = ["render_clip", "probe_encoder", "frame_thumbs", "flash_frames", "iter_clean_frames",
-           "drop_flash_cuts", "choose_faces", "frame_candidates", "steady_faces", "scene_ranges",
+__all__ = ["render_clip", "cut_segment", "check_footage_seek", "probe_encoder", "frame_thumbs", "flash_frames",
+           "iter_clean_frames", "drop_flash_cuts", "choose_faces", "frame_candidates", "steady_faces", "scene_ranges",
            "count_switches", "min_hold_frames", "write_subtitles", "audio_fade", "chosen_summary",
-           "frame_offset", "compare_decisions", "differing_segments", "RenderError"]
+           "frame_offset", "compare_decisions", "differing_segments", "RenderError", "DecodeError"]

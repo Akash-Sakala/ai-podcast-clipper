@@ -1,59 +1,63 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { isActive, type Job } from "~/lib/job-types";
-import { NewJobBar } from "./new-job-bar";
+import { displayTitle } from "~/lib/format";
+import { isActive, type JobSummary } from "~/lib/job-types";
+import { usePolling } from "~/lib/use-polling";
+import { NewJobBar } from "./new-job/new-job-bar";
 import { VideoList } from "./video-list";
-import { displayTitle, useJobActions } from "./video-parts";
+import { useJobActions } from "./video/use-job-actions";
 
 const POLL_INTERVAL_MS = 3000;
 
-export function DashboardClient({ initialJobs }: { initialJobs: Job[] }) {
+export function DashboardClient({
+  initialJobs,
+}: {
+  initialJobs: JobSummary[];
+}) {
   const router = useRouter();
-  const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [jobs, setJobs] = useState<JobSummary[]>(initialJobs);
 
-  const refreshJobs = useCallback(async () => {
-    try {
-      const response = await fetch("/api/jobs", { cache: "no-store" });
-      if (response.ok) setJobs((await response.json()) as Job[]);
-    } catch {
-      // The dev server may be restarting; the next poll tries again.
-    }
-  }, []);
-
+  // Polls while a video is being processed (3 s); an idle page only refreshes when the
+  // tab is shown again. A 304 or a hidden tab costs nothing.
   const anyActive = jobs.some(isActive);
-  useEffect(() => {
-    if (!anyActive) return;
-    const timer = setInterval(() => void refreshJobs(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [anyActive, refreshJobs]);
+  const refreshJobs = usePolling<JobSummary[]>({
+    url: "/api/jobs",
+    intervalMs: anyActive ? POLL_INTERVAL_MS : null,
+    onData: setJobs,
+  });
 
-  // Announce videos that finish while this page is open.
-  const [previous, setPrevious] = useState(jobs);
-  if (previous !== jobs) {
+  // Announce videos that finish while this page is open. The last known state of each
+  // job is kept in a ref, and the toast fires from an effect (never during render).
+  const wasActive = useRef(
+    new Map(initialJobs.map((job) => [job.id, isActive(job)])),
+  );
+  useEffect(() => {
     for (const job of jobs) {
-      const before = previous.find((p) => p.id === job.id);
-      if (!before || !isActive(before) || isActive(job)) continue;
+      const before = wasActive.current.get(job.id);
+      wasActive.current.set(job.id, isActive(job));
+      if (before !== true || isActive(job)) continue;
       const open = {
         label: "View clips",
         onClick: () => router.push(`/videos/${job.id}`),
       };
-      if (job.status === "done" && job.clips.length > 0) {
-        toast.success(`${job.clips.length} clips ready`, {
+      if (job.status === "done" && job.clipCount > 0) {
+        toast.success(`${job.clipCount} clips ready`, {
+          id: `finished-${job.id}`,
           description: displayTitle(job),
           action: open,
         });
       } else if (job.status === "failed") {
         toast.error("A video failed", {
+          id: `finished-${job.id}`,
           description: displayTitle(job),
           action: open,
         });
       }
     }
-    setPrevious(jobs);
-  }
+  }, [jobs, router]);
 
   const { busy, retry } = useJobActions(refreshJobs);
 

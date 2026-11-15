@@ -70,8 +70,16 @@ GEMINI_MODELS = [m.strip() for m in (os.environ.get("GEMINI_MODELS") or DEFAULT_
 # Extra attempts on the same model when it answers 429/503/504 ("busy").
 GEMINI_BUSY_RETRIES = max(0, int(_env_float("GEMINI_BUSY_RETRIES", 1)))
 GEMINI_BUSY_WAIT_S = _env_float("GEMINI_BUSY_WAIT_SECONDS", 3.0)
-# Gemini 3 thinking level for ranking: minimal | low | medium | high, empty = model default.
-GEMINI_THINKING_LEVEL = (os.environ.get("GEMINI_THINKING_LEVEL", "low") or "").strip().lower() or None
+def thinking_level(env: dict | None = None) -> str | None:
+    """GEMINI_THINKING_LEVEL: minimal | low | medium | high; unset = low; empty (or
+    "default", which is how an empty value reaches the container) = the model's default."""
+    env = os.environ if env is None else env
+    level = (env.get("GEMINI_THINKING_LEVEL", "low") or "").strip().lower()
+    return None if level in ("", "default") else level
+
+
+# Gemini 3 thinking level for ranking (see thinking_level).
+GEMINI_THINKING_LEVEL = thinking_level()
 # Empty = the model's default temperature (recommended for Gemini 3 models).
 GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", None)
 # Per-request timeout, and the total time ranking may take before the transcript fallback.

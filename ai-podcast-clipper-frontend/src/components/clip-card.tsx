@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Copy, Download, Repeat } from "lucide-react";
-import { useId, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { clipLength } from "~/lib/format";
 import type { ClipDetail } from "~/lib/job-types";
@@ -114,7 +114,137 @@ function PeakBadge({ detail }: { detail?: ClipDetail }) {
   );
 }
 
-export function ClipCard({
+/**
+ * The score badge and its details panel. Hover and keyboard focus open it (as before);
+ * a click or tap opens it and keeps it open (pinned) until a second click, a press
+ * outside, or Escape. Opening is idempotent, so the focus/hover events that precede a
+ * tap's click can't cancel it. The panel is nudged sideways so it always stays inside
+ * the viewport (the right-hand column on a phone would otherwise overflow).
+ */
+function ScoreBadge({
+  detail,
+  rank,
+  score,
+  replayWeight,
+}: {
+  detail?: ClipDetail;
+  rank: number;
+  score: number | null;
+  replayWeight: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [shift, setShift] = useState(0);
+  // Viewport width measured while the panel is closed: once an overflowing panel is
+  // open, a mobile browser widens the layout viewport and the width can't be trusted.
+  const viewport = useRef(0);
+  const pinned = useRef(false);
+  const root = useRef<HTMLDivElement>(null);
+  const isOpen = useRef(false);
+  isOpen.current = open;
+  const tipId = useId();
+
+  useEffect(() => {
+    const measure = () => {
+      if (!isOpen.current)
+        viewport.current = document.documentElement.clientWidth;
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  const close = () => {
+    pinned.current = false;
+    setOpen(false);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onPress = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPress);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPress);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Where the panel goes, worked out BEFORE it is shown, so it never overflows the page
+  // even for a moment (a phone would widen the page for good). The panel is as wide as
+  // `w-64` (16 rem) but never wider than the viewport minus a margin.
+  const show = () => {
+    const margin = 8;
+    const left = root.current?.getBoundingClientRect().left ?? 0;
+    const width = viewport.current || document.documentElement.clientWidth;
+    const panelWidth = Math.min(256, width - 2 * margin);
+    let next = 0;
+    if (left + panelWidth > width - margin)
+      next = width - margin - panelWidth - left;
+    if (left + next < margin) next = margin - left;
+    setShift(next);
+    setOpen(true);
+  };
+
+  const mouse = (event: React.PointerEvent) => event.pointerType === "mouse";
+
+  return (
+    <div
+      ref={root}
+      className="absolute top-2 left-2"
+      onPointerEnter={(e) => mouse(e) && show()}
+      onPointerLeave={(e) => mouse(e) && !pinned.current && setOpen(false)}
+    >
+      <button
+        type="button"
+        aria-describedby={open ? tipId : undefined}
+        aria-expanded={open}
+        aria-label={`Rank ${rank}${score != null ? `, score ${score} of 100` : ""}. Show score details`}
+        onFocus={show}
+        onBlur={(e) => {
+          if (!root.current?.contains(e.relatedTarget as Node | null)) close();
+        }}
+        onClick={() => {
+          if (open && pinned.current) return close();
+          pinned.current = true;
+          show();
+        }}
+        className={cn(
+          "bg-tally text-tally-ink flex items-baseline gap-1.5 rounded-md px-2 py-1 shadow-sm",
+          (detail?.source === "fallback" || detail?.source === "replay") &&
+            "bg-card text-foreground",
+        )}
+      >
+        <span className="font-display tabular text-lg leading-none font-bold">
+          #{rank}
+        </span>
+        {score != null && (
+          <span className="tabular text-xs leading-none font-semibold opacity-80">
+            {score}
+          </span>
+        )}
+      </button>
+      {open && detail && (
+        <div
+          id={tipId}
+          role="tooltip"
+          // Pressing inside the panel must not move focus off the badge (which would close it).
+          onMouseDown={(e) => e.preventDefault()}
+          style={{ transform: `translateX(${shift}px)` }}
+          className="bg-popover text-popover-foreground absolute top-full left-0 z-20 mt-2 w-64 max-w-[calc(100vw-1rem)] rounded-lg border p-3 shadow-lg shadow-black/10 dark:shadow-black/40"
+        >
+          <ScoreDetails detail={detail} weight={replayWeight} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const ClipCard = memo(function ClipCard({
   jobId,
   clip,
   detail,
@@ -130,8 +260,6 @@ export function ClipCard({
   replayWeight?: number;
 }) {
   const [copied, setCopied] = useState(false);
-  const [showScore, setShowScore] = useState(false);
-  const tipId = useId();
   const base = `/api/media/${jobId}/${clip}`;
   const v = encodeURIComponent(version);
   const src = `${base}?v=${v}`;
@@ -164,50 +292,19 @@ export function ClipCard({
           src={src}
           poster={poster}
           controls
-          preload="metadata"
+          preload="none"
+          aria-label={title}
           playsInline
           // object-contain, not cover: in fullscreen the player fills the screen and
           // "cover" would crop the vertical clip to the screen's width.
           className="aspect-[9/16] w-full rounded-lg bg-black object-contain [&:fullscreen]:rounded-none"
         />
-        <div
-          className="absolute top-2 left-2"
-          onMouseEnter={() => setShowScore(true)}
-          onMouseLeave={() => setShowScore(false)}
-        >
-          <button
-            type="button"
-            aria-describedby={showScore ? tipId : undefined}
-            aria-label={`Rank ${rank}${score != null ? `, score ${score} of 100` : ""}. Show score details`}
-            onFocus={() => setShowScore(true)}
-            onBlur={() => setShowScore(false)}
-            onClick={() => setShowScore((v) => !v)}
-            onKeyDown={(e) => e.key === "Escape" && setShowScore(false)}
-            className={cn(
-              "bg-tally text-tally-ink flex items-baseline gap-1.5 rounded-md px-2 py-1 shadow-sm",
-              (detail?.source === "fallback" || detail?.source === "replay") &&
-                "bg-card text-foreground",
-            )}
-          >
-            <span className="font-display tabular text-lg leading-none font-bold">
-              #{rank}
-            </span>
-            {score != null && (
-              <span className="tabular text-xs leading-none font-semibold opacity-80">
-                {score}
-              </span>
-            )}
-          </button>
-          {showScore && detail && (
-            <div
-              id={tipId}
-              role="tooltip"
-              className="bg-popover text-popover-foreground absolute top-full left-0 z-20 mt-2 w-64 rounded-lg border p-3 shadow-lg shadow-black/10 dark:shadow-black/40"
-            >
-              <ScoreDetails detail={detail} weight={replayWeight} />
-            </div>
-          )}
-        </div>
+        <ScoreBadge
+          detail={detail}
+          rank={rank}
+          score={score}
+          replayWeight={replayWeight}
+        />
       </div>
 
       <div>
@@ -250,4 +347,4 @@ export function ClipCard({
       </div>
     </article>
   );
-}
+});

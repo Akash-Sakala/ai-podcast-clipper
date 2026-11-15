@@ -1,6 +1,8 @@
 # Packages for YOUR LAPTOP (the GPU packages in requirements.txt are only
 # installed inside the Modal container).
-modal
+# transfer.py uses private parts of Modal's upload code, checked against this range
+# (outside it the plain upload is used); move the pin only after running the tests.
+modal>=1.6.4,<1.7
 yt-dlp[default]
 imageio-ffmpeg
 # Only for rank_moments.py (preview Gemini ranking on a finished job locally).

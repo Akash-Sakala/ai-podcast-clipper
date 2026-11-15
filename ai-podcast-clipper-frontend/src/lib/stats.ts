@@ -12,146 +12,43 @@ import {
   type UsdInr,
 } from "./job-types";
 import type { Currency } from "./settings-types";
+import { clipSourceStats } from "./clip-source-stats";
+import { addMoney, madeClips, mean, num, scaleMoney, sum } from "./stats-math";
+import {
+  COST_STAGES,
+  RUNS_PAGE,
+  TIME_STAGES,
+  TREND_MIN_RUNS,
+  type BillInput,
+  type Period,
+  type RunRow,
+  type StageBreakdown,
+  type Stats,
+  type TimeStage,
+} from "./stats-types";
 
-/** Modal's Starter plan includes $30 of compute a month. */
-export const MODAL_MONTHLY_CREDIT = 30;
-/** Runs listed before "Show more". */
-export const RUNS_PAGE = 20;
-/** New runs needed before the time trend appears. */
-export const TREND_MIN_RUNS = 10;
-
-export type Period = "month" | "all";
-export type TimeStage =
-  | "download"
-  | "transcribe"
-  | "rank"
-  | "render"
-  | "save"
-  | "overhead";
-export const TIME_STAGES: TimeStage[] = [
-  "download",
-  "transcribe",
-  "rank",
-  "render",
-  "save",
-  "overhead",
-];
-export const COST_STAGES: CostStage[] = ["transcribe", "rank", "render"];
-
-export type StageBreakdown = {
-  /** Average seconds per stage; they add up to the end-to-end time. */
-  time: Record<TimeStage, number>;
-  totalSeconds: number;
-  /** Average cost per stage (null when no run reported its stages). */
-  cost: Record<CostStage, Money> | null;
-  totalCost: Money | null;
-  runs: number;
-};
-
-export type RunRow = {
-  key: string;
-  jobId: string;
-  title: string;
-  deleted: boolean;
-  startedAt: string;
-  mode: "new" | "rerank";
-  videoSeconds: number | null;
-  status: "done" | "no-clips" | "failed";
-  failedStage: string | null;
-  clips: number | null;
-  seconds: number | null;
-  time: Record<TimeStage, number>;
-  stageCost: Record<CostStage, Money> | null;
-  cost: Money | null;
-};
-
-export type ClipSourceStats = {
-  youtubeVideos: number;
-  graphVideos: number;
-  clipsOnGraphVideos: number;
-  clipsOnHotspot: number;
-  audienceAvg: number | null;
-  sponsorVideos: number;
-  skippedSeconds: {
-    sponsor: number;
-    introsOutros: number;
-    previews: number;
-    other: number;
-  };
-  dropped: number;
-};
-
-export type Stats = {
-  period: Period;
-  currency: Currency;
-  rate: UsdInr | null;
-  /** "November 2026" or "All time". */
-  periodLabel: string;
-  bill: {
-    monthLabel: string;
-    metered: Money;
-    billed: Money;
-    apps: Money;
-    fetchedAt: string;
-  } | null;
-  billRefreshing: boolean;
-  summary: { videos: number; runs: number; clips: number; failed: number };
-  newAvg: {
-    cost: Money | null;
-    seconds: number;
-    perHour: Money | null;
-    runs: number;
-  } | null;
-  rerankAvg: { cost: Money | null; seconds: number; runs: number } | null;
-  stages: { new: StageBreakdown | null; rerank: StageBreakdown | null };
-  runs: RunRow[];
-  /** This month's runs against Modal's "deployed apps" charge (month view only). */
-  reconcile: { runs: Money; apps: Money } | null;
-  clipSources: ClipSourceStats | null;
-  trend: { startedAt: string; seconds: number }[] | null;
-  active: boolean;
-};
-
-export type BillInput = {
-  month: string;
-  meteredUsd: number;
-  billedUsd: number;
-  breakdown: Record<string, number>;
-  fetchedAt: string;
-} | null;
-
-const num = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
-const mean = (values: number[]) =>
-  values.length ? sum(values) / values.length : null;
-
-function addMoney(values: (Money | null)[]): Money | null {
-  const present = values.filter((v): v is Money => v !== null);
-  if (!present.length) return null;
-  const inr = present.every((v) => v.inr !== null)
-    ? sum(present.map((v) => v.inr ?? 0))
-    : null;
-  return { usd: sum(present.map((v) => v.usd)), inr };
-}
-
-function scaleMoney(value: Money | null, factor: number): Money | null {
+/**
+ * Seconds of a run spent getting media to Modal. A two-phase run (it has "downloadWait")
+ * downloads the YouTube video while the cloud transcribes and ranks, so only the wait
+ * for the download after that counts, plus the audio, the cutting and the clip upload.
+ */
+function transferSeconds(t: LedgerRun["timings"]) {
+  const before = (t.replay ?? 0) + (t.upload ?? 0);
+  if (typeof t.downloadWait !== "number") return before + (t.download ?? 0);
   return (
-    value && {
-      usd: value.usd * factor,
-      inr: value.inr === null ? null : value.inr * factor,
-    }
+    before +
+    (t.audio ?? 0) +
+    t.downloadWait +
+    (t.cut ?? 0) +
+    (t.clipUpload ?? 0)
   );
 }
-
-const madeClips = (run: LedgerRun) =>
-  run.status === "done" && (run.clips ?? 0) > 0;
 
 /** Seconds per stage; Overhead is whatever the stages don't explain (container starts). */
 export function stageTimes(run: LedgerRun): Record<TimeStage, number> {
   const t = run.timings;
   const time: Record<TimeStage, number> = {
-    download: (t.download ?? 0) + (t.upload ?? 0) + (t.replay ?? 0),
+    download: transferSeconds(t),
     transcribe: t.gpu_transcribe ?? 0,
     rank: t.gpu_select ?? 0,
     render: t.gpu_render ?? 0,
@@ -222,52 +119,9 @@ function monthLabel(key: string) {
   });
 }
 
-function clipSourceStats(runs: LedgerRun[]): ClipSourceStats | null {
-  // The latest run that made clips stands for each video.
-  const latest = new Map<string, LedgerRun>();
-  for (const run of runs) if (madeClips(run)) latest.set(run.jobId, run);
-  const youtube = [...latest.values()].filter((r) => r.source === "youtube");
-  const withSources = youtube.filter((r) => r.clipSources);
-  if (!withSources.length) return null;
-  const graph = withSources.filter((r) => r.clipSources!.graph);
-  const audiences = graph
-    .map((r) => r.clipSources!.audienceAvg)
-    .filter((v): v is number => typeof v === "number");
-  const skipped = { sponsor: 0, introsOutros: 0, previews: 0, other: 0 };
-  let sponsorVideos = 0;
-  let dropped = 0;
-  for (const run of withSources) {
-    const s = run.clipSources!.skippedSeconds ?? {};
-    if (Object.values(s).some((v) => v > 0)) sponsorVideos += 1;
-    for (const [category, seconds] of Object.entries(s)) {
-      if (
-        category === "sponsor" ||
-        category === "selfpromo" ||
-        category === "interaction"
-      )
-        skipped.sponsor += seconds;
-      else if (category === "intro" || category === "outro")
-        skipped.introsOutros += seconds;
-      else if (category === "preview") skipped.previews += seconds;
-      else skipped.other += seconds;
-    }
-    dropped += run.clipSources!.droppedForSponsor ?? 0;
-  }
-  return {
-    youtubeVideos: youtube.length,
-    graphVideos: graph.length,
-    clipsOnGraphVideos: sum(graph.map((r) => r.clipSources!.clips)),
-    clipsOnHotspot: sum(graph.map((r) => r.clipSources!.clipsOnHotspot)),
-    audienceAvg: mean(audiences),
-    sponsorVideos,
-    skippedSeconds: skipped,
-    dropped,
-  };
-}
-
 export function computeStats(
   ledger: LedgerRun[],
-  jobs: Job[],
+  jobs: Pick<Job, "id" | "title" | "status">[],
   options: {
     period?: Period;
     currency?: Currency;
@@ -275,6 +129,8 @@ export function computeStats(
     bill?: BillInput;
     billRefreshing?: boolean;
     now?: Date;
+    /** How many of the newest runs to list (default RUNS_PAGE). */
+    runsLimit?: number;
   } = {},
 ): Stats {
   const now = options.now ?? new Date();
@@ -315,33 +171,37 @@ export function computeStats(
       )
     : null;
 
-  const rows: RunRow[] = [...runs].reverse().map((run) => {
-    const job = jobsById.get(run.jobId);
-    const stagesUsd = run.cost?.stages;
-    return {
-      key: `${run.jobId}-${run.startedAt}`,
-      jobId: run.jobId,
-      title: job?.title ?? run.title ?? "Deleted video",
-      deleted: !job,
-      startedAt: run.startedAt,
-      mode: run.mode === "rerank" ? "rerank" : "new",
-      videoSeconds: num(run.videoSeconds),
-      status: run.status,
-      failedStage: run.failedStage ?? null,
-      clips: run.clips,
-      seconds: num(run.timings.total),
-      time: stageTimes(run),
-      stageCost: stagesUsd
-        ? (Object.fromEntries(
-            COST_STAGES.map((k) => [
-              k,
-              runMoney(stagesUsd[k] ?? 0, run, today),
-            ]),
-          ) as Record<CostStage, Money>)
-        : null,
-      cost: run.cost ? runMoney(run.cost.usd, run, today) : null,
-    };
-  });
+  const runsLimit = Math.max(1, options.runsLimit ?? RUNS_PAGE);
+  const rows: RunRow[] = [...runs]
+    .reverse()
+    .slice(0, runsLimit)
+    .map((run) => {
+      const job = jobsById.get(run.jobId);
+      const stagesUsd = run.cost?.stages;
+      return {
+        key: `${run.jobId}-${run.startedAt}`,
+        jobId: run.jobId,
+        title: job?.title ?? run.title ?? "Deleted video",
+        deleted: !job,
+        startedAt: run.startedAt,
+        mode: run.mode === "rerank" ? "rerank" : "new",
+        videoSeconds: num(run.videoSeconds),
+        status: run.status,
+        failedStage: run.failedStage ?? null,
+        clips: run.clips,
+        seconds: num(run.timings.total),
+        time: stageTimes(run),
+        stageCost: stagesUsd
+          ? (Object.fromEntries(
+              COST_STAGES.map((k) => [
+                k,
+                runMoney(stagesUsd[k] ?? 0, run, today),
+              ]),
+            ) as Record<CostStage, Money>)
+          : null,
+        cost: run.cost ? runMoney(run.cost.usd, run, today) : null,
+      };
+    });
 
   const bill =
     options.bill && options.bill.month === thisMonth ? options.bill : null;
@@ -394,6 +254,8 @@ export function computeStats(
       rerank: breakdown(rerankDone, today),
     },
     runs: rows,
+    runsTotal: runs.length,
+    runMaxSeconds: Math.max(0, ...runs.map((r) => num(r.timings.total) ?? 0)),
     reconcile:
       period === "month" && appsUsd !== null && monthRuns.length
         ? {

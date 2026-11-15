@@ -1,20 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import {
-  isValidJobId,
-  jobDir,
-  readJob,
-  startRunner,
-  updateJob,
-} from "~/lib/jobs";
-
-export const dynamic = "force-dynamic";
+import { readJob, updateJob } from "~/lib/job-store";
+import { startRunner } from "~/lib/runner";
+import { isValidJobId, jobDir } from "~/lib/paths";
 
 /**
  * Run a failed job again from the start. A failed job keeps its video in the job
  * folder (an upload, or a YouTube video the laptop downloaded), so it is reused;
- * otherwise a YouTube video is downloaded on Modal again.
+ * otherwise the runner downloads the YouTube video again on the laptop.
  */
 export async function POST(
   _request: Request,

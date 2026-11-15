@@ -17,7 +17,7 @@ import datetime as dt
 import json
 import pathlib
 import urllib.request
-from typing import Callable
+from collections.abc import Callable
 
 FRANKFURTER_URL = "https://api.frankfurter.dev/v2/rates?base=usd&quotes=inr"
 FRANKFURTER_V1_URL = "https://api.frankfurter.dev/v1/latest?from=USD&to=INR"

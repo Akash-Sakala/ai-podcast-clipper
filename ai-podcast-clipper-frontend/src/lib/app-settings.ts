@@ -1,6 +1,6 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { DATA_DIR } from "./jobs";
+import { DATA_DIR } from "./paths";
 import {
   type AppSettings,
   DEFAULT_SETTINGS,

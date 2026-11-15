@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { findDuplicate } from "~/lib/jobs";
-
-export const dynamic = "force-dynamic";
+import { findDuplicate } from "~/lib/duplicates";
 
 /**
  * Has this video been added before? Body: `{ "youtubeUrl": "..." }` or

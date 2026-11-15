@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import { clipPath, isValidClipName, isValidJobId, readJob } from "~/lib/jobs";
-
-export const dynamic = "force-dynamic";
+import zlib from "node:zlib";
+import { readJob } from "~/lib/job-store";
+import { clipPath, isValidClipName, isValidJobId } from "~/lib/paths";
 
 /**
  * "Download all": streams the job's clips as one .zip (stored, no compression -
@@ -19,13 +19,22 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
-function crcUpdate(crc: number, chunk: Uint8Array) {
-  let c = crc;
+/** Table-driven CRC-32 for Node versions without zlib.crc32 (added in 22.2 / 20.15). */
+function jsCrc32(chunk: Uint8Array, previous: number) {
+  let c = (previous ^ 0xffffffff) >>> 0;
   for (const byte of chunk) {
     c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
   }
-  return c >>> 0;
+  return (c ^ 0xffffffff) >>> 0;
 }
+
+const nativeCrc32 = (
+  zlib as { crc32?: (data: Uint8Array, value?: number) => number }
+).crc32;
+
+/** CRC-32 of `chunk` continuing from `previous` (0 to start), like zlib.crc32. */
+const crc32 = (chunk: Uint8Array, previous: number) =>
+  nativeCrc32 ? nativeCrc32(chunk, previous) : jsCrc32(chunk, previous);
 
 function dosDateTime(date: Date) {
   const time =
@@ -49,7 +58,19 @@ function safeName(text: string) {
   );
 }
 
-async function* zipEntries(files: { name: string; path: string }[]) {
+type ZipFile = { name: string; path: string; size: number };
+
+/** Bytes of the finished archive: every entry is stored, so it is known up front. */
+function zipLength(files: ZipFile[]) {
+  let total = 22; // end of central directory
+  for (const file of files) {
+    const name = Buffer.byteLength(file.name, "utf8");
+    total += 30 + name + file.size + 16 + (46 + name);
+  }
+  return total;
+}
+
+async function* zipEntries(files: ZipFile[]) {
   const central: Buffer[] = [];
   let offset = 0;
   const { time, day } = dosDateTime(new Date());
@@ -67,15 +88,24 @@ async function* zipEntries(files: { name: string; path: string }[]) {
     yield local;
     yield name;
 
-    let crc = 0xffffffff;
+    // Exactly the size measured for Content-Length: a clip replaced by a re-rank in
+    // the meantime must fail the download, not produce a short or long archive.
+    let crc = 0;
     let size = 0;
-    for await (const chunk of fs.createReadStream(file.path)) {
-      const bytes = chunk as Buffer;
-      crc = crcUpdate(crc, bytes);
-      size += bytes.length;
-      yield bytes;
+    if (file.size > 0) {
+      for await (const chunk of fs.createReadStream(file.path, {
+        start: 0,
+        end: file.size - 1,
+      })) {
+        const bytes = chunk as Buffer;
+        crc = crc32(bytes, crc);
+        size += bytes.length;
+        yield bytes;
+      }
     }
-    crc = (crc ^ 0xffffffff) >>> 0;
+    if (size !== file.size) {
+      throw new Error(`${file.name} changed while it was being zipped`);
+    }
 
     const descriptor = Buffer.alloc(16);
     descriptor.writeUInt32LE(0x08074b50, 0);
@@ -124,12 +154,13 @@ export async function GET(
   }
 
   const details = new Map((job.clipDetails ?? []).map((d) => [d.name, d]));
-  const files: { name: string; path: string }[] = [];
+  const files: ZipFile[] = [];
   for (const clip of job.clips) {
     if (!isValidClipName(clip)) continue;
     const file = clipPath(jobId, clip);
+    let size: number;
     try {
-      await fsp.access(file);
+      size = (await fsp.stat(file)).size;
     } catch {
       continue;
     }
@@ -138,6 +169,7 @@ export async function GET(
     files.push({
       name: `${String(rank).padStart(2, "0")} ${safeName(detail?.title ?? clip.replace(".mp4", ""))}.mp4`,
       path: file,
+      size,
     });
   }
   files.sort((a, b) => a.name.localeCompare(b.name));
@@ -149,10 +181,15 @@ export async function GET(
       if (done) controller.close();
       else controller.enqueue(new Uint8Array(value));
     },
+    // The browser gave up (cancelled the download): close the open clip file now.
+    async cancel() {
+      await iterator.return(undefined);
+    },
   });
   return new Response(stream, {
     headers: {
       "Content-Type": "application/zip",
+      "Content-Length": String(zipLength(files)),
       "Content-Disposition": `attachment; filename="clips.zip"; filename*=UTF-8''${encodeURIComponent(`${safeName(job.title)} clips.zip`)}`,
       "Cache-Control": "no-store",
     },

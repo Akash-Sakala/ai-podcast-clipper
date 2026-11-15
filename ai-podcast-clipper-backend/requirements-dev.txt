@@ -1,0 +1,26 @@
+# Everything a fresh venv needs to run the whole offline test suite and the linters:
+#   pip install -r requirements-dev.txt
+#   python -m pytest tests -q
+#   ruff check .
+# (Tool settings: pyproject.toml.)
+-r requirements-local.txt
+
+pytest==9.1.1
+ruff==0.17.5
+pyflakes==4.1.0
+
+# Same versions as the Modal image (requirements.txt), for the render and ranking tests.
+numpy==2.5.4
+scipy==1.18.1
+pysubs2==1.9.0
+python_speech_features==0.6
+scenedetect==0.6.7.1
+# If the venv already has opencv-python (the GUI build), keep it instead: both provide cv2.
+opencv-python-headless==5.0.0.93
+
+# download_weights.py (fetches the S3FD face detector weights once).
+gdown
+
+# Optional: the torch tests (batched S3FD / LR-ASD equivalence, a whole clip on the CPU)
+# are skipped without these. CPU-only wheels, much smaller than the CUDA ones:
+#   pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu

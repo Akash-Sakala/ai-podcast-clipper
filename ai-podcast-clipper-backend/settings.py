@@ -133,10 +133,26 @@ def apply_user_settings(data_dir) -> dict:
             "replayWeight": REPLAY_WEIGHT}
 
 
-# Moment-selection and rendering settings, read inside the containers (moments.py,
-# render.py). main.py forwards them as a Modal secret because the containers have no .env file.
-RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX",
+# Moment-selection, rendering and naming settings, read inside the containers (moments.py,
+# render.py, clipper_names.py). main.py forwards them as a Modal secret because the
+# containers have no .env file.
+RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX", "DETECT_BATCH",
                 "MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
-                "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS")
-CONTAINER_SETTINGS = {key: os.environ[key] for key in RANKING_KEYS if os.environ.get(key)}
+                "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS",
+                "CLIPPER_APP", "CLIPPER_SECRET")
+# Keys where an empty value means something ("use the model's default"); it is sent as
+# "default" because an unset key would mean the built-in default instead.
+EMPTY_MEANS_DEFAULT = ("GEMINI_THINKING_LEVEL",)
+
+
+def container_settings(env: dict | None = None) -> dict[str, str]:
+    env = os.environ if env is None else env
+    out = {key: env[key] for key in RANKING_KEYS if env.get(key)}
+    for key in EMPTY_MEANS_DEFAULT:
+        if key in env and not (env.get(key) or "").strip():
+            out[key] = "default"
+    return out
+
+
+CONTAINER_SETTINGS = container_settings()

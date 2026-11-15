@@ -15,8 +15,10 @@ import types
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
+import jobstore  # noqa: E402
+import pipeline  # noqa: E402
 import run_history  # noqa: E402
-import runner  # noqa: E402
+import transfer  # noqa: E402
 
 EARLIER_RUN = {"mode": "full", "status": "done", "startedAt": "2026-11-14T08:00:00Z",
                "finishedAt": "2026-11-14T08:05:00Z", "clips": 5, "videoSeconds": 4332.3,
@@ -51,17 +53,16 @@ def test_rerank_appends_to_job_history_and_ledger(tmp_path, monkeypatch):
 
     monkeypatch.setitem(sys.modules, "modal", types.SimpleNamespace(
         Volume=types.SimpleNamespace(from_name=lambda *a, **k: _Volume())))
-    monkeypatch.setattr(runner, "upload_input", lambda *a, **k: None)
-    monkeypatch.setattr(runner, "upload_transcript", lambda *a, **k: None)
+    monkeypatch.setattr(transfer, "upload_input", lambda *a, **k: None)
 
-    def fake_gpu(job, max_clips, mode, timings, extra_usages=None):
+    def fake_gpu(job, max_clips, mode, timings, saver=None, **kwargs):
         timings.update({"gpu_select": 20.0, "gpu_render": 90.0, "gpu_total": 115.0})
         return {"clips": ["clip_0.mp4"], "moments": [{"rank": 1}], "errors": [], "gpu": "A10",
                 "ranking": {"valid": 1}, "cost": {"usd": 0.1, "gpuSeconds": 300, "containers": 2}}
 
-    monkeypatch.setattr(runner, "run_gpu", fake_gpu)
+    monkeypatch.setattr(pipeline, "process_on_modal", fake_gpu)
     before = time.time()
-    assert runner.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
     runs = json.loads((job_dir / "job.json").read_text())["runs"]
     assert [r["mode"] for r in runs] == ["full", "rerank"]
     latest = runs[-1]
@@ -93,13 +94,13 @@ def test_failed_run_is_recorded(tmp_path, monkeypatch):
 
     monkeypatch.setitem(sys.modules, "modal", types.SimpleNamespace(
         Volume=types.SimpleNamespace(from_name=lambda *a, **k: _Volume())))
-    monkeypatch.setattr(runner, "upload_input", lambda *a, **k: None)
+    monkeypatch.setattr(transfer, "upload_input", lambda *a, **k: None)
 
     def broken_gpu(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(runner, "run_gpu", broken_gpu)
-    assert runner.run_job(job_dir, 5, keep_remote=False) == 1
+    monkeypatch.setattr(pipeline, "process_on_modal", broken_gpu)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 1
     [run] = json.loads((job_dir / "job.json").read_text())["runs"]
     assert (run["mode"], run["status"], run["cost"]) == ("full", "failed", None)
     assert "total" in run["timings"]
@@ -110,8 +111,8 @@ def test_failed_run_is_recorded(tmp_path, monkeypatch):
 
 def test_ledger_outlives_the_job_folder(tmp_path):
     job_dir = _job_dir(tmp_path, {"meta": {"duration": 1800}})
-    job = runner.Job(job_dir)
-    runs = runner.record_run(job, mode="full", status="done", started=time.time() - 60,
+    job = jobstore.Job(job_dir)
+    runs = run_history.record_run(job, mode="full", status="done", started=time.time() - 60,
                              timings={"total": 60.0, "rerank": True}, cost={"usd": 0.05}, clips=["clip_0.mp4"])
     assert len(runs) == 1 and runs[0]["videoSeconds"] == 1800.0
     shutil.rmtree(job_dir)
@@ -131,11 +132,11 @@ def test_ledger_skips_broken_lines_and_appends_in_order(tmp_path):
 
 
 def test_a_broken_ledger_never_fails_the_run(tmp_path, monkeypatch):
-    job = runner.Job(_job_dir(tmp_path, {"runs": [EARLIER_RUN]}))
+    job = jobstore.Job(_job_dir(tmp_path, {"runs": [EARLIER_RUN]}))
 
     def full_disk(*a, **k):
         raise OSError("No space left on device")
 
     monkeypatch.setattr(run_history, "append_ledger", full_disk)
-    runs = runner.record_run(job, mode="rerank", status="done", started=time.time(), timings={})
+    runs = run_history.record_run(job, mode="rerank", status="done", started=time.time(), timings={})
     assert [r["mode"] for r in runs] == ["full", "rerank"]

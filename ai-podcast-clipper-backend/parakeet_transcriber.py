@@ -10,7 +10,8 @@ The GPU container runs the fp32 ONNX export on the CUDA execution provider and
 transcribes pause-aligned chunks (see audio_utils) one at a time: batching padded
 chunks changed ~4% of words and raised the difference to 12.9% (from 11.5%) on
 the child conversation, and a 28 s chunk takes only milliseconds on a GPU anyway.
-The same code runs on CPU (`quantization="int8"`) for tests.
+The same code runs on the CPU (device="cpu"). The image build downloads the model
+(download_parakeet.py).
 """
 
 from __future__ import annotations
@@ -21,22 +22,50 @@ import time
 import audio_utils
 
 MODEL_NAME = "nemo-parakeet-tdt-0.6b-v2"
-ONNX_REPO = "istupakov/parakeet-tdt-0.6b-v2-onnx"
-FP32_FILES = ["config.json", "vocab.txt", "nemo128.onnx", "decoder_joint-model.onnx",
-              "encoder-model.onnx", "encoder-model.onnx.data"]
-INT8_FILES = ["config.json", "vocab.txt", "nemo128.onnx", "decoder_joint-model.int8.onnx",
-              "encoder-model.int8.onnx"]
 
 # Only token *start* times are exposed; a word ends where the next word starts,
 # capped so a word before a long pause does not stretch across it.
 MAX_TRAILING_TOKEN_S = 0.3
 
 
-def download(local_dir: str, quantization: str | None = None) -> str:
-    from huggingface_hub import snapshot_download
+def session_providers(model, max_depth: int = 5) -> list[list[str]]:
+    """The execution providers each ONNX Runtime session inside an onnx-asr model actually
+    uses (InferenceSession.get_providers()), found by walking its attributes."""
+    found, seen = [], set()
 
-    files = INT8_FILES if quantization == "int8" else FP32_FILES
-    return snapshot_download(ONNX_REPO, local_dir=local_dir, allow_patterns=files)
+    def walk(obj, depth):
+        if id(obj) in seen or depth > max_depth:
+            return
+        seen.add(id(obj))
+        if callable(getattr(obj, "get_providers", None)) and callable(getattr(obj, "run", None)):
+            try:
+                found.append(list(obj.get_providers()))
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if isinstance(obj, dict):
+            children = list(obj.values())
+        elif isinstance(obj, (list, tuple)):
+            children = list(obj)
+        else:
+            children = list(getattr(obj, "__dict__", {}).values())
+        for child in children:
+            if not isinstance(child, (str, bytes, int, float, bool)) and child is not None:
+                walk(child, depth + 1)
+
+    walk(model, 0)
+    return found
+
+
+def check_cuda_sessions(model) -> list[list[str]]:
+    """Raise unless ONNX Runtime really runs the model on CUDA: a session that silently fell
+    back to the CPU would make transcription many times slower (and billed on the GPU)."""
+    providers = session_providers(model)
+    print(f"ONNX Runtime sessions: {providers}")
+    if not providers or not any(p and p[0] == "CUDAExecutionProvider" for p in providers):
+        raise RuntimeError(f"Parakeet is not running on CUDA (ONNX Runtime sessions use {providers}); "
+                           "check the CUDA/cuDNN libraries in the image")
+    return providers
 
 
 def tokens_to_words(tokens: list[str], timestamps: list[float], offset_s: float,
@@ -86,8 +115,8 @@ class ParakeetEngine:
         self.device = device
         print(f"Parakeet v2 loaded in {time.time() - started:.1f}s; ONNX Runtime providers "
               f"{ort.get_available_providers()}")
-        if device == "cuda" and "CUDAExecutionProvider" not in ort.get_available_providers():
-            print("WARNING: CUDAExecutionProvider unavailable - Parakeet is running on the CPU")
+        if device == "cuda":
+            check_cuda_sessions(self.model)
 
     def transcribe(self, samples, offset_s: float = 0.0, batch_size: int = 1, log=print) -> list[dict]:
         """16 kHz mono float32 samples -> words [{start, end, word}] in absolute seconds."""

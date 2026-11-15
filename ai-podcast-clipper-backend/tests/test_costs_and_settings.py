@@ -9,9 +9,11 @@ import time
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
+import billing  # noqa: E402
 import costs  # noqa: E402
 import fx  # noqa: E402
-import runner  # noqa: E402
+import jobstore  # noqa: E402
+import run_history  # noqa: E402
 import settings  # noqa: E402
 
 
@@ -47,7 +49,8 @@ def test_estimate_splits_cost_by_stage_and_uses_given_rates():
     usages = [
         {"container": "t", "gpu": "NVIDIA A10", "cpu": 0.125, "memoryGiB": 0.125, "seconds": 30, "enterSeconds": 10,
          "scaledown": 20, "stage": "transcribe"},
-        {"container": "r1", "gpu": "NVIDIA A10", "cpu": 4, "memoryGiB": 8, "seconds": 60, "scaledown": 20, "stage": "render"},
+        {"container": "r1", "gpu": "NVIDIA A10", "cpu": 4, "memoryGiB": 8, "seconds": 60, "scaledown": 20,
+         "stage": "render"},
         {"container": "r2", "gpu": "NVIDIA A10", "cpu": 4, "memoryGiB": 8, "seconds": 55, "scaledown": 20},
     ]
     built_in = costs.estimate(usages, orchestrator_seconds=200)
@@ -69,21 +72,21 @@ def test_live_rates_are_cached_and_fall_back(tmp_path, monkeypatch):
         calls.append(1)
         return {"cpu": "0.0473", "memory": "0.008", "gpu_a10g": "1.10"}
 
-    first = runner.live_rates(tmp_path, fetch=fetch)
-    second = runner.live_rates(tmp_path, fetch=fetch)
+    first = billing.live_rates(tmp_path, fetch=fetch)
+    second = billing.live_rates(tmp_path, fetch=fetch)
     assert first["source"] == "modal" and second == first and len(calls) == 1
-    assert runner.live_rates(tmp_path / "other", fetch=lambda: None)["source"] == "built-in"
-    assert runner.live_rates(tmp_path / "x", fetch=lambda: {"weird": "1"})["source"] == "built-in"
+    assert billing.live_rates(tmp_path / "other", fetch=lambda: None)["source"] == "built-in"
+    assert billing.live_rates(tmp_path / "x", fetch=lambda: {"weird": "1"})["source"] == "built-in"
 
 
 def test_job_cost_prices_usages_with_live_rates(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "live_rates", lambda data_dir: costs.builtin_rates())
+    monkeypatch.setattr(billing, "live_rates", lambda data_dir: costs.builtin_rates())
     result = {"gpu": "A10", "cost": {"usd": 9.99},
               "usages": [{"container": "r", "gpu": "NVIDIA A10", "seconds": 60, "scaledown": 20, "stage": "render"}],
               "orchestratorSeconds": 100}
-    cost = runner.job_cost(result, tmp_path)
+    cost = billing.job_cost(result, tmp_path)
     assert cost["usd"] < 1 and cost["stages"]["render"] > 0 and cost["rates"] == "built-in"
-    assert runner.job_cost({"cost": {"usd": 0.05}}, tmp_path)["usd"] == 0.05      # an older deployment
+    assert billing.job_cost({"cost": {"usd": 0.05}}, tmp_path)["usd"] == 0.05      # an older deployment
 
 
 # --------------------------------------------------------------------------- #
@@ -94,11 +97,11 @@ def test_refresh_modal_bill_saves_numbers(tmp_path):
     raw = {"metered_cost": "0.30", "billed_cost": "0.00",
            "adjustments": {"credits": "-0.27", "network_egress_allowance": "-0.01", "free_storage": "-0.02"},
            "metered_cost_breakdown": {"deployed_apps": "0.27", "volumes": "0.02", "network_egress": "0.01"}}
-    bill = runner.refresh_modal_bill(tmp_path, fetch=lambda: raw)
+    bill = billing.refresh_modal_bill(tmp_path, fetch=lambda: raw)
     saved = json.loads((tmp_path / "stats" / "modal-bill.json").read_text())
     assert saved == bill and bill["meteredUsd"] == 0.3 and bill["billedUsd"] == 0.0
     assert bill["breakdown"]["deployed_apps"] == 0.27 and bill["adjustments"]["credits"] == -0.27
-    assert runner.refresh_modal_bill(tmp_path, fetch=lambda: None) is None
+    assert billing.refresh_modal_bill(tmp_path, fetch=lambda: None) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -161,15 +164,15 @@ def test_user_settings_override_and_clamp(tmp_path, monkeypatch):
 
 
 def test_record_run_stores_failed_stage_rate_and_prompt(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner.fx, "usd_inr", lambda data_dir, log=print: {"rate": 94.04, "date": "2026-11-14"})
+    monkeypatch.setattr(fx, "usd_inr", lambda data_dir, log=print: {"rate": 94.04, "date": "2026-11-14"})
     job_dir = tmp_path / "jobs" / "20261114-100000-aaaaaa"
     job_dir.mkdir(parents=True)
     (job_dir / "job.json").write_text(json.dumps({"id": job_dir.name, "source": "youtube", "title": "t", "clips": []}))
-    job = runner.Job(job_dir)
-    [run] = runner.record_run(job, mode="full", status="failed", started=time.time() - 30, timings={"total": 30.0},
+    job = jobstore.Job(job_dir)
+    [run] = run_history.record_run(job, mode="full", status="failed", started=time.time() - 30, timings={"total": 30.0},
                               failed_stage="rendering")
     assert run["failedStage"] == "rendering" and run["usdInr"]["rate"] == 94.04
-    assert run["promptVersion"] == runner.prompt_version() and "clipSources" not in run
+    assert run["promptVersion"] == run_history.prompt_version() and "clipSources" not in run
 
 
 def test_clip_sources_counts_hotspots_and_sponsor_minutes(tmp_path):
@@ -181,7 +184,7 @@ def test_clip_sources_counts_hotspots_and_sponsor_minutes(tmp_path):
                                               {"start": 700, "end": 730, "category": "sponsor"}], "highlight": None}}
     (job_dir / "job.json").write_text(json.dumps({"id": job_dir.name, "source": "youtube", "replay": replay_record}))
     details = [{"peak": {"id": "H1"}, "audience": 90.0}, {"peak": None, "audience": 50.0}, {"peak": None}]
-    sources = runner.clip_sources(runner.Job(job_dir), details, {"replay": {"droppedForSponsor": 3}})
+    sources = run_history.clip_sources(jobstore.Job(job_dir), details, {"replay": {"droppedForSponsor": 3}})
     assert sources == {"graph": True, "hotspots": 2, "clips": 3, "clipsOnHotspot": 1, "audienceAvg": 70.0,
                        "sponsorBlock": True, "skippedSeconds": {"preview": 28.4, "sponsor": 90.0},
                        "droppedForSponsor": 3}

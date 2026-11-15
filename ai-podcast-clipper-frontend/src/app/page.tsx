@@ -1,12 +1,12 @@
 import { DashboardClient } from "~/components/dashboard-client";
 import NavHeader from "~/components/nav-header";
 import { Toaster } from "~/components/ui/sonner";
-import { listJobs } from "~/lib/jobs";
+import { listJobSummaries } from "~/lib/jobs";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const jobs = await listJobs();
+  const jobs = await listJobSummaries();
 
   return (
     <div className="flex min-h-screen flex-col">

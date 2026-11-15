@@ -13,13 +13,19 @@ from __future__ import annotations
 
 import pathlib
 import time
-from typing import Callable
+from collections.abc import Callable
 
 # Prefer H.264 (avc1) video up to 1080p - the clipping pipeline (OpenCV, LR-ASD)
 # handles it best - plus M4A audio, merged into input.mp4.
 FORMAT = ("bv*[vcodec^=avc1][height<=1080]+ba[ext=m4a]/"
           "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/"
           "b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b")
+
+# Among the formats each alternative above allows: the highest resolution first, then a
+# frame rate of at most 30 (the render resamples to 25 fps, so 60 fps only doubles the
+# bytes to download and upload). A video that has no such format at that resolution gets
+# the lowest frame rate above 30, which is what it got before (same as `yt-dlp -S res,fps:30`).
+FORMAT_SORT = ("res", "fps:30")
 
 # Phrases in yt-dlp errors that mean YouTube refused this computer or IP address,
 # rather than the video being unavailable.
@@ -64,9 +70,10 @@ def ydl_options(out_dir: pathlib.Path, *, ffmpeg_location: str | None = None,
                 ipv4: bool = True, cookies_file: str | None = None) -> dict:
     options = {
         "format": FORMAT,
+        "format_sort": list(FORMAT_SORT),
         "merge_output_format": "mp4",
         "outtmpl": str(out_dir / "input.%(ext)s"),
-        # YouTube needs a JavaScript runtime: Deno in the Modal image, Node on the laptop.
+        # YouTube needs a JavaScript runtime: Deno or Node, whichever the laptop has.
         "js_runtimes": {"deno": {}, "node": {}},
         "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
         "noplaylist": True,
@@ -137,13 +144,23 @@ def is_blocked(message: str | None) -> bool:
     return any(hint in text for hint in BLOCKED_HINTS)
 
 
+def pinned_format(audio_format: str | None) -> str:
+    """FORMAT with the audio stream fixed to the one already downloaded for transcription,
+    so the video's own audio is that same stream; today's FORMAT is the fallback."""
+    if not audio_format:
+        return FORMAT
+    return (f"bv*[vcodec^=avc1][height<=1080]+{audio_format}/"
+            f"bv*[ext=mp4][height<=1080]+{audio_format}/" + FORMAT)
+
+
 def download(url: str, out_dir: pathlib.Path, *, attempts: int = 3, ffmpeg_location: str | None = None,
              cookies_browser: str | None = None, on_progress: Callable[[float], None] | None = None,
              on_retry: Callable[[int, int, Exception], None] | None = None,
              sleep: Callable[[float], None] = time.sleep, ipv4: bool = True,
-             cookies_file: str | None = None) -> dict:
+             cookies_file: str | None = None, audio_format: str | None = None) -> dict:
     """Download `url` to <out_dir>/input.mp4 and return yt-dlp's info dict. A failed
-    attempt's partial file stays, so the next attempt (or the next run) resumes it."""
+    attempt's partial file stays, so the next attempt (or the next run) resumes it.
+    audio_format: the format id of the audio downloaded for transcription (pinned_format)."""
     import yt_dlp
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -151,6 +168,7 @@ def download(url: str, out_dir: pathlib.Path, *, attempts: int = 3, ffmpeg_locat
     for attempt in range(1, attempts + 1):
         options = ydl_options(out_dir, ffmpeg_location=ffmpeg_location, cookies_browser=cookies_browser,
                               hook=Progress(on_progress), ipv4=ipv4, cookies_file=cookies_file)
+        options["format"] = pinned_format(audio_format)
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -166,3 +184,57 @@ def download(url: str, out_dir: pathlib.Path, *, attempts: int = 3, ffmpeg_locat
     if not (out_dir / "input.mp4").exists():
         raise RuntimeError("YouTube download finished but input.mp4 was not created")
     return info or {}
+
+
+# --------------------------------------------------------------------------- #
+# The audio alone, before the video (for transcription while the video downloads)
+# --------------------------------------------------------------------------- #
+
+def audio_part(info: dict) -> dict | None:
+    """The audio-only format that the video download merges in (FORMAT's choice), or None
+    when the choice is a single file with both (then there is no audio to fetch first)."""
+    for fmt in info.get("requested_formats") or []:
+        if fmt.get("vcodec") in (None, "none") and fmt.get("acodec") not in (None, "none"):
+            return fmt
+    return None
+
+
+def download_audio(url: str, out_dir: pathlib.Path, *, attempts: int = 2, ffmpeg_location: str | None = None,
+                   cookies_browser: str | None = None, cookies_file: str | None = None, ipv4: bool = True,
+                   on_progress: Callable[[float], None] | None = None,
+                   sleep: Callable[[float], None] = time.sleep) -> tuple[pathlib.Path, str, dict]:
+    """Download only the audio stream that the video download would merge in, into
+    <out_dir>/audio.<ext>. Returns (file, format id, info). Format selection runs once on
+    the extracted info (no second YouTube request); the download is retried like the video's.
+    Raises RuntimeError when the video's choice has no separate audio stream."""
+    import yt_dlp
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def options(fmt: str, hook=None) -> dict:
+        opts = ydl_options(out_dir, ffmpeg_location=ffmpeg_location, cookies_browser=cookies_browser,
+                           hook=hook, ipv4=ipv4, cookies_file=cookies_file)
+        opts.update(format=fmt, outtmpl=str(out_dir / "audio.%(ext)s"), postprocessors=[])
+        opts.pop("merge_output_format", None)
+        return opts
+
+    with yt_dlp.YoutubeDL(options(FORMAT)) as ydl:
+        info = ydl.extract_info(url, download=False)
+    audio = audio_part(info or {})
+    if audio is None:
+        raise RuntimeError(f"YouTube's choice for this video ({(info or {}).get('format_id')}) "
+                           "has no separate audio stream")
+    format_id = str(audio["format_id"])
+    for attempt in range(1, attempts + 1):
+        try:
+            with yt_dlp.YoutubeDL(options(format_id, Progress(on_progress))) as ydl:
+                ydl.process_ie_result(ydl.sanitize_info(dict(info), remove_private_keys=True), download=True)
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            if attempt == attempts or is_blocked(str(exc)):
+                raise
+            sleep(5 * attempt)
+    files = [p for p in out_dir.glob("audio.*") if p.is_file() and not p.name.endswith((".part", ".ytdl"))]
+    if not files:
+        raise RuntimeError("YouTube audio download finished but no audio file was created")
+    return files[0], format_id, info

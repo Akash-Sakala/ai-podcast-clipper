@@ -2,7 +2,7 @@
 Benchmark clip rendering on several GPUs, and check the new render path against the old one.
 
 Uses a finished job (its moments.json and transcript.json, and its video: input.mp4 if the
-job folder still has it, else a fresh download on Modal for YouTube jobs) and renders its
+job folder still has it, else a fresh download on this laptop for YouTube jobs) and renders its
 first clips on each GPU type, all clips of a GPU at once, as a real job does. Prints
 the time and the estimated cost per clip so you can pick CLIPPER_GPU.
 
@@ -19,7 +19,7 @@ decision of every frame (which face is followed, and where). Old vs old and new 
 show how much each path varies on its own; old vs new is the change. The report and a
 side-by-side still of each difference go to <job dir>/parity/.
 
-This runs a separate, temporary app ("ai-podcast-clipper-benchmark") with the same
+This runs a separate, temporary app ("<CLIPPER_APP>-benchmark") with the same
 image and render code; the deployed app is not touched.
 """
 
@@ -36,8 +36,9 @@ import modal
 import costs
 import main
 import settings
+from clipper_names import APP_NAME
 
-app = modal.App("ai-podcast-clipper-benchmark", image=main.image.add_local_python_source("main"))
+app = modal.App(f"{APP_NAME}-benchmark", image=main.image.add_local_python_source("main"))
 
 
 @app.cls(gpu=main.GPU, timeout=1200, scaledown_window=main.RENDERER_SCALEDOWN_S, cpu=float(settings.RENDER_CPU),
@@ -51,10 +52,8 @@ class BenchRenderer:
 
     @modal.method()
     def render(self, job_id: str, index: int, moment: dict, words: list, keep_video: bool = False) -> dict:
-        result = self.worker.render(job_id, index, moment, words)
-        if not keep_video:
-            result.pop("data", None)      # the benchmark only needs the timings
-        return result
+        # The benchmark only needs the timings; --preview gets the clip back as bytes.
+        return self.worker.render(job_id, index, moment, words, output="bytes" if keep_video else "none")
 
 
 def old_path(source: pathlib.Path, start: float, end: float, base: pathlib.Path) -> tuple[list, list, float]:
@@ -146,7 +145,8 @@ def parity_run(job_id: str, moment: dict, words: list, max_stills: int = 12) -> 
         if i in still_at:
             s = still_at[i]
             at = start + i / render.FPS
-            name = f"{len(stills) + 1:02d}_{int(at // 60)}m{at % 60:04.1f}s_{s['kind'].split(',')[0].replace(' ', '-')}.jpg"
+            kind = s["kind"].split(",")[0].replace(" ", "-")
+            name = f"{len(stills) + 1:02d}_{int(at // 60)}m{at % 60:04.1f}s_{kind}.jpg"
             label = f"{int(at // 60)}:{at % 60:04.1f} in the video - {s['kind']} ({s['frames']} frames)"
             stills[name] = side_by_side(frame, s["old"], s["new"], label)
             s["still"] = name
@@ -185,8 +185,9 @@ def upload_job(job_dir: pathlib.Path, bench_id: str) -> tuple[list, list]:
     elif job.get("youtubeUrl"):
         import tempfile
 
-        import downloader
         import imageio_ffmpeg
+
+        import downloader
 
         folder = pathlib.Path(tempfile.gettempdir()) / "ai-podcast-clipper" / bench_id
         print("Downloading the video from YouTube ...")

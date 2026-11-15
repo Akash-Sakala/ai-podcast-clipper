@@ -1,4 +1,4 @@
-import type { Job, ProgressStage } from "./job-types";
+import type { Job, ProgressStage, StageJob } from "./job-types";
 
 export function relativeTime(iso: string, now = Date.now()) {
   const seconds = Math.max(0, (now - new Date(iso).getTime()) / 1000);
@@ -45,9 +45,8 @@ export function stepTime(seconds: number) {
   return s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} min`;
 }
 
-/** "$0.06", or "Under $0.01" for very cheap runs. */
-export function money(usd: number) {
-  return usd < 0.01 ? "Under $0.01" : `$${usd.toFixed(2)}`;
+export function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 /** An amount kept in both currencies: INR at the rate of the day it was spent. */
@@ -66,7 +65,7 @@ export function formatMoney(value: Money, currency: "usd" | "inr") {
 }
 
 /** Share of the rendering step that is done (0-1), or null when unknown. */
-export function renderShare(job: Job): number | null {
+export function renderShare(job: StageJob): number | null {
   const p = job.progress;
   if (currentStage(job) !== "rendering" || !p?.total) return null;
   if (typeof p.fraction === "number")
@@ -74,24 +73,51 @@ export function renderShare(job: Job): number | null {
   return (p.done ?? 0) / p.total;
 }
 
+const TRANSFER_STAGES: (ProgressStage | "queued")[] = [
+  "audio",
+  "downloading",
+  "uploading",
+  "clips",
+];
+
 /** Share of the download or the upload done (0-1), while it runs. */
-export function transferShare(job: Job) {
+export function transferShare(job: StageJob) {
   const p = job.progress;
-  const stage = currentStage(job);
   if (
-    (stage !== "downloading" && stage !== "uploading") ||
+    !TRANSFER_STAGES.includes(currentStage(job)) ||
     typeof p?.fraction !== "number"
   )
     return null;
   return Math.min(1, Math.max(0, p.fraction));
 }
 
+type Step = { stage: ProgressStage; label: string };
+
 /**
  * Steps shown in the progress strip, in order. A YouTube video is downloaded on the
- * laptop, then uploaded; an uploaded MP4 is only uploaded.
+ * laptop, then uploaded; an uploaded MP4 is only uploaded. A two-phase run ("audio-first")
+ * sends the audio, transcribes and ranks while a YouTube video downloads, then sends
+ * only the chosen clips' footage.
  */
-export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
-  const steps: { stage: ProgressStage; label: string }[] = [
+export function stepsFor(job: StageJob): Step[] {
+  if (job.videoTransfer === "audio-first") {
+    const steps: Step[] = [
+      { stage: "audio", label: "Send audio" },
+      { stage: "transcribing", label: "Transcribe" },
+      { stage: "ranking", label: "Find moments" },
+      { stage: "downloading", label: "Download" },
+      { stage: "clips", label: "Send clips" },
+      { stage: "rendering", label: "Render" },
+      { stage: "saving", label: "Save" },
+    ];
+    return steps.filter((step) => {
+      if (step.stage === "audio" || step.stage === "transcribing")
+        return job.mode !== "rerank";
+      if (step.stage === "downloading") return job.source === "youtube";
+      return true;
+    });
+  }
+  const steps: Step[] = [
     { stage: "downloading", label: "Download" },
     { stage: "uploading", label: "Upload" },
     { stage: "transcribing", label: "Transcribe" },
@@ -109,8 +135,22 @@ export function stepsFor(job: Job): { stage: ProgressStage; label: string }[] {
   });
 }
 
+/** ", downloading the video meanwhile, 40%" while a two-phase run overlaps the two. */
+function meanwhile(job: StageJob) {
+  const share = job.progress?.download;
+  return typeof share === "number"
+    ? `, downloading the video meanwhile, ${Math.round(share * 100)}%`
+    : "";
+}
+
+function percent(p: StageJob["progress"]) {
+  return typeof p?.fraction === "number"
+    ? `, ${Math.round(p.fraction * 100)}%`
+    : "";
+}
+
 /** Current stage of an active job, also for runners that predate `progress`. */
-export function currentStage(job: Job): ProgressStage | "queued" {
+export function currentStage(job: StageJob): ProgressStage | "queued" {
   if (job.progress?.stage) return job.progress.stage;
   switch (job.status) {
     case "downloading":
@@ -132,12 +172,20 @@ export function currentStage(job: Job): ProgressStage | "queued" {
   }
 }
 
-export function stageSentence(job: Job) {
+export function stageSentence(job: StageJob) {
   const stage = currentStage(job);
   const p = job.progress;
   switch (stage) {
     case "queued":
       return "Starting";
+    case "audio":
+      return typeof p?.fraction === "number"
+        ? `Sending the audio to Modal${percent(p)}`
+        : "Getting the audio";
+    case "clips":
+      return typeof p?.fraction === "number"
+        ? `Sending the clips to Modal${percent(p)}`
+        : "Cutting the clips";
     case "downloading":
       return typeof p?.fraction === "number"
         ? `Downloading from YouTube, ${Math.round(p.fraction * 100)}%`
@@ -152,9 +200,9 @@ export function stageSentence(job: Job) {
         : done;
     }
     case "transcribing":
-      return "Transcribing";
+      return `Transcribing${meanwhile(job)}`;
     case "ranking":
-      return "Finding the best moments";
+      return `Finding the best moments${meanwhile(job)}`;
     case "rendering":
       if (!p?.total) return "Rendering clips";
       // Clips render at the same time; older runners rendered one after another.
@@ -179,11 +227,15 @@ export function failureSentence(job: Job) {
     return "YouTube asked to confirm you're not a bot. Set YTDLP_COOKIES_FILE (or YTDLP_COOKIES_FROM_BROWSER=firefox) in .env and try again.";
   if (error.includes("python not found"))
     return "The backend Python environment wasn't found. Create the backend .venv or set RUNNER_PYTHON in .env.";
+  if (error.includes("modal deploy"))
+    return "The Modal app is older than this version. Run modal deploy main.py in the backend folder, then try again.";
   if (error.includes("stopped unexpectedly"))
     return "The job stopped unexpectedly. Try again.";
   const where: Record<string, string> = {
+    audio: "Couldn't send the audio to Modal.",
     downloading: "Couldn't download this video.",
     uploading: "Couldn't upload the video to Modal.",
+    clips: "Couldn't send the clips to Modal.",
     transcribing: "Transcription failed on the GPU.",
     ranking: "Finding moments failed.",
     rendering: "Rendering the clips failed.",
@@ -192,4 +244,16 @@ export function failureSentence(job: Job) {
   return (
     where[job.failedStage ?? ""] ?? "Something went wrong while processing."
   );
+}
+
+/** A YouTube job keeps its link as the title until the download names it. */
+export function displayTitle(job: { title: string }) {
+  return job.title.replace(/^https?:\/\/(www\.)?/, "");
+}
+
+export function fallbackCount(job: Job) {
+  // Transcript picks, and clips cut around a replay hotspot that Gemini could not score.
+  return (job.clipDetails ?? []).filter(
+    (d) => d.source === "fallback" || d.source === "replay",
+  ).length;
 }

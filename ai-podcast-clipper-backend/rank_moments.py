@@ -19,6 +19,8 @@ import pathlib
 import sys
 
 import settings  # loads .env before moments reads its settings
+
+# isort: split
 import moments
 import replay
 
@@ -76,7 +78,9 @@ def main() -> int:
     meta = job.get("meta") or {}
     context = {"title": meta.get("title") or job.get("title"), "channel": meta.get("channel"),
                "description": meta.get("description")}
-    signals = replay.ranking_context(job.get("replay"), settings.REPLAY_WEIGHT)
+    settings.apply_user_settings(job_dir.parent.parent)
+    signals = replay.ranking_context(job.get("replay"), settings.REPLAY_WEIGHT,
+                                     most_replayed=settings.MOST_REPLAYED, sponsorblock=settings.SPONSORBLOCK)
     if signals:   # saved by the runner (or runner.py --backfill-replay)
         context["replay"] = signals
 

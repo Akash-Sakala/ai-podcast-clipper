@@ -1,21 +1,30 @@
 # Packages for the Modal GPU image (installed in the container, not on your laptop).
 #
+# Pinned to what the deployed image most plausibly has: this file last changed on
+# 2026-10-24, which rebuilt that image layer; the pins are `uv pip compile` of the then
+# unpinned list for Python 3.12 / manylinux x86_64 with --exclude-newer 2026-10-24T06:30Z.
+# Edit a pin deliberately: changing this file rebuilds the layer.
+#
 # torch 2.8 wheels ship CUDA 12.8 + cuDNN 9.10 (nvidia-* packages). onnxruntime-gpu
 # is pinned to 1.24.4, the newest CUDA 12.8 build onnx-asr accepts: from 1.27 the
 # default PyPI build targets CUDA 13, and onnx-asr excludes 1.24.1, 1.25.* and 1.26.0.
-tqdm
+# opencv-python-headless: same OpenCV build without the GUI parts (nothing here opens a
+# window), so the image needs no libGL. scenedetect stays on 0.6.7.1 (asd/fast_asd.py
+# uses scenedetect.video_manager, removed in 0.7; same algorithm as the parity reference).
+# tqdm, scikit-learn and pandas are only for the vendored asd/Columbia_test.py and
+# asd/ASD.py (benchmark_gpu.py --parity).
+tqdm==4.70.1
 torch==2.8.0
 torchvision==0.23.0
-opencv-python
-ffmpegcv
-numpy
-python_speech_features
-scipy
+opencv-python-headless==5.0.0.93
+numpy==2.5.4
+python_speech_features==0.6
+scipy==1.18.1
 scenedetect==0.6.7.1
-scikit-learn
-pandas
-google-genai
-pysubs2
+scikit-learn==1.9.1
+pandas==3.1.0
+google-genai==2.33.0
+pysubs2==1.9.0
 onnx-asr==0.12.0
 onnxruntime-gpu==1.24.4
-huggingface_hub
+huggingface_hub==1.16.1
