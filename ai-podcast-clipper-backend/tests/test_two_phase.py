@@ -34,6 +34,7 @@ import phases  # noqa: E402
 import pipeline  # noqa: E402
 import run_history  # noqa: E402
 import transfer  # noqa: E402
+import videostore  # noqa: E402
 import youtube  # noqa: E402
 
 JOB_ID = "20261114-120000-abcdef"
@@ -240,12 +241,19 @@ class World:
 
         monkeypatch.setattr(transfer, "download_youtube", whole_download)
 
-    def video_download(self, fail=None, wait_for_cloud=False):
+    def video_download(self, fail=None, wait_for_cloud=False, until_stopped=False):
+        """until_stopped: the download never finishes by itself (it now starts before the
+        audio upload, long before the cloud answers); it ends when on_progress raises."""
         world = self
+        pause = threading.Event()                          # a real wait: World turns time.sleep off
 
         def download(job, on_progress=None, audio_format=None, update_status=True):
             world.events.append(f"video download (audio {audio_format})")
             world.audio_format = audio_format
+            for _ in range(5000 if until_stopped else 0):
+                on_progress(0.5)
+                pause.wait(0.002)
+            assert not until_stopped, "the download was never stopped"
             for step in range(200):                    # gives the cloud time to answer meanwhile
                 on_progress(min(0.99, step / 50))
                 if wait_for_cloud and world.events[-1].endswith("returned"):
@@ -280,8 +288,9 @@ def test_youtube_job_sends_audio_then_only_the_clip_footage(tmp_path, monkeypatc
     assert second_name == "render_clips" and second_args[1] == MOMENTS
     assert second_args[2] == [{"index": 0, "targetUs": 61_200_000}, {"index": 1, "targetUs": 300_000_000}]
     events = world.events
-    assert events.index(f"put /{JOB_ID}/audio.m4a") < events.index("spawn transcribe_and_rank") \
-        < events.index("video download (audio 140)")                # the video downloads while the cloud works
+    assert events.index("audio download") < events.index("video download (audio 140)") \
+        < events.index("spawn transcribe_and_rank")                 # the download starts before the audio is up
+    assert events.index(f"put /{JOB_ID}/audio.m4a") < events.index("spawn transcribe_and_rank")
     assert events.index("video ready") < events.index("cut input.mp4") < events.index("spawn render_clips")
     assert world.audio_format == "140"                              # the video comes with that same audio
 
@@ -377,13 +386,105 @@ def test_progress_moves_to_downloading_as_soon_as_the_ranking_returns(tmp_path, 
     assert moved < events.index("strip moved on") < ready < events.index("progress clips")
 
 
+def test_the_video_download_starts_while_the_audio_uploads(tmp_path, monkeypatch):
+    """The audio upload is the slow part on a home uplink: the video must already be
+    downloading during it, and the audio's progress shows the download's share."""
+    job_dir = make_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+    release = threading.Event()                            # the download ends only once the audio is up
+    seen = {}
+
+    def download(job, on_progress=None, audio_format=None, update_status=True):
+        world.events.append(f"video download (audio {audio_format})")
+        on_progress(0.4)
+        world.events.append("video at 40%")
+        assert release.wait(10), "the audio upload never ran while the video downloaded"
+        folder = youtube.download_folder(job)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "input.mp4").write_bytes(b"video")
+        world.events.append("video ready")
+        return folder / "input.mp4"
+
+    def upload(volume, local, remote, progress):
+        if remote.endswith("audio.m4a"):
+            for _ in range(2000):                          # until the download has reported its share
+                if "video at 40%" in world.events:
+                    break
+                release.wait(0.005)
+            progress(advance=pathlib.Path(local).stat().st_size)
+            seen["progress"] = dict(read(job_dir)["progress"])
+            world.events.append("audio uploaded")
+            release.set()
+        world.uploads.append((pathlib.Path(local).name, remote))
+
+    monkeypatch.setattr(phases, "download_youtube", download)
+    monkeypatch.setattr(transfer, "upload_with_progress", upload)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    events = world.events
+    assert events.index("video download (audio 140)") < events.index("audio uploaded") < events.index("video ready")
+    assert seen["progress"]["stage"] == "audio" and seen["progress"]["download"] == 0.4
+    data = read(job_dir)
+    assert data["status"] == "done" and data["clips"] == ["clip_0.mp4", "clip_1.mp4"]
+    assert {"audio", "download", "downloadWait"} <= set(data["timings"])
+
+
+def test_an_upload_has_no_video_download_to_start(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path, source="upload", youtubeUrl=None, title="talk.mp4")
+    (job_dir / "input.mp4").write_bytes(b"x" * 4096)
+    world = World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    assert not [e for e in world.events if e.startswith("video download")]
+    assert "download" not in (read(job_dir)["timings"])
+
+
 # --------------------------------------------------------------------------- #
 # Failure orderings
 # --------------------------------------------------------------------------- #
 
+def test_a_failed_audio_upload_stops_the_video_download_and_keeps_its_part(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+    monkeypatch.setattr(phases, "download_youtube", world.video_download(until_stopped=True))
+    logged = []
+    original_log = phases.log
+    monkeypatch.setattr(phases, "log", lambda line: (logged.append(line), original_log(line)))
+
+    def broken(volume, local, remote, progress):
+        raise ConnectionError("the uplink dropped")
+
+    monkeypatch.setattr(transfer, "upload_with_progress", broken)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 1
+    data = read(job_dir)
+    assert data["status"] == "failed" and "uplink" in data["error"] and world.spawns == []
+    assert "video ready" not in world.events
+    assert any("Stopped the video download" in line for line in logged)      # not left running behind the run
+    assert "download" in data["timings"]
+
+
+def test_audio_cannot_be_prepared_so_the_started_download_finishes_and_goes_up_whole(tmp_path, monkeypatch):
+    """A YouTube job whose audio downloads but can't be prepared: the video download that
+    already started is waited for (never two downloads of one file), then uploaded whole."""
+    job_dir = make_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+
+    def no_ffmpeg(source, out_dir):
+        raise FileNotFoundError(2, "No such file or directory", "ffmpeg")
+
+    monkeypatch.setattr(phases.cutter, "extract_audio", no_ffmpeg)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    events = world.events
+    assert events.index("video ready") < events.index(f"put /{JOB_ID}/input.mp4")
+    if "whole video download" in events:                    # the real one finds the finished file and keeps it
+        assert events.index("video ready") < events.index("whole video download")
+    assert world.uploads == [("input.mp4", f"/{JOB_ID}/input.mp4")]
+    data = read(job_dir)
+    assert data["status"] == "done" and {"download", "upload"} <= set(data["timings"])
+
+
 def test_ranking_fails_while_the_video_downloads(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
     world = World(tmp_path, monkeypatch, polls=1)
+    monkeypatch.setattr(phases, "download_youtube", world.video_download(until_stopped=True))
     world.outcomes["transcribe_and_rank"] = RuntimeError("GEMINI_API_KEY is missing")
     world.files[f"/{JOB_ID}/transcript.json"] = b"[]"              # transcribed, then the ranking broke
     assert pipeline.run_job(job_dir, 5, keep_remote=False) == 1
@@ -421,6 +522,7 @@ def test_download_fails_after_the_ranking_and_try_again_reuses_the_transcript(tm
 def test_nothing_to_render_stops_the_download_and_finishes(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path)
     world = World(tmp_path, monkeypatch, first=lambda call: phase_one(moments=[]), polls=1)
+    monkeypatch.setattr(phases, "download_youtube", world.video_download(until_stopped=True))
     assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
     data = read(job_dir)
     assert data["status"] == "done" and data["clips"] == [] and data["message"].startswith("No clips")
@@ -558,8 +660,10 @@ def test_rerank_of_a_youtube_job_ranks_while_the_video_downloads(tmp_path, monke
     assert world.spawns[0][1][3] == "reuse" and "audio download" not in world.events
     assert world.events.index("spawn transcribe_and_rank") < world.events.index("video download (audio None)")
     data = read(job_dir)
-    assert data["reranks"] == 1 and data["clips"] == ["clip_0.mp4", "clip_1.mp4"]
-    assert (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"clip 0"
+    assert data["reranks"] == 1 and data["clips"] == ["clip_0.mp4"]
+    assert data["comparison"]["new"]["clips"] == ["clip_0.mp4", "clip_1.mp4"]
+    assert (job_dir / "clips_new" / "clip_0.mp4").read_bytes() == b"clip 0"
+    assert (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"old"
 
 
 def test_rerank_of_a_legacy_whistle_job_uses_the_whole_video(tmp_path, monkeypatch):
@@ -581,6 +685,158 @@ def test_rerank_of_an_upload_without_its_file_asks_for_it(tmp_path, monkeypatch)
     data = read(job_dir)
     assert "add the same MP4 again" in data["error"] and data["clips"] == ["clip_0.mp4"]
     assert world.spawns == [] and world.uploads == []
+
+
+# --------------------------------------------------------------------------- #
+# Videos kept on the laptop for re-ranks (videostore.py)
+# --------------------------------------------------------------------------- #
+
+def kept_video(job_dir, content=b"kept video"):
+    """Put a video in the store for this job, as an earlier successful run would have."""
+    job = jobstore.Job(job_dir)
+    source = job_dir / "kept-source.mp4"
+    source.write_bytes(content)
+    assert videostore.keep(job, source)
+    return videostore.find(job)
+
+
+def real_download_without_network(monkeypatch):
+    """The real youtube.download_youtube, whose yt-dlp step must never be reached."""
+    def no_download(*args, **kwargs):
+        raise AssertionError("the kept video must be used: no download")
+
+    monkeypatch.setattr(downloader, "download", no_download)
+    monkeypatch.setattr(phases, "download_youtube", youtube.download_youtube)
+    monkeypatch.setattr(transfer, "download_youtube", youtube.download_youtube)
+
+
+def test_a_youtube_run_keeps_its_video_for_re_ranks(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path)
+    World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    video = videostore.find(jobstore.Job(job_dir))
+    assert video is not None and video.read_bytes() == b"video"
+    assert not (tmp_path / "downloads" / JOB_ID).exists() and not (job_dir / "input.mp4").exists()
+    assert read(job_dir)["keptVideo"] is True
+    status = json.loads((tmp_path / "stats" / "video-store.json").read_text())
+    assert status["count"] == 1 and "dir" in status
+
+
+def test_keeping_off_deletes_the_video_after_success_as_before(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIDEO_KEEP_DAYS", "0")
+    job_dir = make_job(tmp_path)
+    World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    assert videostore.find(jobstore.Job(job_dir)) is None and not (tmp_path / "downloads" / JOB_ID).exists()
+    assert read(job_dir)["keptVideo"] is False
+    upload_dir = tmp_path / "up"
+    up = make_job(upload_dir, source="upload", youtubeUrl=None, title="talk.mp4")
+    (up / "input.mp4").write_bytes(b"x" * 4096)
+    World(upload_dir, monkeypatch)
+    assert pipeline.run_job(up, 5, keep_remote=False) == 0
+    assert not (up / "input.mp4").exists() and videostore.find(jobstore.Job(up)) is None
+
+
+def test_a_youtube_rerank_uses_the_kept_video_without_downloading(tmp_path, monkeypatch):
+    job_dir = done_job(tmp_path)
+    kept = kept_video(job_dir)
+    world = World(tmp_path, monkeypatch)
+    real_download_without_network(monkeypatch)
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert "cut input.mp4" in world.events and read(job_dir)["reranks"] == 1
+    assert kept.read_bytes() == b"kept video" and videostore.find(jobstore.Job(job_dir)) == kept
+    assert read(job_dir)["keptVideo"] is True and not (job_dir / "input.mp4").exists()
+
+
+def test_the_whole_video_fallback_never_deletes_the_kept_video(tmp_path, monkeypatch):
+    job_dir = done_job(tmp_path)
+    kept = kept_video(job_dir)
+    world = World(tmp_path, monkeypatch)
+    real_download_without_network(monkeypatch)
+
+    def unsupported(video, moments, out_dir):
+        raise cutter.Unsupported("two audio streams")
+
+    monkeypatch.setattr(phases.cutter, "make_footage", unsupported)
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert ("input.mp4", f"/{JOB_ID}/input.mp4") in world.uploads
+    assert kept.read_bytes() == b"kept video"
+
+
+def test_a_legacy_whole_video_rerank_uploads_the_kept_video_and_keeps_it(tmp_path, monkeypatch):
+    job_dir = done_job(tmp_path, engine={"transcriber": "whistle"})
+    kept = kept_video(job_dir)
+    world = World(tmp_path, monkeypatch)
+    real_download_without_network(monkeypatch)
+    first = phase_one()
+    first["clipWords"] = [[{"word": "a"}], [{"word": "b"}]]
+    world.outcomes["transcribe_and_rank"] = lambda call: (world.phase_one(call), first)[1]
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert world.uploads[0] == ("input.mp4", f"/{JOB_ID}/input.mp4")
+    assert kept.read_bytes() == b"kept video" and videostore.holds(kept)
+
+
+def test_an_upload_run_moves_its_video_into_the_store_and_reranks_without_the_file(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path, source="upload", youtubeUrl=None, title="talk.mp4")
+    (job_dir / "input.mp4").write_bytes(b"x" * 4096)
+    World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    kept = videostore.find(jobstore.Job(job_dir))
+    assert kept is not None and kept.read_bytes() == b"x" * 4096 and not (job_dir / "input.mp4").exists()
+    data = read(job_dir)
+    assert data["fingerprint"] and data["keptVideo"] is True
+
+    world = World(tmp_path, monkeypatch)
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert "cut input.mp4" in world.events and read(job_dir)["reranks"] == 1
+    assert kept.read_bytes() == b"x" * 4096 and not (job_dir / "input.mp4").exists()
+
+
+def test_a_failed_rerank_leaves_the_kept_video_for_try_again(tmp_path, monkeypatch):
+    job_dir = done_job(tmp_path, source="upload", youtubeUrl=None)
+    kept = kept_video(job_dir)
+    World(tmp_path, monkeypatch)
+    monkeypatch.setattr(phases, "render_on_modal", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("GPU")))
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 1
+    assert kept.read_bytes() == b"kept video"
+    assert phases.local_upload(jobstore.Job(job_dir)) == kept
+
+
+def test_a_failed_youtube_run_keeps_its_download_in_the_temp_folder(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path)
+    World(tmp_path, monkeypatch)
+    monkeypatch.setattr(phases, "render_on_modal", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("GPU")))
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 1
+    assert (tmp_path / "downloads" / JOB_ID / "input.mp4").exists()
+    assert videostore.find(jobstore.Job(job_dir)) is None and "keptVideo" not in read(job_dir)
+
+
+def test_keep_video_wins_over_the_store(tmp_path, monkeypatch):
+    job_dir = done_job(tmp_path)
+    kept_video(job_dir)
+    World(tmp_path, monkeypatch)
+    real_download_without_network(monkeypatch)
+    assert pipeline.run_rerank(job_dir, 5, keep_remote=False, keep_video=True) == 0
+    assert (job_dir / "input.mp4").read_bytes() == b"kept video"
+    assert videostore.find(jobstore.Job(job_dir)) is None and read(job_dir)["keptVideo"] is False
+
+    fresh = tmp_path / "fresh"
+    new_dir = make_job(fresh)
+    World(fresh, monkeypatch)
+    assert pipeline.run_job(new_dir, 5, keep_remote=False, keep_video=True) == 0
+    assert (new_dir / "input.mp4").read_bytes() == b"video" and videostore.find(jobstore.Job(new_dir)) is None
+
+
+def test_a_run_removes_the_kept_video_of_a_deleted_job_first(tmp_path, monkeypatch):
+    gone_id = "20261101-100000-aaaaaa"
+    gone = make_job(tmp_path, id=gone_id)
+    gone.rename(tmp_path / "jobs" / gone_id)
+    kept_video(tmp_path / "jobs" / gone_id)
+    shutil.rmtree(tmp_path / "jobs" / gone_id)          # the user deleted that job
+    job_dir = make_job(tmp_path)
+    World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    assert sorted(p.name for p in videostore.videos_dir().iterdir()) == [JOB_ID]
 
 
 # --------------------------------------------------------------------------- #

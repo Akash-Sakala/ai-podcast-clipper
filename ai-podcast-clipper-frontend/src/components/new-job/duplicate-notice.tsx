@@ -11,7 +11,7 @@ export type Duplicate = {
   status: JobStatus;
   clips: number;
   canRerank: boolean;
-  /** An upload whose video was deleted: re-rank sends the dropped file again. */
+  /** An upload whose video is no longer kept: re-rank sends the dropped file again. */
   rerankNeedsFile: boolean;
   hasThumbnail: boolean;
 };

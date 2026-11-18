@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import settings
+import videostore
 from clipper_names import JOBS_VOLUME
 from jobstore import Job, log, now_iso, pid_alive, replace_file, set_progress
 from media import save_clip_poster
@@ -250,13 +251,17 @@ def upload_files(job: Job, volume, files: list[tuple[pathlib.Path, str]], stage:
 def put_video_on_modal(job: Job, volume, timings: dict, keep_video: bool = False) -> None:
     """Get the video into /<job id>/input.mp4 on the Modal volume.
 
-    A video in the job folder (an upload) is uploaded from there. A YouTube video is
-    downloaded into its temp folder, uploaded, and the temp folder is deleted (with
-    keep_video, the video moves into the job folder instead)."""
+    A video in the job folder (an upload) is uploaded from there, else an upload's kept video
+    (videostore.py). A YouTube video is downloaded into its temp folder (or taken from the
+    kept videos), uploaded, and then moves into the kept videos (with keep_video, into the
+    job folder; if keeping is off, it is deleted with the temp folder). A kept video is
+    never moved or deleted here."""
     local = job.dir / "input.mp4"
     source = local
     transfer = "upload"
-    if not local.exists() and job.data.get("source") == "youtube":
+    if not local.exists() and job.data.get("source") != "youtube":
+        source = videostore.use(job) or local
+    elif not local.exists() and job.data.get("source") == "youtube":
         transfer = "laptop-download"
         job.update(videoTransfer=transfer)
         set_progress(job, "downloading")
@@ -274,12 +279,14 @@ def put_video_on_modal(job: Job, volume, timings: dict, keep_video: bool = False
     start = time.time()
     upload_input(job, volume, video=source)
     timings["upload"] = round(time.time() - start, 1)
-    if source != local:
+    if source != local and not videostore.holds(source):
         if keep_video:
             try:
                 shutil.move(str(source), str(local))
             except OSError as exc:
                 log(f"Could not keep the video in the job folder: {exc}")
+        else:
+            videostore.keep(job, source)
         shutil.rmtree(source.parent, ignore_errors=True)
 
 
@@ -439,9 +446,9 @@ def download_outputs(job: Job, volume, result: dict, clips_dir: pathlib.Path | N
     return saved
 
 
-def commit_extras(job: Job) -> None:
-    """transcript.json.new / moments.json.new -> their real names."""
-    for extra in ("transcript.json", "moments.json"):
+def commit_extras(job: Job, only: tuple[str, ...] = ("transcript.json", "moments.json")) -> None:
+    """transcript.json.new / moments.json.new -> their real names (`only` those named)."""
+    for extra in only:
         staged = job.dir / f"{extra}.new"
         if staged.exists():
             replace_file(staged, job.dir / extra)

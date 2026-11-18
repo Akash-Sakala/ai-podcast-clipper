@@ -13,7 +13,11 @@ import { jobDir } from "./paths";
  *                      is downloaded on the laptop and lives in a temp folder instead)
  *     transcript.json  reused by re-rank
  *     thumbnail.jpg    cover for the video list (YouTube's, or a frame of an upload)
- *     clips/clip_N.mp4
+ *     clips/clip_N.mp4 (+ clip_N.jpg posters)
+ *     clips_new/       a re-rank's new clips: saved there while it runs, then kept until
+ *                      the owner chooses what to keep (job.json "comparison"); with
+ *                      moments.json.new, their moments
+ *     clips_previous/, clips_final/   only for a moment while a set is swapped in
  *     runner.log       output of runner.py
  */
 
@@ -37,6 +41,7 @@ export async function writeJob(job: Job) {
   delete stored.rerankNeedsFile;
   delete stored.hasThumbnail;
   delete stored.clipsVersion;
+  delete stored.clipVersions;
   try {
     await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
     await fsp.rename(tmp, file);

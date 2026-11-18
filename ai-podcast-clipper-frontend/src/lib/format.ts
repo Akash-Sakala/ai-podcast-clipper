@@ -180,7 +180,7 @@ export function stageSentence(job: StageJob) {
       return "Starting";
     case "audio":
       return typeof p?.fraction === "number"
-        ? `Sending the audio to Modal${percent(p)}`
+        ? `Sending the audio to Modal${percent(p)}${meanwhile(job)}`
         : "Getting the audio";
     case "clips":
       return typeof p?.fraction === "number"

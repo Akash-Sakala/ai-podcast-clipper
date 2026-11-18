@@ -14,8 +14,9 @@ import { inputPath, isValidJobId, jobDir } from "~/lib/paths";
 
 /**
  * Re-rank & re-render a finished job: reuses its saved transcript, so only Gemini
- * and the GPU run again (no transcription). A YouTube video is downloaded again
- * by the runner on the laptop. An upload whose video was deleted after its run needs the same MP4 again,
+ * and the GPU run again (no transcription). The video kept on the laptop after the
+ * last run is reused; without one, a YouTube video is downloaded again by the runner
+ * and an upload needs the same MP4 again,
  * sent as the raw request body (`Content-Type: video/mp4`); it is checked against
  * the job's fingerprint. The previous clips stay until the new ones are downloaded.
  */

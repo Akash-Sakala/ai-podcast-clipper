@@ -10,6 +10,8 @@ const POSTER_PATTERN = /^clip_\d+\.jpg$/;
  * Streams a clip (clip_N.mp4, with HTTP Range support so the player can seek) or
  * its poster still (clip_N.jpg). The app adds ?v=<version> to the URL; a versioned
  * URL never changes content, so the browser may keep it and skip the network.
+ * `?set=new` reads a re-rank's new set (clips_new/) instead of the live clips; the
+ * set is part of the URL, so the two sets' clip_0.mp4 never share a cache entry.
  */
 export async function GET(
   request: Request,
@@ -21,7 +23,13 @@ export async function GET(
     return new Response("Not found", { status: 404 });
   }
 
-  const file = path.join(jobDir(jobId), "clips", clip);
+  const url = new URL(request.url);
+  const set = url.searchParams.get("set");
+  if (set !== null && set !== "new") {
+    return new Response("Not found", { status: 404 });
+  }
+  const folder = set === "new" ? "clips_new" : "clips";
+  const file = path.join(jobDir(jobId), folder, clip);
   let size: number;
   let modified: Date;
   try {
@@ -32,9 +40,8 @@ export async function GET(
     return new Response("Not found", { status: 404 });
   }
 
-  const url = new URL(request.url);
   const download = url.searchParams.has("download");
-  const etag = `"${size.toString(36)}-${Math.floor(modified.getTime()).toString(36)}"`;
+  const etag = `"${set === "new" ? "n-" : ""}${size.toString(36)}-${Math.floor(modified.getTime()).toString(36)}"`;
   const headers: Record<string, string> = {
     "Content-Type": isPoster ? "image/jpeg" : "video/mp4",
     "Accept-Ranges": "bytes",
@@ -50,7 +57,8 @@ export async function GET(
     return new Response(null, { status: 304, headers });
   }
   if (download) {
-    headers["Content-Disposition"] = `attachment; filename="${jobId}_${clip}"`;
+    headers["Content-Disposition"] =
+      `attachment; filename="${jobId}_${set === "new" ? "new_" : ""}${clip}"`;
   }
 
   const range = request.headers.get("range");

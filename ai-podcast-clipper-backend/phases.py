@@ -31,6 +31,7 @@ import time
 import costs
 import cutter
 import segments
+import videostore
 from clipper_names import RENDER_FUNCTION, TRANSCRIBE_FUNCTION
 from cloud import BackgroundCall, finished, lookup_functions, spawn, wait_for
 from jobstore import Job, log, set_progress
@@ -178,9 +179,10 @@ class VideoDownload:
 # --------------------------------------------------------------------------- #
 
 def local_upload(job: Job):
-    """An upload's video in the job folder (FileNotFoundError when the file must be added again)."""
-    video = job.dir / "input.mp4"
-    if not video.exists():
+    """An upload's video: in the job folder (a failed run's copy, or the file added again), else
+    the kept one (videostore.py). FileNotFoundError when the file must be added again."""
+    video = videostore.local_video(job)
+    if video is None:
         raise FileNotFoundError(MISSING_UPLOAD)
     return video
 
@@ -420,15 +422,19 @@ def process_on_modal(job: Job, max_clips: int, mode: str, timings: dict, saver=N
 
 
 def forget_download(job: Job, keep_video: bool) -> None:
-    """After a run that succeeded: the YouTube video leaves the temp folder (into the job
-    folder with keep_video). Never raises."""
+    """After a run that succeeded: the YouTube video leaves the temp folder, into the kept
+    videos (videostore.py; deleted when keeping is off) or, with keep_video, into the job
+    folder. A video taken from the kept videos stays where it is. Never raises."""
     folder = download_folder(job)
     video = folder / "input.mp4"
-    if keep_video and video.exists():
-        try:
-            shutil.move(str(video), str(job.dir / "input.mp4"))
-        except OSError as exc:
-            log(f"Could not keep the video in the job folder: {exc}")
+    if video.exists():
+        if keep_video:
+            try:
+                shutil.move(str(video), str(job.dir / "input.mp4"))
+            except OSError as exc:
+                log(f"Could not keep the video in the job folder: {exc}")
+        else:
+            videostore.keep(job, video)
     shutil.rmtree(folder, ignore_errors=True)
 
 

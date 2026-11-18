@@ -6,6 +6,7 @@ import { ACTIVE_STATUSES, type Job } from "./job-types";
 import { updateJob } from "./job-store";
 import { listJobs } from "./jobs";
 import { jobDir } from "./paths";
+import { keptVideoPath } from "./video-store";
 import { youtubeVideoId } from "./youtube";
 
 /** Server: the same fingerprint as fingerprintFile() in the browser, for a file on disk. */
@@ -44,8 +45,11 @@ export async function findDuplicate(query: {
     if (query.fingerprint && job.source === "upload") {
       let print = job.fingerprint;
       if (!print) {
+        const video = path.join(jobDir(job.id), "input.mp4");
+        const kept = keptVideoPath(job.id);
         print =
-          (await fileFingerprint(path.join(jobDir(job.id), "input.mp4"))) ??
+          (await fileFingerprint(video)) ??
+          (kept ? await fileFingerprint(kept) : null) ??
           undefined;
         // Only idle jobs are written to; the runner owns job.json while it works.
         if (print && !ACTIVE_STATUSES.includes(job.status)) {

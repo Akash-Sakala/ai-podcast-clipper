@@ -149,6 +149,22 @@ export type ClipDetail = {
   audience?: number | null;
   /** The replay hotspot (or SponsorBlock highlight) the clip contains. */
   peak?: ClipPeak | null;
+  /** After a comparison: the set the kept clip came from. */
+  from?: ClipSet;
+};
+
+/** "new": the clips a re-rank left in clips_new/; "previous": the live set in clips/. */
+export type ClipSet = "new" | "previous";
+
+/**
+ * After a re-rank of a job that had clips (runner.py): the new set waits in clips_new/
+ * while `clips` and `clipDetails` stay the previous set, until the owner keeps a choice.
+ */
+export type ClipComparison = {
+  createdAt: string;
+  new: { clips: string[]; details: ClipDetail[] };
+  /** When the previous set was made. */
+  previous: { at: string | null };
 };
 
 export type ClipPeak = {
@@ -232,6 +248,12 @@ export type Job = {
   clipDetails?: ClipDetail[];
   /** Clips already saved by a running full run (runner.py), best first; null once the run ends. */
   liveClips?: ClipDetail[] | null;
+  /** "new" while a re-rank saves its clips into clips_new/ (they are served with ?set=new). */
+  liveClipsSet?: "new" | null;
+  /** A re-rank's new clips waiting to be compared with the previous ones; null once chosen. */
+  comparison?: ClipComparison | null;
+  /** When the last comparison was applied. */
+  comparedAt?: string;
   ranking?: JobRanking;
   reranks?: number;
   /** What the current or last run did: a full run or a re-rank of the saved transcript. */
@@ -241,14 +263,17 @@ export type Job = {
   rerankedAt?: string;
   /** Derived by the server: transcript on disk and the video can be had, job not running. */
   canRerank?: boolean;
-  /** Derived by the server: an upload whose video was deleted; re-rank asks for the file again. */
+  /** Derived by the server: an upload whose video is gone (not kept); re-rank asks for the file again. */
   rerankNeedsFile?: boolean;
   videoTransfer?: VideoTransfer | null;
+  /** Written by the runner after a successful run: the video is kept on the laptop for re-ranks. */
+  keptVideo?: boolean;
   /** Derived by the server: a cover image is available at /api/media/<id>/thumbnail. */
   hasThumbnail?: boolean;
   /** Derived by the server: changes when the clip files are replaced (for caching). */
   clipsVersion?: string;
-  /** Derived by the server: per clip file, its modified time (base 36), for caching. */
+  /** Derived by the server: per clip file, its modified time (base 36), for caching.
+   *  Keyed by clip name for the live set and "new/<clip name>" for a re-rank's new set. */
   clipVersions?: Record<string, string>;
   /** Content fingerprint of an uploaded video (see lib/fingerprint.ts). */
   fingerprint?: string;
@@ -292,6 +317,8 @@ export type JobSummary = StageJob & {
   hasThumbnail: boolean;
   /** Length of the video, when known (YouTube metadata or the transcript). */
   durationSeconds: number | null;
+  /** A re-rank's new clips wait for the owner to choose which clips to keep. */
+  choosing?: boolean;
 };
 
 export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
@@ -308,5 +335,6 @@ export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
     hasThumbnail,
     durationSeconds:
       job.meta?.duration ?? job.engine?.parakeet?.audioSeconds ?? null,
+    choosing: !!job.comparison,
   };
 }

@@ -6,6 +6,7 @@ import time
 
 import replay
 import settings
+import videostore
 from jobstore import Job, log
 from media import discard_local_video, file_fingerprint, save_clip_poster, save_thumbnail
 from youtube import fetch_youtube_info, youtube_cookies
@@ -19,7 +20,8 @@ def backfill_thumbnails(data_dir: pathlib.Path) -> int:
             continue
         job = Job(job_dir)
         if (job.data.get("source") == "upload" and not (job_dir / "thumbnail.jpg").exists()
-                and save_thumbnail(job)):
+                and save_thumbnail(job, video=(job_dir / "input.mp4") if (job_dir / "input.mp4").exists()
+                                   else videostore.find(job))):
             covers += 1
         for clip in sorted((job_dir / "clips").glob("clip_*.mp4")):
             if not clip.with_suffix(".jpg").exists() and save_clip_poster(clip):
@@ -72,8 +74,9 @@ def backfill_replay(data_dir: pathlib.Path, force: bool = False, pause_s: float 
 
 
 def prune_videos(data_dir: pathlib.Path, dry_run: bool = False) -> int:
-    """Delete the videos older versions kept in finished job folders. Failed and running
-    jobs keep theirs (Try again reuses it). Uploads keep a fingerprint and a cover first."""
+    """Delete the videos older versions kept in finished job folders, and every video kept for
+    re-ranks (videostore.py; running jobs' excepted). Failed and running jobs keep the video in
+    their folder (Try again reuses it). Uploads keep a fingerprint and a cover first."""
     freed, count = 0.0, 0
     for job_dir in sorted((data_dir / "jobs").glob("*")):
         videos = [p for p in job_dir.glob("input.*") if p.is_file()]
@@ -100,5 +103,12 @@ def prune_videos(data_dir: pathlib.Path, dry_run: bool = False) -> int:
         log(f"{job.id}: deleted {freed_here:.0f} MB")
         freed, count = freed + freed_here, count + 1
     verb = "Would free" if dry_run else "Freed"
-    log(f"{verb} {freed / 1024:.1f} GB from {count} video(s)")
+    log(f"{verb} {freed / 1024:.1f} GB from {count} video(s) in job folders")
+    store = videostore.summary()
+    if dry_run:
+        log(f"Kept videos ({store['dir']}): would remove {store['count']} video(s), "
+            f"{store['bytes'] / 1024 ** 3:.1f} GB")
+    else:
+        removed, freed_bytes = videostore.clear(data_dir)
+        log(f"Kept videos ({store['dir']}): removed {removed} video(s), {freed_bytes / 1024 ** 3:.1f} GB")
     return 0

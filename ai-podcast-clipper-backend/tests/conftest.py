@@ -1,4 +1,5 @@
-"""Shared test setup: no test may reach YouTube or SponsorBlock."""
+"""Shared test setup: no test may reach YouTube or SponsorBlock, and kept videos
+(videostore.py) go to a temporary folder, never the real home directory."""
 
 import pathlib
 import sys
@@ -27,3 +28,11 @@ def fresh_cookie_check(monkeypatch):
     monkeypatch.setattr(youtube, "_COOKIES", None)
     monkeypatch.delenv("YTDLP_COOKIES_FROM_BROWSER", raising=False)
     monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def kept_videos_in_a_temp_folder(monkeypatch, tmp_path_factory):
+    """videostore.videos_dir() -> a fresh temp folder; the default limits whatever .env says."""
+    monkeypatch.setenv("VIDEO_CACHE_DIR", str(tmp_path_factory.mktemp("kept-videos")))
+    monkeypatch.setenv("VIDEO_KEEP_DAYS", "7")
+    monkeypatch.setenv("VIDEO_CACHE_MAX_GB", "10")

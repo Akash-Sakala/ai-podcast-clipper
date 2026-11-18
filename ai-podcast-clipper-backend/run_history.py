@@ -105,8 +105,8 @@ def prompt_version() -> str | None:
     """Short hash of the ranking prompts, so the stats can later be split by prompt."""
     digest = hashlib.sha256()
     try:
-        for name in ("viral_moments.md", "viral_moments_rerank.md"):
-            digest.update((BACKEND_DIR / "prompts" / name).read_bytes().replace(b"\r\n", b"\n"))
+        for path in sorted((BACKEND_DIR / "prompts").glob("*.md")):
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
     except OSError:
         return None
     return digest.hexdigest()[:8]

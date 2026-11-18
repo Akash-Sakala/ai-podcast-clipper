@@ -14,9 +14,11 @@ import {
   isValidJobId,
   jobDir,
   JOBS_DIR,
+  newClipPath,
   thumbnailPath,
 } from "./paths";
 import { detectStaleJob } from "./stale-jobs";
+import { keptVideoPath } from "./video-store";
 import { youtubeVideoId } from "./youtube";
 
 /** One job as the UI sees it: stale runners detected, canRerank derived. */
@@ -94,21 +96,28 @@ function clipsVersion(job: Job) {
 }
 
 /** Per clip file (finished or still running): its modified time, so one clip keeps its cache
- *  entry (and a card its identity) when the job finishes. Missing files are skipped. */
+ *  entry (and a card its identity) when the job finishes. Missing files are skipped.
+ *  The live set is keyed by clip name; a re-rank's new set (clips_new/: saved while the
+ *  re-rank runs, then waiting for a comparison) by "new/<clip name>". */
 function clipVersions(job: Job) {
   const versions: Record<string, string> = {};
-  const names = new Set([
-    ...job.clips,
-    ...(job.liveClips ?? []).map((clip) => clip.name),
+  const liveNames = (job.liveClips ?? []).map((clip) => clip.name);
+  const newSet = job.liveClipsSet === "new";
+  const live = new Set([...job.clips, ...(newSet ? [] : liveNames)]);
+  const fresh = new Set([
+    ...(job.comparison?.new.clips ?? []),
+    ...(newSet ? liveNames : []),
   ]);
-  for (const name of names) {
+  const stamp = (file: () => string, key: string) => {
     try {
-      const mtime = fs.statSync(clipPath(job.id, name)).mtimeMs;
-      versions[name] = Math.floor(mtime).toString(36);
+      versions[key] = Math.floor(fs.statSync(file()).mtimeMs).toString(36);
     } catch {
-      // missing clip: ignore
+      // missing (or invalid) clip: ignore
     }
-  }
+  };
+  for (const name of live) stamp(() => clipPath(job.id, name), name);
+  for (const name of fresh)
+    stamp(() => newClipPath(job.id, name), `new/${name}`);
   return versions;
 }
 
@@ -124,8 +133,9 @@ function withDerived(job: Job): Job {
 }
 
 /**
- * A finished job can be re-ranked while its transcript is on disk. The video is
- * downloaded again (YouTube) or added again (an upload whose copy was deleted).
+ * A finished job can be re-ranked while its transcript is on disk. The video kept on
+ * the laptop is reused; without one it is downloaded again (YouTube) or added again
+ * (an upload).
  * The runner now keeps the transcript as soon as it exists, so a job that has never
  * finished (a failed first run: not done, no clips) is not offered Re-rank, only Try again.
  */
@@ -135,7 +145,11 @@ export function canRerank(job: Job) {
   return fs.existsSync(path.join(jobDir(job.id), "transcript.json"));
 }
 
-/** An uploaded video that is no longer in the job folder: re-rank needs the file again. */
+/** An uploaded video that is neither in the job folder nor kept: re-rank needs the file again. */
 export function rerankNeedsFile(job: Job) {
-  return job.source === "upload" && !fs.existsSync(inputPath(job.id));
+  return (
+    job.source === "upload" &&
+    !fs.existsSync(inputPath(job.id)) &&
+    keptVideoPath(job.id) === null
+  );
 }

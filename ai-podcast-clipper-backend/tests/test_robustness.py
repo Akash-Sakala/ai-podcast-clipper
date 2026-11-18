@@ -22,6 +22,7 @@ BACKEND = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 import clipper_names  # noqa: E402
+import clipsets  # noqa: E402
 import cloud  # noqa: E402
 import costs  # noqa: E402
 import jobstore  # noqa: E402
@@ -96,6 +97,7 @@ def install_fake_modal(monkeypatch, volume, calls=None):
 def quiet(monkeypatch):
     monkeypatch.setattr(pipeline, "refresh_modal_bill", lambda *a, **k: None)
     monkeypatch.setattr(transfer, "save_clip_poster", lambda clip: True)
+    monkeypatch.setattr(clipsets, "save_clip_poster", lambda clip: True)
     monkeypatch.setattr(transfer, "upload_input", lambda *a, **k: None)
     monkeypatch.setattr(transfer.time, "sleep", lambda s: None)
 
@@ -421,7 +423,7 @@ def rerank_job_dir(tmp_path, old=("clip_0", "clip_1", "clip_2")):
     return job_dir
 
 
-def test_rerank_swaps_file_by_file_and_drops_old_extra_clips(tmp_path, monkeypatch):
+def test_keeping_the_new_set_swaps_file_by_file_and_drops_old_extra_clips(tmp_path, monkeypatch):
     job_dir = rerank_job_dir(tmp_path)
     install_fake_modal(monkeypatch, FakeVolume(remote_files()))
     monkeypatch.setattr(pipeline, "process_on_modal", lambda *a, **k: gpu_result())
@@ -436,42 +438,42 @@ def test_rerank_swaps_file_by_file_and_drops_old_extra_clips(tmp_path, monkeypat
 
     monkeypatch.setattr(jobstore.os, "replace", replace)
     assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
+    assert read(job_dir)["comparison"] and (job_dir / "clips" / "clip_2.mp4").exists()
+    keep = [{"set": "new", "clip": "clip_0.mp4"}, {"set": "new", "clip": "clip_1.mp4"}]
+    assert pipeline.apply_comparison(job_dir, keep) == 0
     assert renamed_dirs == []                                          # never renames the clips folder
-    assert sorted(p.name for p in (job_dir / "clips").iterdir()) == ["clip_0.mp4", "clip_1.mp4"]
+    assert sorted(p.name for p in (job_dir / "clips").iterdir()) == ["clip_0.mp4", "clip_1.mp4"]   # old posters go
     assert (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"new clip_0.mp4"
-    assert (job_dir / "moments.json").read_text() == "[1]"
-    assert not (job_dir / "clips_new").exists() and not (job_dir / "clips_previous").exists()
+    assert [m["rank"] for m in json.loads((job_dir / "moments.json").read_text())] == [1, 2]
+    for name in ("clips_new", "clips_previous", "clips_final", "moments.json.new"):
+        assert not (job_dir / name).exists()
 
 
-def test_a_locked_clip_keeps_every_old_clip_and_the_old_moments(tmp_path, monkeypatch):
+def test_a_failed_rerank_save_keeps_the_old_set_and_the_next_rerank_resumes_into_a_comparison(
+        tmp_path, monkeypatch):
     job_dir = rerank_job_dir(tmp_path)
     volume = FakeVolume(remote_files())
+    volume.fail[f"/{JOB_ID}/clips/clip_1.mp4"] = -1                   # the network keeps failing
     install_fake_modal(monkeypatch, volume)
     monkeypatch.setattr(pipeline, "process_on_modal", lambda *a, **k: gpu_result())
     monkeypatch.setattr(pipeline, "fetch_replay", lambda *a, **k: None)
-    monkeypatch.setattr(jobstore.time, "sleep", lambda s: None)
-    real_replace = os.replace
-
-    def replace(src, dst):
-        if pathlib.Path(src).name == "clip_1.mp4" and pathlib.Path(src).parent.name == "clips":
-            raise PermissionError("in use by the web app")             # clip_1 is being streamed
-        return real_replace(src, dst)
-
-    monkeypatch.setattr(jobstore.os, "replace", replace)
     assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 1
     data = read(job_dir)
     assert data["status"] == "done" and data["message"] == "Re-rank failed - previous clips kept"
     for c in ("clip_0", "clip_1", "clip_2"):
         assert (job_dir / "clips" / f"{c}.mp4").read_bytes() == b"old " + c.encode()
     assert (job_dir / "moments.json").read_text() == '["old"]' and not (job_dir / "moments.json.new").exists()
+    assert not (job_dir / "clips_new").exists() and not data.get("comparison") and not data.get("liveClips")
     assert data["pendingSave"]["mode"] == "rerank"                     # the next re-rank downloads them
     assert volume.removed == [f"/{JOB_ID}/{name}" for name in transfer.REMOTE_MEDIA]
 
-    monkeypatch.setattr(jobstore.os, "replace", real_replace)
+    volume.fail.clear()
     monkeypatch.setattr(pipeline, "process_on_modal", lambda *a, **k: pytest.fail("rendered again"))
     assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
-    assert (job_dir / "clips" / "clip_1.mp4").read_bytes() == b"new clip_1.mp4"
-    assert read(job_dir).get("pendingSave") is None
+    data = read(job_dir)
+    assert data["comparison"]["new"]["clips"] == ["clip_0.mp4", "clip_1.mp4"] and data.get("pendingSave") is None
+    assert (job_dir / "clips_new" / "clip_1.mp4").read_bytes() == b"new clip_1.mp4"
+    assert (job_dir / "clips" / "clip_1.mp4").read_bytes() == b"old clip_1"
 
 
 def test_replace_file_retries_a_locked_target(tmp_path, monkeypatch):
@@ -791,10 +793,30 @@ def test_live_clips_clear_when_the_run_is_stopped(tmp_path, monkeypatch):
     assert read(job_dir)["liveClips"] is None and read(job_dir)["status"] == "failed"
 
 
-def test_a_rerank_never_publishes_live_clips(tmp_path, monkeypatch):
+def test_a_rerank_publishes_live_clips_of_the_new_set_and_clears_them(tmp_path, monkeypatch):
+    marks = []
+    real_update = jobstore.Job.update
+
+    def spy(self, **fields):
+        if fields.get("liveClips"):
+            marks.append(fields.get("liveClipsSet"))
+        return real_update(self, **fields)
+
+    monkeypatch.setattr(jobstore.Job, "update", spy)
     job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch, mode="rerank")
-    assert code == 0 and snapshots == [None, None]
-    assert not read(job_dir).get("liveClips")
+    assert code == 0
+    assert [[c["name"] for c in s] for s in snapshots] == [["clip_0.mp4"], ["clip_0.mp4", "clip_1.mp4"]]
+    assert marks and set(marks) == {"new"}
+    data = read(job_dir)
+    assert data["liveClips"] is None and data["liveClipsSet"] is None and data["comparison"]
+
+
+def test_live_clips_of_a_failed_rerank_are_cleared(tmp_path, monkeypatch):
+    job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch, outcome="fail", mode="rerank")
+    data = read(job_dir)
+    assert code == 1 and len(snapshots[1]) == 2
+    assert data["liveClips"] is None and data["liveClipsSet"] is None and not data.get("comparison")
+    assert not (job_dir / "clips_new").exists() and data["clips"] == ["clip_0.mp4", "clip_1.mp4", "clip_2.mp4"]
 
 
 def test_live_clips_during_a_pending_save_resume(tmp_path, monkeypatch):

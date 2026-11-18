@@ -295,7 +295,9 @@ def test_without_replay_context_ranking_is_unchanged():
     report = {}
     chosen = moments.select_moments(words, 1, None, "fake", {"title": "x"}, generate=generate, report=report,
                                     log=quiet, min_clips=1)
-    assert len(calls) == 1 and "Replay hotspots" not in calls[0] and "Leave out" not in calls[0]
+    # One proposal call plus the judge call; neither mentions replay or SponsorBlock.
+    assert len(calls) == 2 and calls[1].startswith("Candidates")
+    assert all("Replay hotspots" not in c and "Leave out" not in c for c in calls)
     assert chosen[0]["score"] == 70.0 and chosen[0]["audience"] is None and chosen[0]["peak"] is None
     assert "replay" not in report
 
