@@ -2,7 +2,8 @@
 
 import { Check, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { cn } from "~/lib/utils";
 import { Popover } from "./popover";
 
 const OPTIONS = [
@@ -16,6 +17,15 @@ export function ThemeMenu() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  // The icon turns in only when the theme changes after the page loaded, not on load.
+  const shownTheme = useRef(resolvedTheme);
+  const [turns, setTurns] = useState(0);
+  useEffect(() => {
+    if (shownTheme.current && shownTheme.current !== resolvedTheme)
+      setTurns((n) => n + 1);
+    shownTheme.current = resolvedTheme;
+  }, [resolvedTheme]);
+
   // Before hydration the theme is unknown; render a neutral icon to avoid a mismatch.
   const Icon = !mounted ? Monitor : resolvedTheme === "dark" ? Moon : Sun;
 
@@ -23,7 +33,13 @@ export function ThemeMenu() {
     <Popover
       label="Theme"
       role="menu"
-      trigger={<Icon className="size-[18px]" aria-hidden />}
+      trigger={
+        <Icon
+          key={turns}
+          className={cn("size-[18px]", turns > 0 && "icon-swap")}
+          aria-hidden
+        />
+      }
       className="w-40"
     >
       {(close) =>
@@ -39,7 +55,7 @@ export function ThemeMenu() {
                 setTheme(option.value);
                 close();
               }}
-              className="hover:bg-accent flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm"
+              className="hover:bg-accent press flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm pointer-coarse:py-3"
             >
               <option.icon
                 className="text-muted-foreground size-4"

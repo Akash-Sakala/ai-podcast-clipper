@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { clipLength } from "~/lib/format";
 import type { ClipDetail } from "~/lib/job-types";
 import { cn } from "~/lib/utils";
+import { IconButton } from "./ui/icon-button";
 
 const SCORE_LABELS: { key: string; label: string }[] = [
   { key: "hook", label: "Hook" },
@@ -214,7 +215,9 @@ function ScoreBadge({
           show();
         }}
         className={cn(
-          "bg-tally text-tally-ink flex items-baseline gap-1.5 rounded-md px-2 py-1 shadow-sm",
+          // 26 px tall with a mouse, 34 px on a touch screen (it sits on the video, so
+          // it stays smaller than a full 44 px button).
+          "bg-tally text-tally-ink press flex items-baseline gap-1.5 rounded-md px-2 py-1 shadow-sm pointer-coarse:px-2.5 pointer-coarse:py-2",
           (detail?.source === "fallback" || detail?.source === "replay") &&
             "bg-card text-foreground",
         )}
@@ -235,7 +238,7 @@ function ScoreBadge({
           // Pressing inside the panel must not move focus off the badge (which would close it).
           onMouseDown={(e) => e.preventDefault()}
           style={{ transform: `translateX(${shift}px)` }}
-          className="bg-popover text-popover-foreground absolute top-full left-0 z-20 mt-2 w-64 max-w-[calc(100vw-1rem)] rounded-lg border p-3 shadow-lg shadow-black/10 dark:shadow-black/40"
+          className="bg-popover text-popover-foreground pop-in absolute top-full left-0 z-20 mt-2 w-64 max-w-[calc(100vw-1rem)] origin-top-left rounded-lg border p-3 shadow-lg shadow-black/10 dark:shadow-black/40"
         >
           <ScoreDetails detail={detail} weight={replayWeight} />
         </div>
@@ -344,29 +347,26 @@ export const ClipCard = memo(function ClipCard({
           <span className="text-muted-foreground tabular text-xs">
             {length}
           </span>
-          <div className="-mr-1.5 flex shrink-0">
-            <button
-              type="button"
+          <div className="-mr-1.5 flex shrink-0 pointer-coarse:-mr-2.5 pointer-coarse:gap-2">
+            <IconButton
+              size="sm"
+              label={copied ? "Title copied" : "Copy title"}
               onClick={copyTitle}
-              aria-label="Copy title"
-              title="Copy title"
-              className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 items-center justify-center rounded-md transition-colors"
             >
               {copied ? (
-                <Check className="size-4" />
+                <Check className="pop-in size-4" aria-hidden />
               ) : (
-                <Copy className="size-4" />
+                <Copy className="size-4" aria-hidden />
               )}
-            </button>
-            <a
+            </IconButton>
+            <IconButton
+              size="sm"
+              label="Download clip"
               href={`${base}?${set === "new" ? "set=new&" : ""}download`}
               download={`${String(rank).padStart(2, "0")} ${title}.mp4`}
-              aria-label="Download clip"
-              title="Download clip"
-              className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 items-center justify-center rounded-md transition-colors"
             >
-              <Download className="size-4" />
-            </a>
+              <Download className="size-4" aria-hidden />
+            </IconButton>
           </div>
         </div>
         {note}

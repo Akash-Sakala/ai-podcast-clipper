@@ -69,7 +69,7 @@ export function Segmented<T extends string>({
           onClick={() => onChange(option)}
           onKeyDown={(event) => onKeyDown(event, index)}
           className={cn(
-            "rounded-md px-3 py-1 whitespace-nowrap transition-colors",
+            "press rounded-md px-3 py-1 whitespace-nowrap pointer-coarse:py-2.5",
             value === option
               ? "bg-card text-foreground shadow-sm"
               : "text-muted-foreground hover:text-foreground",

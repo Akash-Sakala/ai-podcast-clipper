@@ -45,19 +45,27 @@ function StageBar({
         >
           {shown.map(([stage, value], i) => {
             const share = value / sumValues;
+            // Each segment is a size container: it names its stage when it is wide
+            // enough (so the bar reads without the colours), else shows the value
+            // alone, else nothing (the legend and the tooltip still name it).
             return (
               <span
                 key={stage}
                 title={`${STAGE_LABELS[stage]}: ${format(stage, value)}`}
                 className={cn(
-                  "flex h-full min-w-[3px] items-center justify-center overflow-hidden text-[11px] font-semibold whitespace-nowrap",
+                  "@container h-full min-w-[3px] overflow-hidden",
                   STAGE_COLORS[stage],
                   STAGE_INKS[stage],
                   i === shown.length - 1 && "rounded-r-[4px]",
                 )}
                 style={{ width: `${share * 100}%` }}
               >
-                {share >= 0.14 ? format(stage, value) : ""}
+                <span className="hidden h-full items-center justify-center gap-1 text-[11px] font-semibold whitespace-nowrap @min-[2.5rem]:flex">
+                  <span className="hidden font-medium @min-[7.5rem]:inline">
+                    {STAGE_LABELS[stage]}
+                  </span>
+                  {format(stage, value)}
+                </span>
               </span>
             );
           })}

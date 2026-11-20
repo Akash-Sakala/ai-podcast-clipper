@@ -26,6 +26,8 @@
   --tally: #f5a524;
   --tally-ink: #2e1f00;
   --tally-soft: #fdf0d6;
+  /* The light that passes over loading placeholders. */
+  --shimmer: rgb(255 255 255 / 0.65);
   --radius: 0.625rem;
   /* Stats charts: pipeline stages, slots of the validated data-viz palette (light /
      dark steps). Amber stays the UI accent, so Render is magenta. */
@@ -40,6 +42,29 @@
   --stage-transcribe-ink: #16181d;
   --stage-rank-ink: #ffffff;
   --stage-render-ink: #16181d;
+
+  /*
+    Motion, in three layers (the same in both themes). src/lib/motion.ts mirrors
+    these values for the motion library; change both together.
+    Primitives: raw durations and curves.
+  */
+  --duration-100: 100ms;
+  --duration-130: 130ms;
+  --duration-200: 200ms;
+  --duration-320: 320ms;
+  --curve-decelerate: cubic-bezier(0.16, 1, 0.3, 1);
+  --curve-accelerate: cubic-bezier(0.55, 0, 1, 0.45);
+  --curve-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Semantic: what each duration is for. Exits run about 65% of an enter. */
+  --motion-press: var(--duration-100);
+  --motion-exit: var(--duration-130);
+  --motion-enter: var(--duration-200);
+  --motion-emphasis: var(--duration-320);
+  --motion-ease-enter: var(--curve-decelerate);
+  --motion-ease-exit: var(--curve-accelerate);
+  --motion-ease-move: var(--curve-standard);
+  /* Component: a tooltip waits this long under a mouse before it shows. */
+  --tooltip-delay: 400ms;
 }
 
 .dark {
@@ -59,6 +84,7 @@
   --tally: #f5a524;
   --tally-ink: #2e1f00;
   --tally-soft: #3a2c12;
+  --shimmer: rgb(255 255 255 / 0.05);
   --stage-download: #3987e5;
   --stage-transcribe: #199e70;
   --stage-rank: #9085e9;
@@ -107,6 +133,27 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* ease-enter / ease-exit / ease-move classes; durations use duration-(--motion-*). */
+  --ease-enter: var(--motion-ease-enter);
+  --ease-exit: var(--motion-ease-exit);
+  --ease-move: var(--motion-ease-move);
+}
+
+/*
+  Press feedback for buttons and links: colours ease, and a press shrinks the
+  control by 3% (about 1 px on a 36 px button, so it reads as feedback, not motion).
+  Use it instead of transition-colors on anything clickable.
+*/
+@utility press {
+  transition-property: color, background-color, border-color, opacity, scale;
+  transition-duration: var(--motion-press);
+  transition-timing-function: var(--motion-ease-move);
+  @media (prefers-reduced-motion: no-preference) {
+    &:active:not(:disabled) {
+      scale: 0.97;
+    }
+  }
 }
 
 @layer base {
@@ -146,9 +193,62 @@
   animation: tally-pulse 1.6s ease-in-out infinite;
 }
 
+/* Small panels (tooltips, the score details) arriving from their trigger. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+
+.pop-in {
+  animation: pop-in var(--motion-enter) var(--motion-ease-enter);
+}
+
+/* The theme icon turning when the theme changes. */
+@keyframes icon-swap {
+  from {
+    opacity: 0;
+    rotate: -45deg;
+    scale: 0.7;
+  }
+}
+
+.icon-swap {
+  animation: icon-swap var(--motion-emphasis) var(--motion-ease-enter);
+}
+
+/* Loading placeholders: a soft light passing over the grey, left to right. */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+.shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--shimmer) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s var(--motion-ease-move) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .tally-pulse {
+  .tally-pulse,
+  .shimmer,
+  .pop-in,
+  .icon-swap {
     animation: none;
+  }
+  .shimmer {
+    background-image: none;
   }
   * {
     transition-duration: 0.01ms !important;

@@ -13,9 +13,10 @@ const NavHeader = () => {
           className="font-display -ml-1 flex items-center gap-2 rounded-md px-1 text-lg font-semibold tracking-tight"
         >
           <LogoMark className="text-muted-foreground size-7" />
-          podcast clipper
+          {/* Below 360 px the three 44 px touch buttons need the room: the mark stays. */}
+          <span className="max-[359px]:sr-only">podcast clipper</span>
         </Link>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 pointer-coarse:gap-2">
           <StatsLink />
           <SettingsLink />
           <ThemeMenu />

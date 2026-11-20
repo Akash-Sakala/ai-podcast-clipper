@@ -71,9 +71,9 @@ export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
                   setInvalid(false);
                 }}
                 aria-label="Clear link"
-                className="text-muted-foreground hover:text-foreground absolute right-2 inline-flex size-7 items-center justify-center rounded-md"
+                className="text-muted-foreground hover:text-foreground press absolute right-2 inline-flex size-7 items-center justify-center rounded-md pointer-coarse:right-0 pointer-coarse:size-11"
               >
-                <X className="size-4" />
+                <X className="size-4" aria-hidden />
               </button>
             )}
           </label>
@@ -82,7 +82,7 @@ export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
               type="button"
               onClick={open}
               disabled={busy}
-              className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:opacity-60 sm:flex-none"
+              className="text-muted-foreground hover:text-foreground hover:bg-accent press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3.5 text-sm font-medium disabled:opacity-60 sm:flex-none"
             >
               <Upload className="size-4" />
               Upload MP4
@@ -90,7 +90,7 @@ export function NewJobBar({ onCreated }: { onCreated: () => Promise<void> }) {
             <button
               type="submit"
               disabled={busy || !url.trim()}
-              className="bg-tally text-tally-ink hover:bg-tally/90 disabled:bg-muted disabled:text-muted-foreground inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold transition-colors sm:flex-none"
+              className="bg-tally text-tally-ink hover:bg-tally/90 disabled:bg-muted disabled:text-muted-foreground press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold sm:flex-none"
             >
               {(submitting || checking) && (
                 <Loader2 className="size-4 animate-spin" />
