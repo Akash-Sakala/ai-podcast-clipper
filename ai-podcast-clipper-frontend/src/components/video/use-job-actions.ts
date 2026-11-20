@@ -15,7 +15,7 @@ export function useJobActions(onStarted: () => Promise<void>) {
 
   const run = useCallback(
     async (job: ActionJob, action: "rerank" | "retry") => {
-      // An upload's video is deleted after its run: re-rank asks for the file again.
+      // An upload whose video is no longer kept: re-rank asks for the file again.
       let file: File | null = null;
       if (action === "rerank" && job.rerankNeedsFile) {
         file = await pickVideoFile();

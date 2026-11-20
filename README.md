@@ -2,7 +2,7 @@
 
 Turn a long podcast or interview into ranked, ready-to-post vertical clips for YouTube Shorts, Instagram Reels and TikTok.
 
-Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest 30-60 second moments anywhere in the video (helped by YouTube's "Most replayed" graph when the video has one), crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on rented cloud GPUs ([Modal](https://modal.com)), and every video is deleted once its clips are made, so only the app and the finished clips live on your machine.
+Paste a YouTube link or drop an MP4. The app transcribes it, has Gemini find the strongest complete moments anywhere in the video, 30 seconds to 2 minutes long as the conversation needs (helped by YouTube's "Most replayed" graph when the video has one), crops each one to 9:16 around whoever is speaking and burns in word-timed subtitles. The heavy lifting runs on rented cloud GPUs ([Modal](https://modal.com)); nothing stays on Modal, and the video is kept on your machine for a week (outside OneDrive, capped at 10 GB) so a re-rank needs no new download.
 
 A single-user, local-first fork of [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-podcast-clipper-saas): no accounts, payments, S3 or database.
 
@@ -42,9 +42,9 @@ flowchart LR
 ```
 
 1. **Add a video.** The Next.js app creates a job folder and starts `runner.py` in the background. The runner reads the Most replayed graph and SponsorBlock segments (a few seconds, no download).
-2. **Phase 1.** The audio goes to Modal first. Parakeet transcribes it and Gemini ranks the moments (no GPU is billed while it ranks). Meanwhile the laptop downloads the YouTube video.
+2. **Phase 1.** The audio goes to Modal first. Parakeet transcribes it and Gemini ranks the moments (no GPU is billed while it ranks). The laptop starts downloading the YouTube video while the audio is still uploading.
 3. **Phase 2.** For each chosen clip the laptop cuts that clip's footage out of the video (no re-encode) and uploads only that. Every clip then renders at once in its own GPU container: LR-ASD finds the speaker, and the clip is cropped to 9:16 and encoded once with subtitles.
-4. **Save.** The runner downloads each clip as soon as it is ready, then deletes the video, the audio and the footage, from Modal and from your machine.
+4. **Save.** The runner downloads all clips at once, each as soon as it is ready, and the app shows each clip the moment it is saved. Then it deletes the audio and the footage everywhere and keeps the video only on your machine, for re-ranks.
 
 The two phases overlap the video download with transcription. On `main`, one real 30-minute 1080p60 video took 13 minutes, 468 s of it uploading the whole video. With the two-phase flow, a video of about 40 minutes took 6.8 minutes and one of about 100 minutes took 7.4 minutes (first real runs, on a 4-8 Mbps uplink).
 
@@ -53,8 +53,8 @@ The two phases overlap the video download with transcription. On `main`, one rea
 - **Parallel GPU containers:** one A10 per clip, each clip encoded once on NVENC; every video shows its time and estimated cost.
 - **Audio first, then only the footage you need:** the video is never uploaded whole unless it has to be (see [advanced.md](docs/advanced.md#fallbacks-to-the-whole-video)).
 - **Parakeet TDT 0.6B v2:** about 111x real time on an A10, English only; chosen over Whisper-family and Parakeet v3 on this project's own podcasts.
-- **Gemini plus the audience:** Gemini scores candidates on a six-part rubric; for YouTube videos the score blends 60% Gemini with 40% how often viewers replay that part.
-- **Delete after use:** no video stays on Modal or on your machine after a successful run; Re-rank reuses only the transcript.
+- **Complete clips, ranked by value:** Gemini proposes moments and quotes the line where each one pays off; code checks the payoff is inside the cut, and one judge call re-reads every final clip, fixes boundaries and marks incomplete ones, which never outrank complete ones. For YouTube videos the score blends 60% Gemini with 40% how often viewers replay that part.
+- **Nothing kept on Modal:** the video stays on your machine for 7 days after its last use (10 GB cap), so Re-rank reuses it and the saved transcript.
 - **Run ledger:** every run is appended to `data/stats/runs.jsonl`, so the stats page keeps its numbers when you delete a video.
 
 ## Requirements
@@ -103,8 +103,8 @@ npm run start
 `npm run preview` does both in one go. For development with hot reload use `npm run dev`. Open http://127.0.0.1:3000.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with live status.
-- **Clips page:** clips best first, with score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing; **Try again** restarts a failed video.
-- **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock).
+- **Clips page:** clips best first, with score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing or downloading, then shows the new clips beside the previous ones so you keep the ones you want, clip by clip; **Try again** restarts a failed video.
+- **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock, and the kept videos with a button to remove them).
 
 Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line, cancelling a job and troubleshooting: [docs/advanced.md](docs/advanced.md).
 

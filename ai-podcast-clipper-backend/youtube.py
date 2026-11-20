@@ -9,6 +9,7 @@ import time
 import downloader
 import replay
 import settings
+import videostore
 from jobstore import Job, apply_meta, log, set_progress
 
 DOWNLOADS_DIR = pathlib.Path(tempfile.gettempdir()) / "ai-podcast-clipper"   # outside OneDrive
@@ -114,7 +115,16 @@ def download_youtube(job: Job, attempts: int = 3, on_progress=None, audio_format
     """Download the YouTube video into its temp folder; returns the path of input.mp4.
     A partial file from an earlier attempt or run is resumed (and a complete one is used
     as it is). on_progress(fraction) replaces the "downloading" progress (it may raise to
-    stop the download; the partial file stays). audio_format: see downloader.pinned_format."""
+    stop the download; the partial file stays). audio_format: see downloader.pinned_format.
+    A video kept from an earlier run (videostore.py) is returned as it is: no download.
+    Callers must never delete or move that file (videostore.holds)."""
+    kept = videostore.use(job)
+    if kept is not None:
+        log(f"Using the kept video ({kept.stat().st_size / 1024 ** 3:.1f} GB): no download")
+        if on_progress is not None:
+            on_progress(1.0)          # may raise on purpose (a stop signal): it propagates
+        return kept
+
     import imageio_ffmpeg
 
     url = job.data["youtubeUrl"]

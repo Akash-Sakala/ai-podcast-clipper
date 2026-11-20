@@ -71,6 +71,13 @@ function RowStatus({
       </div>
     );
   }
+  if (job.choosing) {
+    return (
+      <span className="text-foreground text-sm font-medium">
+        Choose clips to keep
+      </span>
+    );
+  }
   const count = job.clipCount;
   return (
     <span

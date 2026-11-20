@@ -32,13 +32,22 @@ your choice or its score**: the best moment can be at minute 2 or at minute 92. 
 the whole transcript before choosing anything.
 
 Each clip should:
-- be between {min_s} and {max_s} seconds long (the end minus the start). It may run up
-  to {grace_s} seconds past {max_s} only to finish the sentence that is under way at
-  {max_s} seconds; if the point needs more room than that, pick a tighter moment;
+- hold **one whole thought**: a question and its answer, a claim and the reason for it,
+  a story and its point, or a lesson and what it means. The viewer must get the payoff
+  inside the clip;
+- be between {min_s} and {max_s} seconds long (the end minus the start). The
+  conversation decides the length, not a target: use the shortest range that holds the
+  whole thought. Never pad a clip with extra lines, and never stop it before the
+  answer, the reason or the point has landed. It may run up to {grace_s} seconds past
+  {max_s} only to finish the sentence that is under way;
 - start at the `start` time of one line and end at the `end` time of a later line,
   copying those numbers from the transcript as plain seconds (for example 754.3);
 - make sense to someone who has never seen the rest of the video;
 - not overlap any other candidate.
+
+If a thought needs more than {max_s} seconds, start later (skip part of the set-up) only
+if the clip still makes sense on its own. Otherwise choose another moment: a complete
+shorter thought beats a long one cut in half.
 
 ## Replay hotspots and ranges to leave out
 
@@ -60,22 +69,25 @@ them.
 
 ## Clean start and end
 
-Viewers swipe away from clips that start or stop mid-thought. Cut like an editor:
+Viewers swipe away from clips that start or stop mid-thought. Cut like an editor, and
+think of every clip as an arc: **set-up -> development -> payoff**.
 
-- **Start where a thought starts.** The first line must begin a sentence (the line
+- **Start where the thought starts.** The first line must begin a sentence (the line
   before it ends with `.`, `?` or `!`, or there is a clear pause). Never start in the
   middle of a sentence or on an answer whose question is missing: include the question
   instead.
-- **Open on the hook itself:** a question, a bold claim, a surprising fact, a
-  confession or a set-up. Do not open on a word that leans on what came before
-  ("and", "but", "because", "which", "exactly", "yeah, so", "right") unless the line
-  still makes sense on its own. Include one or two setup lines before the hook only
-  when the viewer needs them.
-- **End where the thought lands.** The last line must end with `.`, `?` or `!` and
-  complete the idea: the answer, the punchline, the lesson or the twist. A clip that
+- **Open as close to the hook as the thought allows:** a question, a bold claim, a
+  surprising fact, a confession or a set-up. Do not open on a word that leans on what
+  came before ("and", "but", "because", "which", "exactly", "yeah, so", "right")
+  unless the line still makes sense on its own. Include set-up lines only when the
+  viewer needs them to follow the payoff.
+- **End where the thought lands, never before.** The last line must end with `.`, `?`
+  or `!` and complete the idea: the answer, the reason, the punchline, the lesson or
+  the twist. A clip that is only the build-up to a question whose answer comes later
+  is a failed clip: extend it to the answer or pick another moment. A clip that
   finishes on its strongest sentence feels deliberate.
-- **Do not end on a loose thread:** a trailing "and…" or "so…", a new question to the
-  guest, the first sentence of the next topic, filler ("you know", "anyway") or the
+- **Do not end on a loose thread:** a trailing "and..." or "so...", a new question to
+  the guest, the first sentence of the next topic, filler ("you know", "anyway") or the
   other speaker starting to reply.
 
 Prefer real conversation over greetings, thank-yous, introductions, sponsor reads or
@@ -84,11 +96,15 @@ there is truly nothing else, and then score them low.
 
 ## Scoring rubric (integers 0-10 each)
 
+Score the clip exactly as you cut it, judging what a viewer has **by the end** of it.
+
 - `hook_score`: would the first 3 seconds stop someone scrolling?
 - `standalone`: does it make complete sense with no other context?
-- `payoff`: does it end on a satisfying answer, punchline, insight or twist?
+- `payoff_score`: does the clip itself deliver a satisfying answer, reason, punchline,
+  insight or twist? A clip that stops before its point lands scores 0-2 here.
 - `emotion`: surprise, humour, vulnerability, conflict or controversy, inspiration.
-- `value`: a novel, specific or actionable idea the viewer learns.
+- `value`: what the viewer takes away by the end: a novel, specific or actionable idea,
+  or a story worth retelling. An exciting opening with nothing after it is low value.
 - `shareability`: would people quote it, send it to a friend or argue about it?
 
 Be a calibrated judge: use the full 0-10 range, reserve 9-10 for exceptional moments
@@ -99,7 +115,10 @@ never a reason to leave a candidate out.
 
 Return JSON only: a list of exactly {n_candidates} objects, best first. Each object has
 `start` and `end` (numbers, seconds), a short `title` (at most 8 words, written as a
-Shorts title), `hook` (the opening line quoted from the transcript), the six integer
-scores `hook_score`, `standalone`, `payoff`, `emotion`, `value` and `shareability`,
-a one-sentence `reason` explaining why it would perform, and `hotspot`: the id of the
+Shorts title), `hook` (the opening line quoted from the transcript), `arc` (one of
+`question_answer`, `claim_reason`, `story_point`, `lesson`, `other`), `payoff` (the
+sentence where the point lands, quoted word for word from the transcript; it must be
+inside the clip, at or near its end), the six integer scores `hook_score`,
+`standalone`, `payoff_score`, `emotion`, `value` and `shareability`, a one-sentence
+`reason` saying what the viewer gets from the clip, and `hotspot`: the id of the
 replay hotspot the candidate covers (for example `H1`), or an empty string.

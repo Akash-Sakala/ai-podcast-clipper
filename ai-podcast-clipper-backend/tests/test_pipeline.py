@@ -103,10 +103,16 @@ def fake_generate_factory(windows_seen):
     """Fake Gemini: proposes candidates in chronological order with scores that
     peak late in the video - the old code would have taken the first five."""
     def generate(client, model, system, user, schema, **_):
-        if "Candidates" in user.splitlines()[0]:          # re-rank call: keep scores
-            ids = [int(line.split(":")[0].split()[1]) for line in user.splitlines() if line.startswith("id ")]
-            return [{"id": i, "hook": 5, "standalone": 5, "payoff": 5, "emotion": 5, "value": 5,
-                     "shareability": 5, "reason": "flat"} for i in ids]
+        if "Candidates" in user.splitlines()[0]:          # judge call: same "later = better" scores
+            out = []
+            for line in user.splitlines():
+                if line.startswith("id "):
+                    start = float(line.split("[")[1].split("-")[0])
+                    q = min(10, int(start // 200))
+                    out.append({"id": int(line.split(":")[0].split()[1]), "hook": q, "standalone": q, "payoff": q,
+                                "emotion": q, "value": q, "shareability": q, "complete": True,
+                                "issue": "none", "reason": "judged"})
+            return out
         stamps = [line for line in user.splitlines() if line.startswith("[")]
         first = float(stamps[0][1:].split("-")[0])
         windows_seen.append(first)
@@ -488,17 +494,19 @@ def _rerank_setup(tmp_path, monkeypatch, new_clips):
     return job_dir, calls
 
 
-def test_rerank_replaces_clips_and_reuses_transcript(tmp_path, monkeypatch):
+def test_rerank_leaves_both_sets_to_compare_and_reuses_transcript(tmp_path, monkeypatch):
     import json as _json
 
     job_dir, calls = _rerank_setup(tmp_path, monkeypatch, ["clip_0.mp4", "clip_1.mp4"])
     assert pipeline.run_rerank(job_dir, 5, keep_remote=False) == 0
     job = _json.loads((job_dir / "job.json").read_text())
     assert calls["mode"] == "reuse"                         # Parakeet transcript, no re-transcription
-    assert job["status"] == "done" and job["clips"] == ["clip_0.mp4", "clip_1.mp4"] and job["reranks"] == 1
-    assert job["message"].startswith("Re-ranked: 2 clip(s) ready")
-    assert (job_dir / "clips" / "clip_0.mp4").read_bytes().startswith(b"new-")
-    assert not (job_dir / "clips_new").exists() and not (job_dir / "clips_previous").exists()
+    assert job["status"] == "done" and job["clips"] == ["clip_0.mp4"] and job["reranks"] == 1
+    assert job["message"] == "Re-ranked: 2 new clips ready, choose the clips to keep"
+    assert job["comparison"]["new"]["clips"] == ["clip_0.mp4", "clip_1.mp4"]
+    assert (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"old"          # the live set is untouched
+    assert (job_dir / "clips_new" / "clip_0.mp4").read_bytes().startswith(b"new-")
+    assert (job_dir / "moments.json.new").exists() and not (job_dir / "clips_previous").exists()
     assert (job_dir / "moments.previous.json").exists()
     assert not (job_dir / "input.mp4").exists()            # the video is not kept after a run
 

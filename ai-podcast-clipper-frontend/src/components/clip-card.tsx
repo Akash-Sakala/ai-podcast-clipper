@@ -250,6 +250,11 @@ export const ClipCard = memo(function ClipCard({
   detail,
   version,
   replayWeight = 0.4,
+  set,
+  selection,
+  note,
+  dimmed = false,
+  outlined = false,
 }: {
   jobId: string;
   clip: string;
@@ -258,12 +263,23 @@ export const ClipCard = memo(function ClipCard({
   version: string;
   /** Share of the score from the audience (the job's ranking.replay.weight). */
   replayWeight?: number;
+  /** "new": a re-rank's new set (clips_new/), compared with the live clips. */
+  set?: "new";
+  /** Shown between the player and the title (the comparison's Keep checkbox). */
+  selection?: React.ReactNode;
+  /** Shown under the title (the comparison's "Same moment" badge). */
+  note?: React.ReactNode;
+  /** The player at half opacity (a clip that will not be kept). */
+  dimmed?: boolean;
+  /** A thin amber outline around the player (a clip that will be kept). */
+  outlined?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const base = `/api/media/${jobId}/${clip}`;
   const v = encodeURIComponent(version);
-  const src = `${base}?v=${v}`;
-  const poster = `${base.replace(/\.mp4$/, ".jpg")}?v=${v}`;
+  const query = set === "new" ? `set=new&v=${v}` : `v=${v}`;
+  const src = `${base}?${query}`;
+  const poster = `${base.replace(/\.mp4$/, ".jpg")}?${query}`;
   const rank = detail?.rank ?? Number(/\d+/.exec(clip)?.[0] ?? 0) + 1;
   const score = detail?.score != null ? Math.round(detail.score) : null;
   const length =
@@ -284,10 +300,15 @@ export const ClipCard = memo(function ClipCard({
 
   return (
     <article
-      id={clip.replace(/\.mp4$/, "")}
+      id={`${set === "new" ? "new-" : ""}${clip.replace(/\.mp4$/, "")}`}
       className="group flex scroll-mt-6 flex-col gap-3"
     >
-      <div className="relative">
+      <div
+        className={cn(
+          "relative rounded-lg",
+          outlined && "ring-tally ring-offset-background ring-2 ring-offset-2",
+        )}
+      >
         <video
           src={src}
           poster={poster}
@@ -297,7 +318,10 @@ export const ClipCard = memo(function ClipCard({
           playsInline
           // object-contain, not cover: in fullscreen the player fills the screen and
           // "cover" would crop the vertical clip to the screen's width.
-          className="aspect-[9/16] w-full rounded-lg bg-black object-contain [&:fullscreen]:rounded-none"
+          className={cn(
+            "aspect-[9/16] w-full rounded-lg bg-black object-contain transition-opacity [&:fullscreen]:rounded-none",
+            dimmed && "opacity-50",
+          )}
         />
         <ScoreBadge
           detail={detail}
@@ -308,6 +332,7 @@ export const ClipCard = memo(function ClipCard({
       </div>
 
       <div>
+        {selection}
         <h3
           className="line-clamp-2 text-sm leading-snug font-medium"
           title={title}
@@ -334,7 +359,7 @@ export const ClipCard = memo(function ClipCard({
               )}
             </button>
             <a
-              href={`${base}?download`}
+              href={`${base}?${set === "new" ? "set=new&" : ""}download`}
               download={`${String(rank).padStart(2, "0")} ${title}.mp4`}
               aria-label="Download clip"
               title="Download clip"
@@ -344,6 +369,7 @@ export const ClipCard = memo(function ClipCard({
             </a>
           </div>
         </div>
+        {note}
       </div>
     </article>
   );

@@ -10,10 +10,19 @@ import traceback
 
 import replay
 import settings
+import videostore
 from billing import job_cost, refresh_modal_bill
 from clipper_names import JOBS_VOLUME
+from clipsets import (  # noqa: F401 - swap_in_new_clips and apply_comparison are used through pipeline
+    NEW_DIR,
+    apply_comparison,
+    discard_comparison,
+    has_live_clips,
+    previous_set_time,
+    swap_in_new_clips,
+)
 from cloud import cancel_remote_call, cancel_stale_call
-from jobstore import Job, log, now_iso, replace_file
+from jobstore import Job, log, now_iso
 from media import discard_local_video, file_fingerprint, save_thumbnail
 from phases import forget_download, process_on_modal
 from run_history import record_run
@@ -62,52 +71,6 @@ def run_on_modal(job: Job, volume, max_clips: int, mode: str, timings: dict, sav
     return result
 
 
-def swap_in_new_clips(job: Job, new_dir: pathlib.Path) -> None:
-    """Put the re-rendered clips (all downloaded into new_dir) in place of the old ones.
-
-    File by file, never by renaming the clips folder: on Windows a folder can't be renamed
-    while any file in it is open (the web app streaming a clip, a player, OneDrive). Each
-    old file first moves to clips_previous/, then the new one takes its name (each step
-    retried while the file is locked). If a step still fails, the files already swapped
-    are put back and the error is raised, so the old clips stay complete. Old clips with
-    no new counterpart (fewer clips this time) are removed afterwards (best effort)."""
-    clips_dir = job.dir / "clips"
-    backup = job.dir / "clips_previous"
-    shutil.rmtree(backup, ignore_errors=True)
-    clips_dir.mkdir(exist_ok=True)
-    backup.mkdir(exist_ok=True)
-    new_files = sorted(p for p in new_dir.iterdir() if p.is_file() and not p.name.endswith(".part"))
-    done: list[tuple[pathlib.Path, pathlib.Path | None]] = []
-    try:
-        for new in new_files:
-            target = clips_dir / new.name
-            saved = None
-            if target.exists():
-                saved = backup / new.name
-                replace_file(target, saved)
-            done.append((target, saved))
-            replace_file(new, target)
-    except OSError:
-        for target, saved in reversed(done):
-            try:
-                if saved is not None:
-                    replace_file(saved, target)
-                else:
-                    target.unlink(missing_ok=True)
-            except OSError as exc:
-                log(f"Could not restore {target.name}: {exc}")
-        raise
-    names = {p.name for p in new_files}
-    for old in clips_dir.glob("clip_*"):
-        if old.name not in names:
-            try:
-                replace_file(old, backup / old.name, attempts=4)
-            except OSError as exc:
-                log(f"Could not remove the old {old.name}: {exc}")
-    shutil.rmtree(backup, ignore_errors=True)
-    shutil.rmtree(new_dir, ignore_errors=True)
-
-
 def resume_pending(job: Job, mode: str, timings: dict) -> dict | None:
     """The result of an earlier run of this mode whose clips rendered but were not saved
     (job.json "pendingSave"; its clips are still on the volume), with its timings copied
@@ -139,6 +102,11 @@ def save_clips(job: Job, volume, result: dict, saver: ClipSaver, mode: str, timi
             log("The clips are kept on Modal: Try again (or Re-rank) downloads them without rendering again")
         raise
     timings["save"] = round(time.time() - saving, 1)
+    stats = saver.stats()
+    if stats:
+        result["clipSave"] = stats
+        log(f"Saved {stats['clips']} clips: {stats['megabytes']:.1f} MB in {stats['seconds']:.1f}s "
+            f"({stats['mbps']:.1f} Mbps, {stats['atOnce']} at once)")
     return clips
 
 
@@ -182,20 +150,57 @@ def clip_details(clips: list[str], clip_moments: list[dict]) -> list[dict]:
             "gemini": moment.get("gemini"),
             "audience": moment.get("audience"),
             "peak": moment.get("peak"),
+            "complete": moment.get("complete"),
+            "issue": moment.get("issue"),
         })
     return details
 
 
+def live_clip_saver(job: Job, volume, target_dir: pathlib.Path, clip_set: str | None = None) -> ClipSaver:
+    """A ClipSaver that publishes the clips saved so far as job.json "liveClips", so the app
+    shows each clip as soon as it is on this laptop. A re-rank saves into clips_new/ and
+    marks them liveClipsSet = "new" (the app then reads them from there)."""
+    holder: list[ClipSaver] = []
+
+    def publish(names: list[str]) -> None:
+        moments = holder[0].moments if holder else None
+        if moments:
+            job.update(liveClips=clip_details(names, moments), liveClipsSet=clip_set)
+
+    saver = ClipSaver(job, volume, target_dir, on_saved=publish)
+    holder.append(saver)
+    return saver
+
+
 def forget_video(job: Job) -> None:
     """After a successful run: an upload keeps its fingerprint (to be recognised when it is
-    added again), then input.mp4 leaves the job folder."""
+    added again), then input.mp4 leaves the job folder: into the kept videos (videostore.py),
+    or deleted when keeping is off. Partial files are deleted."""
+    video = job.dir / "input.mp4"
     if job.data.get("source") == "upload" and not job.data.get("fingerprint"):
-        fingerprint = file_fingerprint(job.dir / "input.mp4")
+        fingerprint = file_fingerprint(video if video.exists() else (videostore.find(job) or video))
         if fingerprint:
             job.update(fingerprint=fingerprint)
+    if video.exists():
+        videostore.keep(job, video)
     freed = discard_local_video(job)
     if freed:
         log(f"Deleted the video from the job folder ({freed:.0f} MB)")
+
+
+def settle_video(job: Job, keep_video: bool) -> None:
+    """After a successful run (full or re-rank): the video goes into the kept videos, or into
+    the job folder with keep_video (which wins over the store). Notes keptVideo in job.json
+    (no paths) and refreshes data/stats/video-store.json."""
+    if keep_video:
+        forget_download(job, True)
+        if not (job.dir / "input.mp4").exists():
+            videostore.take_out(job, job.dir / "input.mp4")
+    else:
+        forget_video(job)
+        forget_download(job, False)
+    job.update(keptVideo=not keep_video and videostore.find(job) is not None)
+    videostore.write_status(job.dir.parent.parent)
 
 
 def run_diagnostics(result: dict) -> dict:
@@ -210,25 +215,35 @@ def run_diagnostics(result: dict) -> dict:
               for u in result.get("usages") or [] if isinstance(u, dict) and (u.get("enterSeconds") or 0) > 0]
     if starts:
         out["coldStarts"] = starts
+    if result.get("clipSave"):
+        out["clipSave"] = result["clipSave"]      # download speed (not in timings: the stats page sums those)
     if result.get("resumedFrom"):
         out["resumedFrom"] = result["resumedFrom"]   # clips of an earlier attempt, downloaded now
     return out
 
 
 def rerank_job(job: Job, volume, max_clips: int, timings: dict, keep_video: bool = False,
-               started: float | None = None) -> tuple[dict, list[str]]:
-    """Re-rank & re-render: reuse the saved transcript, skip transcription. The video is
-    downloaded again (YouTube) or taken from the job folder (an upload added again).
-    The old clips and moments.json stay until every new clip is downloaded."""
+               started: float | None = None) -> tuple[dict, list[str], bool]:
+    """Re-rank & re-render: reuse the saved transcript, skip transcription. The video is the
+    kept one (videostore.py) when there is one, else downloaded again (YouTube) or taken from
+    the job folder (an upload added again).
+
+    The new clips are saved into clips_new/. When the job has clips, they stay there with
+    their moments (moments.json.new) for the owner to compare with the live set (returns
+    compare=True; clipsets.apply_comparison applies the choice). A job without clips gets
+    them swapped in at once. The old clips and moments.json stay until then."""
     started = time.time() if started is None else started
     if not (job.dir / "transcript.json").exists():
         raise FileNotFoundError("transcript.json is missing from the job folder, so this job cannot be re-ranked")
-    new_dir = job.dir / "clips_new"
+    new_dir = job.dir / NEW_DIR
+    compare = has_live_clips(job)
+    swap_into = None if compare else new_dir
     result = resume_pending(job, "rerank", timings)
-    saver = ClipSaver(job, volume, new_dir)
     if result is not None:
+        saver = live_clip_saver(job, volume, new_dir, "new")
+        saver.describe(result.get("moments"))
         try:
-            clips = save_clips(job, volume, result, saver, "rerank", timings, started, swap_into=new_dir)
+            clips = save_clips(job, volume, result, saver, "rerank", timings, started, swap_into=swap_into)
         except FileNotFoundError:
             log("The kept clips are no longer on Modal: re-ranking again")
             job.update(pendingSave=None)
@@ -245,17 +260,19 @@ def rerank_job(job: Job, volume, max_clips: int, timings: dict, keep_video: bool
         if previous.exists():
             shutil.copy(previous, job.dir / "moments.previous.json")
 
-        saver = ClipSaver(job, volume, new_dir)
+        saver = live_clip_saver(job, volume, new_dir, "new")
         result = run_on_modal(job, volume, max_clips, mode, timings, saver, keep_video)
-        clips = save_clips(job, volume, result, saver, "rerank", timings, started, swap_into=new_dir)
-    if clips:
+        clips = save_clips(job, volume, result, saver, "rerank", timings, started, swap_into=swap_into)
+    if clips and compare:
+        commit_extras(job, only=("transcript.json",))   # moments.json.new stays: the new set's moments
+    elif clips:
         commit_extras(job)
     else:  # keep the old clips (and their moments.json) if the re-run produced none
         shutil.rmtree(new_dir, ignore_errors=True)
         discard_extras(job)
         clips = job.data.get("clips") or []
         result = {**result, "moments": None}
-    return result, clips
+    return result, clips, bool(clips) and compare and result.get("moments") is not None
 
 
 def finish_cleanup(job: Job, volume, keep_remote: bool) -> None:
@@ -275,6 +292,8 @@ def start_run(job: Job, volume, keep_remote: bool) -> None:
     cancel_stale_call(job)
     sweep_remote(volume, job.dir.parent.parent, current_job=job.id)
     clear_old_downloads()
+    videostore.cleanup(job.dir.parent.parent, current_job=job.id)
+    videostore.write_status(job.dir.parent.parent)
 
 
 def stopped(job: Job, failed_stage: str, keep_clips: bool) -> None:
@@ -282,21 +301,23 @@ def stopped(job: Job, failed_stage: str, keep_clips: bool) -> None:
     job.update(status="done" if keep_clips else "failed",
                message="Stopped - previous clips kept" if keep_clips else "Stopped",
                error="The runner was stopped before the job finished", progress=None,
-               failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage)
+               failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, liveClips=None,
+               liveClipsSet=None)
 
 
 def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video: bool = False) -> int:
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None,
-               message="Re-rank & re-render: getting the video ready")
+    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None, liveClips=None,
+               liveClipsSet=None, message="Re-rank & re-render: getting the video ready")
+    discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {"rerank": True}
     job_start = time.time()
     try:
         start_run(job, volume, keep_remote)
-        result, clips = rerank_job(job, volume, max_clips, timings, keep_video, started=job_start)
+        result, clips, compare = rerank_job(job, volume, max_clips, timings, keep_video, started=job_start)
         timings["total"] = round(time.time() - job_start + float((job.data.get("pendingSave") or {})
                                                                     .get("elapsed") or 0), 1)
         errors = result.get("errors") or []
@@ -313,13 +334,18 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
                           started=job_start, timings=timings, cost=cost, clips=result.get("clips") or [],
                           details=details if result.get("moments") is not None else [], ranking=ranking,
                           extra=extra)
-        job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
-                   ranking=ranking, clipDetails=details, reranks=int(job.data.get("reranks") or 0) + 1,
-                   rerankedAt=now_iso(), progress=None, cost=cost, runs=runs, pendingSave=None, **extra)
+        if compare:   # the live set stays; the app shows both sets until the owner chooses
+            message = (f"Re-ranked: {len(clips)} new clip{'s' if len(clips) != 1 else ''} ready, "
+                       "choose the clips to keep")
+            set_fields = {"comparison": {"createdAt": now_iso(), "new": {"clips": clips, "details": details},
+                                         "previous": {"at": previous_set_time(job)}}}
+        else:
+            set_fields = {"clips": clips, "clipDetails": details, "clipErrors": errors}
+        job.update(status="done", message=message, timings=timings, ranking=ranking,
+                   reranks=int(job.data.get("reranks") or 0) + 1, rerankedAt=now_iso(), progress=None, cost=cost,
+                   runs=runs, pendingSave=None, liveClips=None, liveClipsSet=None, **set_fields, **extra)
         log(f"{message}. Timings: {timings}")
-        if not keep_video:
-            forget_video(job)
-        forget_download(job, keep_video)
+        settle_video(job, keep_video)
         refresh_modal_bill(job.dir.parent.parent)   # for the stats page; best effort
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -330,12 +356,15 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
                           failed_stage=(job.data.get("progress") or {}).get("stage") or "processing")
         job.update(status="done" if job.data.get("clips") else "failed",
                    message="Re-rank failed - previous clips kept" if job.data.get("clips") else "Failed",
-                   error=f"{type(exc).__name__}: {exc}", progress=None, runs=runs,
-                   failedStage=(job.data.get("progress") or {}).get("stage") or "processing")
+                   error=f"{type(exc).__name__}: {exc}", progress=None, runs=runs, liveClips=None,
+                   liveClipsSet=None, failedStage=(job.data.get("progress") or {}).get("stage") or "processing")
         discard_extras(job)
+        shutil.rmtree(job.dir / NEW_DIR, ignore_errors=True)
         return 1
     except BaseException:   # a stop signal or Ctrl+C
         stopped(job, "processing", keep_clips=bool(job.data.get("clips")))
+        discard_extras(job)
+        shutil.rmtree(job.dir / NEW_DIR, ignore_errors=True)
         raise
     finally:
         finish_cleanup(job, volume, keep_remote)
@@ -356,11 +385,9 @@ def finish_full_run(job: Job, result: dict, clips: list[str], timings: dict, job
                       timings=timings, cost=cost, clips=clips, details=details, ranking=ranking, extra=extra)
     job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                ranking=ranking, progress=None, clipDetails=details, cost=cost, runs=runs, pendingSave=None,
-               **extra)
+               liveClips=None, liveClipsSet=None, **extra)
     log(f"{message}. Timings: {timings}")
-    if not keep_video:
-        forget_video(job)
-    forget_download(job, keep_video)
+    settle_video(job, keep_video)
     refresh_modal_bill(job.dir.parent.parent)   # for the stats page; best effort
     return 0
 
@@ -375,7 +402,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None)
+    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, liveClips=None, liveClipsSet=None)
+    discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {}
     job_start = time.time()
@@ -386,7 +414,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
         result = resume_pending(job, "full", timings)
         if result is not None:
             failed_stage = "saving"
-            saver = ClipSaver(job, volume, job.dir / "clips")
+            saver = live_clip_saver(job, volume, job.dir / "clips")
+            saver.describe(result.get("moments"))
             try:
                 clips = save_clips(job, volume, result, saver, "full", timings, job_start)
             except FileNotFoundError:
@@ -399,7 +428,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
                 return finish_full_run(job, result, clips, timings, job_start, keep_video)
 
         if job.data.get("source") == "upload" and not (job.dir / "thumbnail.jpg").exists():
-            save_thumbnail(job)
+            save_thumbnail(job, video=videostore.local_video(job))
 
         mode = transcript_mode(job)
         earlier = (job.data.get("engine") or {}).get("parakeet") if mode == "reuse" else None
@@ -407,11 +436,12 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
                            "parakeet": earlier})
         if mode == "reuse":
             log("Reusing the transcript of the previous attempt")
-        failed_stage = "uploading" if (job.dir / "input.mp4").exists() else "downloading"
+        failed_stage = ("uploading" if (job.dir / "input.mp4").exists() or videostore.find(job) is not None
+                        else "downloading")
         fetch_replay(job, timings)
 
         failed_stage = "processing"
-        saver = ClipSaver(job, volume, job.dir / "clips")
+        saver = live_clip_saver(job, volume, job.dir / "clips")
         result = run_on_modal(job, volume, max_clips, mode, timings, saver, keep_video)
         job.update(engine={**job.data["engine"], "subtitles": result.get("subtitles", "parakeet"),
                            "gpu": result.get("gpu"),
@@ -427,7 +457,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
                           failed_stage=(job.data.get("progress") or {}).get("stage") or failed_stage)
         job.update(status="failed", message="Failed", error=f"{type(exc).__name__}: {exc}", timings=timings,
                    failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, progress=None,
-                   runs=runs)
+                   runs=runs, liveClips=None, liveClipsSet=None)
         discard_extras(job)
         return 1
     except BaseException:   # a stop signal or Ctrl+C

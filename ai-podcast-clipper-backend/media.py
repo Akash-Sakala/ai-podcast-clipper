@@ -39,12 +39,12 @@ def save_frame(video: pathlib.Path, target: pathlib.Path, at_seconds: float, vid
         return False
 
 
-def save_thumbnail(job: Job, size: str = "320:180") -> bool:
-    """Save a 16:9 frame from about 10% into input.mp4 as thumbnail.jpg (the cover in
+def save_thumbnail(job: Job, size: str = "320:180", video: pathlib.Path | None = None) -> bool:
+    """Save a 16:9 frame from about 10% into input.mp4 (or `video`) as thumbnail.jpg (the cover in
     the web app's video list). YouTube jobs get YouTube's own cover from the web app."""
     import imageio_ffmpeg
 
-    video = job.dir / "input.mp4"
+    video = video or job.dir / "input.mp4"
     if not video.exists():
         return False
     try:

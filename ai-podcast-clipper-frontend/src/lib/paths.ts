@@ -33,6 +33,12 @@ export function clipPath(id: string, clip: string) {
   return path.join(jobDir(id), "clips", clip);
 }
 
+/** A clip of the new set a re-rank leaves for comparison (see ClipComparison). */
+export function newClipPath(id: string, clip: string) {
+  if (!isValidClipName(clip)) throw new Error(`Invalid clip name: ${clip}`);
+  return path.join(jobDir(id), "clips_new", clip);
+}
+
 export function thumbnailPath(id: string) {
   return path.join(jobDir(id), "thumbnail.jpg");
 }

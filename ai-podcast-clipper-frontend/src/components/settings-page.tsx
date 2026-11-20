@@ -1,7 +1,8 @@
 "use client";
 
-import { Minus, Plus } from "lucide-react";
+import { Loader2, Minus, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { UsdInr } from "~/lib/job-types";
 import {
   type AppSettings,
@@ -10,6 +11,7 @@ import {
   REPLAY_WEIGHT_MAX,
 } from "~/lib/settings-types";
 import { cn } from "~/lib/utils";
+import type { KeptVideos } from "~/lib/video-store";
 import { Segmented } from "./ui/segmented";
 
 type SaveState = "saved" | "saving" | "error";
@@ -17,9 +19,11 @@ type SaveState = "saved" | "saving" | "error";
 export function SettingsPage({
   initialSettings,
   rate,
+  initialKept,
 }: {
   initialSettings: AppSettings;
   rate: UsdInr | null;
+  initialKept: KeptVideos;
 }) {
   const [settings, setSettings] = useState(initialSettings);
   const [state, setState] = useState<SaveState>("saved");
@@ -193,6 +197,10 @@ export function SettingsPage({
         </Row>
       </Group>
 
+      <Group title="Storage">
+        <KeptVideosRow initial={initialKept} />
+      </Group>
+
       <div className="text-muted-foreground flex items-center justify-between px-1 text-sm">
         <span className="inline-flex items-center gap-2" aria-live="polite">
           <span
@@ -303,5 +311,77 @@ function Toggle({
         )}
       />
     </button>
+  );
+}
+
+function formatSize(bytes: number) {
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+function keptText(kept: KeptVideos) {
+  const days = kept.keepDays === 1 ? "1 day" : `${kept.keepDays} days`;
+  const rule = `A video is kept for ${days} after its last use, so a re-rank needs no new download.`;
+  if (!kept.known) return "No videos kept yet.";
+  if (kept.keepDays <= 0) return "Videos are not kept after a run.";
+  if (kept.count === 0) return `No videos kept right now. ${rule}`;
+  const count = kept.count === 1 ? "1 video" : `${kept.count} videos`;
+  const cap = kept.maxGb > 0 ? ` of ${kept.maxGb} GB` : "";
+  return `${count}, ${formatSize(kept.bytes)}${cap}. ${rule}`;
+}
+
+function KeptVideosRow({ initial }: { initial: KeptVideos }) {
+  const [kept, setKept] = useState(initial);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    const response = await fetch("/api/videos-kept", { cache: "no-store" });
+    if (response.ok) setKept((await response.json()) as KeptVideos);
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/videos-kept", { method: "DELETE" });
+      if (!response.ok) throw new Error(String(response.status));
+      const { removed, bytes } = (await response.json()) as {
+        removed: number;
+        bytes: number;
+      };
+      toast.success(
+        removed === 0
+          ? "No videos removed"
+          : `Removed ${removed === 1 ? "1 video" : `${removed} videos`}, ${formatSize(bytes)}`,
+        removed === 0
+          ? { description: "A video that is in use is kept." }
+          : undefined,
+      );
+    } catch {
+      toast.error("Couldn't remove the kept videos", {
+        description: "Is the app still running?",
+      });
+    } finally {
+      await refresh().catch(() => undefined);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Row title="Kept videos" description={keptText(kept)} stackOnPhone>
+      <button
+        type="button"
+        onClick={() => void remove()}
+        disabled={busy || kept.count === 0}
+        className="text-foreground/80 hover:text-foreground hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50"
+      >
+        {busy ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+        ) : (
+          <Trash2 className="size-4" aria-hidden />
+        )}
+        Remove kept videos
+      </button>
+    </Row>
   );
 }

@@ -4,11 +4,13 @@ import { NextResponse } from "next/server";
 import { readJob, updateJob } from "~/lib/job-store";
 import { startRunner } from "~/lib/runner";
 import { isValidJobId, jobDir } from "~/lib/paths";
+import { keptVideoPath } from "~/lib/video-store";
 
 /**
- * Run a failed job again from the start. A failed job keeps its video in the job
- * folder (an upload, or a YouTube video the laptop downloaded), so it is reused;
- * otherwise the runner downloads the YouTube video again on the laptop.
+ * Run a failed job again from the start. A failed job keeps its video (an upload in
+ * the job folder, a YouTube download in the laptop's temp folder, or a video kept
+ * after an earlier run), so it is reused; otherwise the runner downloads the YouTube
+ * video again on the laptop.
  */
 export async function POST(
   _request: Request,
@@ -28,7 +30,9 @@ export async function POST(
       { status: 409 },
     );
   }
-  const hasVideo = fs.existsSync(path.join(jobDir(jobId), "input.mp4"));
+  const hasVideo =
+    fs.existsSync(path.join(jobDir(jobId), "input.mp4")) ||
+    keptVideoPath(jobId) !== null;
   if (job.source === "upload" && !hasVideo) {
     return NextResponse.json(
       { error: "The uploaded video is no longer in the job folder" },

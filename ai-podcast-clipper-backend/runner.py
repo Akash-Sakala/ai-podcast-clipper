@@ -8,8 +8,10 @@ it directly from the terminal:
     python runner.py --youtube "https://www.youtube.com/watch?v=..."
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
+    python runner.py --job-dir "..\\data\\jobs\\<job id>" --keep-clips @choice.json
+                                                               (after a re-rank: the clips to keep)
     python runner.py --thumbnails                              (covers and clip posters for older videos)
-    python runner.py --prune-videos [--dry-run]                (delete videos kept by older versions)
+    python runner.py --prune-videos [--dry-run]                (delete kept videos: job folders and the re-rank store)
     python runner.py --backfill-replay [--force]               (Most replayed graph + SponsorBlock for older videos)
     python runner.py --modal-bill                              (this month's Modal bill -> data/stats, stats page)
     python runner.py --check-rates                             (Modal's live prices as the cost estimate reads them)
@@ -50,6 +52,7 @@ import sys
 
 import settings  # loads ai-podcast-clipper-backend/.env
 from billing import live_rates, refresh_modal_bill
+from clipsets import apply_comparison, read_selection
 from jobstore import DEFAULT_DATA_DIR, Job, log
 from maintenance import backfill_replay, backfill_thumbnails, prune_videos
 from media import file_fingerprint
@@ -86,7 +89,8 @@ def main() -> int:
     source.add_argument("--thumbnails", action="store_true",
                         help="Save missing video covers and clip posters in --data-dir, then exit")
     source.add_argument("--prune-videos", action="store_true",
-                        help="Delete the input.mp4 of finished jobs in --data-dir (kept by older versions), then exit")
+                        help="Delete the input.mp4 of finished jobs in --data-dir (kept by older versions) "
+                             "and every video kept for re-ranks (VIDEO_CACHE_DIR), then exit")
     source.add_argument("--modal-bill", action="store_true",
                         help="Save this month's Modal bill (modal billing summary) for the stats page, then exit")
     source.add_argument("--check-rates", action="store_true",
@@ -102,13 +106,18 @@ def main() -> int:
                         help="Keep the job files in the Modal volume after downloading "
                              "(a later run removes them once they are a day old)")
     parser.add_argument("--keep-video", action="store_true",
-                        help="Keep input.mp4 in the job folder after the run (e.g. for benchmark_gpu.py)")
+                        help="Keep input.mp4 in the job folder after the run, instead of the kept videos "
+                             "(e.g. for benchmark_gpu.py)")
     parser.add_argument("--dry-run", action="store_true",
                         help="With --prune-videos: only list what would be deleted")
     parser.add_argument("--force", action="store_true",
                         help="With --backfill-replay: also redo videos that already have it")
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
+    parser.add_argument("--keep-clips", metavar="JSON",
+                        help='With --job-dir, after a re-rank: the clips to keep, as JSON '
+                             '[{"set": "new"|"previous", "clip": "clip_0.mp4"}, ...] or @<file> holding it '
+                             "(the file is deleted after reading)")
     args = parser.parse_args()
     stop_on_signals()
     data_dir = (pathlib.Path(args.job_dir).resolve().parent.parent if args.job_dir
@@ -132,6 +141,18 @@ def main() -> int:
         return prune_videos(pathlib.Path(args.data_dir).resolve(), args.dry_run)
     if args.backfill_replay:
         return backfill_replay(pathlib.Path(args.data_dir).resolve(), args.force)
+    if args.keep_clips is not None:
+        if not args.job_dir:
+            parser.error("--keep-clips needs --job-dir")
+        try:
+            keep = read_selection(args.keep_clips)
+        except (OSError, ValueError) as exc:
+            log(f"Could not read the clips to keep: {exc}")
+            job = Job(pathlib.Path(args.job_dir).resolve())
+            job.update(status="done" if job.data.get("clips") else job.data.get("status"), progress=None,
+                       error=f"Could not read the clips to keep: {exc}")
+            return 2
+        return apply_comparison(pathlib.Path(args.job_dir).resolve(), keep)
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")

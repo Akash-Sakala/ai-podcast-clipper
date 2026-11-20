@@ -11,6 +11,8 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+import settings
+import videostore
 from clipper_names import JOBS_VOLUME
 from jobstore import Job, log, now_iso, pid_alive, replace_file, set_progress
 from media import save_clip_poster
@@ -28,8 +30,6 @@ UPLOAD_STALL_S = 120             # no bytes for this long: say so in runner.log 
 MODAL_TESTED = ("1.6.4", "1.7")
 
 DOWNLOAD_ATTEMPTS = 4            # per file; waits 2, 4, 8 s between attempts
-
-CLIP_DOWNLOADS_AT_ONCE = 2
 
 CLIP_NAME = re.compile(r"clip_\d+\.mp4")
 
@@ -62,8 +62,9 @@ class UploadProgress:
     10% and when the upload stalls."""
 
     def __init__(self, job: Job, size: int, every_s: float = 2.0, clock: Callable[[], float] = time.time,
-                 stage: str = "uploading"):
+                 stage: str = "uploading", extra: Callable[[], dict] | None = None):
         self.job, self.size, self.every_s, self.clock, self.stage = job, max(size, 1), every_s, clock, stage
+        self.extra = extra               # more progress fields, read at every report (phases: "download")
         self.sent = 0
         self.started = self.last_bytes_at = clock()
         self.last_report = 0.0
@@ -98,12 +99,18 @@ class UploadProgress:
         speed = self.sent / max(now - self.started, 0.001)
         eta = round((self.size - self.sent) / speed) if speed > 0 and not self.stalled else None
         set_progress(self.job, self.stage, fraction=round(self.fraction, 3), etaSeconds=eta,
-                     stalled=self.stalled or None)
+                     stalled=self.stalled or None, **self.extra_fields())
         tenth = int(self.fraction * 10)
         if tenth > self.last_logged:
             self.last_logged = tenth
             log(f"Uploaded {self.sent / 1024 / 1024:.0f} of {self.size / 1024 / 1024:.0f} MB "
                 f"({speed * 8 / 1e6:.1f} Mbps on average)")
+
+    def extra_fields(self) -> dict:
+        try:
+            return dict(self.extra()) if self.extra is not None else {}
+        except Exception:  # noqa: BLE001 - progress is best effort
+            return {}
 
     def check_stall(self) -> None:
         """Called every few seconds by a watcher thread: flag an upload with no bytes moving."""
@@ -226,12 +233,13 @@ def upload_input(job: Job, volume, update_status: bool = True, video: pathlib.Pa
     log(f"Uploaded in {took:.0f}s ({size * 8 / 1e6 / max(took, 0.001):.1f} Mbps)")
 
 
-def upload_files(job: Job, volume, files: list[tuple[pathlib.Path, str]], stage: str, what: str) -> None:
+def upload_files(job: Job, volume, files: list[tuple[pathlib.Path, str]], stage: str, what: str,
+                 extra: Callable[[], dict] | None = None) -> None:
     """Upload files (local path, remote path) one after another with one progress bar over
-    all of them, shown as `stage` in job.json."""
+    all of them, shown as `stage` in job.json. extra() adds fields to every progress report."""
     total = sum(local.stat().st_size for local, _ in files)
-    progress = UploadProgress(job, total, stage=stage)
-    set_progress(job, stage, fraction=0.0)
+    progress = UploadProgress(job, total, stage=stage, extra=extra)
+    set_progress(job, stage, fraction=0.0, **progress.extra_fields())
     log(f"Uploading {what} ({total / 1024 / 1024:.1f} MB) to volume {JOBS_VOLUME}")
     start = time.time()
     for local, remote in files:
@@ -243,19 +251,24 @@ def upload_files(job: Job, volume, files: list[tuple[pathlib.Path, str]], stage:
 def put_video_on_modal(job: Job, volume, timings: dict, keep_video: bool = False) -> None:
     """Get the video into /<job id>/input.mp4 on the Modal volume.
 
-    A video in the job folder (an upload) is uploaded from there. A YouTube video is
-    downloaded into its temp folder, uploaded, and the temp folder is deleted (with
-    keep_video, the video moves into the job folder instead)."""
+    A video in the job folder (an upload) is uploaded from there, else an upload's kept video
+    (videostore.py). A YouTube video is downloaded into its temp folder (or taken from the
+    kept videos), uploaded, and then moves into the kept videos (with keep_video, into the
+    job folder; if keeping is off, it is deleted with the temp folder). A kept video is
+    never moved or deleted here."""
     local = job.dir / "input.mp4"
     source = local
     transfer = "upload"
-    if not local.exists() and job.data.get("source") == "youtube":
+    if not local.exists() and job.data.get("source") != "youtube":
+        source = videostore.use(job) or local
+    elif not local.exists() and job.data.get("source") == "youtube":
         transfer = "laptop-download"
         job.update(videoTransfer=transfer)
         set_progress(job, "downloading")
         start = time.time()
         source = download_youtube(job)
-        timings["download"] = round(time.time() - start, 1)
+        # Added to what a download started during the audio upload already took (phases.py).
+        timings["download"] = round(float(timings.get("download") or 0) + time.time() - start, 1)
 
     if not source.exists():
         raise FileNotFoundError("The uploaded video is no longer in the job folder: add the same MP4 again "
@@ -266,12 +279,14 @@ def put_video_on_modal(job: Job, volume, timings: dict, keep_video: bool = False
     start = time.time()
     upload_input(job, volume, video=source)
     timings["upload"] = round(time.time() - start, 1)
-    if source != local:
+    if source != local and not videostore.holds(source):
         if keep_video:
             try:
                 shutil.move(str(source), str(local))
             except OSError as exc:
                 log(f"Could not keep the video in the job folder: {exc}")
+        else:
+            videostore.keep(job, source)
         shutil.rmtree(source.parent, ignore_errors=True)
 
 
@@ -314,19 +329,68 @@ class ClipSaver:
     as render_clips reports it ready (fetch, called while the others still render), on a
     small thread pool; finish() waits for all of them and fetches any not fetched yet."""
 
-    def __init__(self, job: Job, volume, target_dir: pathlib.Path, workers: int = CLIP_DOWNLOADS_AT_ONCE,
-                 sleep: Callable[[float], None] | None = None):
+    def __init__(self, job: Job, volume, target_dir: pathlib.Path, workers: int | None = None,
+                 sleep: Callable[[float], None] | None = None,
+                 on_saved: Callable[[list[str]], None] | None = None):
         self.job, self.volume, self.dir, self.sleep = job, volume, target_dir, sleep
-        self.workers = workers
+        self.workers = workers or settings.CLIP_DOWNLOADS_AT_ONCE
         self.futures: dict = {}
         self.pool: ThreadPoolExecutor | None = None
+        self.on_saved = on_saved
+        self.moments: list | None = None
+        self._lock = threading.Lock()
+        self._done: dict[str, dict] = {}     # name -> {bytes, seconds, start, end}
+        self._saved: set[str] = set()
 
     def _save(self, name: str) -> str:
         target = self.dir / name
+        began = time.time()
         download_file(self.volume, f"/{self.job.id}/clips/{name}", target, sleep=self.sleep)
+        ended = time.time()
+        try:
+            size = target.stat().st_size
+        except OSError:
+            size = 0
+        seconds = ended - began
         save_clip_poster(target)
-        log(f"Saved {name}")
+        with self._lock:
+            self._done[name] = {"bytes": size, "seconds": seconds, "start": began, "end": ended}
+        mbps = size * 8 / 1e6 / seconds if seconds > 0 else 0.0
+        log(f"Saved {name} ({size / 1024 / 1024:.1f} MB in {seconds:.1f}s, {mbps:.1f} Mbps)")
+        with self._lock:
+            self._saved.add(name)
+        self._notify()
         return name
+
+    def _notify(self) -> None:
+        if self.on_saved is None:
+            return
+        with self._lock:
+            names = sorted(self._saved)
+        if not names:
+            return
+        try:
+            self.on_saved(names)
+        except Exception as exc:  # noqa: BLE001 - progress publishing must never fail a download
+            log(f"Could not publish the saved clips ({type(exc).__name__}: {exc})")
+
+    def describe(self, moments: list | None) -> None:
+        """The ranked moments (clip_N is moments[N]); republishes what is already saved."""
+        self.moments = moments
+        self._notify()
+
+    def stats(self) -> dict | None:
+        """Download summary: clips, MB, wall-clock seconds from the first download's start to the
+        last one's end, Mbps over that wall clock, and how many ran at once."""
+        with self._lock:
+            done = list(self._done.values())
+        if not done:
+            return None
+        seconds = max(d["end"] for d in done) - min(d["start"] for d in done)
+        total = sum(d["bytes"] for d in done)
+        mbps = total * 8 / 1e6 / seconds if seconds > 0 else 0.0
+        return {"clips": len(done), "megabytes": round(total / 1024 / 1024, 1), "seconds": round(seconds, 1),
+                "mbps": round(mbps, 1), "atOnce": self.workers}
 
     def fetch(self, names) -> None:
         for name in names or []:
@@ -382,9 +446,9 @@ def download_outputs(job: Job, volume, result: dict, clips_dir: pathlib.Path | N
     return saved
 
 
-def commit_extras(job: Job) -> None:
-    """transcript.json.new / moments.json.new -> their real names."""
-    for extra in ("transcript.json", "moments.json"):
+def commit_extras(job: Job, only: tuple[str, ...] = ("transcript.json", "moments.json")) -> None:
+    """transcript.json.new / moments.json.new -> their real names (`only` those named)."""
+    for extra in only:
         staged = job.dir / f"{extra}.new"
         if staged.exists():
             replace_file(staged, job.dir / extra)

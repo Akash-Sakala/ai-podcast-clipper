@@ -22,6 +22,8 @@ import { Popover } from "../popover";
 import { RelativeTime } from "../relative-time";
 import { ReplayWave } from "../replay-wave";
 import { ActionButton } from "./action-button";
+import { useComparisonSelection } from "./compare-selection";
+import { CompareView, RerankProgressView } from "./compare-view";
 import { DetailsPanel } from "./details-panel";
 import { Notice } from "./notice";
 import { ProgressStrip } from "./progress-strip";
@@ -64,10 +66,26 @@ export function VideoPage({
       clipNames.map((clip) => details.get(clip)).filter((d) => d !== undefined),
     [clipNames, details],
   );
+  // Clips of a running first run appear as soon as they are saved. A re-rank of a job with
+  // clips shows its new clips as they are saved above the current ones; once it is done,
+  // both sets wait side by side until the owner keeps a choice (job.comparison).
+  const liveClips = useStable(job.liveClips);
+  const live =
+    active &&
+    job.mode !== "rerank" &&
+    job.liveClipsSet !== "new" &&
+    !!liveClips?.length;
+  const rerankLive = active && job.mode === "rerank" && job.clips.length > 0;
+  const comparison = useStable(job.comparison);
+  const selection = useComparisonSelection(comparison);
+  const comparing = !!comparison && !active;
+  const liveTotal = live ? (job.progress?.total ?? 0) : 0;
+  const clipVersion = (clip: string) =>
+    job.clipVersions?.[clip] ?? job.clipsVersion ?? job.createdAt;
   const fallbacks = fallbackCount(job);
   const done = job.status === "done";
 
-  const rerankButton = !!job.canRerank && !active && (
+  const rerankButton = !!job.canRerank && !active && !comparing && (
     <ActionButton
       icon={<ListRestart className="size-4" />}
       onClick={() => rerank(job)}
@@ -76,7 +94,7 @@ export function VideoPage({
       Re-rank
     </ActionButton>
   );
-  const downloadAll = job.clips.length > 1 && !active && (
+  const downloadAll = job.clips.length > 1 && !active && !comparing && (
     <ActionButton
       icon={<Download className="size-4" />}
       href={`/api/media/${job.id}/all`}
@@ -85,7 +103,8 @@ export function VideoPage({
     </ActionButton>
   );
   // Re-rank sits in the header only when no notice already offers it.
-  const headerRerank = done && fallbacks === 0 && job.clips.length > 0;
+  const headerRerank =
+    done && fallbacks === 0 && job.clips.length > 0 && !comparing;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
@@ -142,7 +161,14 @@ export function VideoPage({
           </div>
         )}
 
-        {job.status === "failed" && (
+        {comparing && job.error && (
+          <Notice tone="error">
+            Couldn&apos;t keep the chosen clips, so nothing was changed. If a
+            clip is open in a player, close it and try again.
+          </Notice>
+        )}
+
+        {job.status === "failed" && !comparing && (
           <Notice
             tone="error"
             action={
@@ -166,14 +192,14 @@ export function VideoPage({
           </Notice>
         )}
 
-        {done && job.clips.length === 0 && (
+        {done && !comparing && job.clips.length === 0 && (
           <Notice action={rerankButton}>
             No clips came out of this video. Re-rank to ask Gemini again without
             transcribing a second time.
           </Notice>
         )}
 
-        {done && fallbacks > 0 && (
+        {done && !comparing && fallbacks > 0 && (
           <Notice action={rerankButton}>
             {fallbacks === job.clips.length
               ? "Gemini was busy, so these clips were picked without it."
@@ -186,7 +212,34 @@ export function VideoPage({
           <ReplayWave replay={replay} clips={waveClips} dimmed={active} />
         )}
 
-        {job.clips.length > 0 ? (
+        {comparing ? (
+          <CompareView job={job} selection={selection} onStarted={refresh} />
+        ) : rerankLive ? (
+          <RerankProgressView job={job} />
+        ) : live ? (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-5">
+            {liveClips?.map((detail) => (
+              <ClipCard
+                key={`${detail.name}-${clipVersion(detail.name)}`}
+                jobId={job.id}
+                clip={detail.name}
+                version={clipVersion(detail.name)}
+                detail={detail}
+                replayWeight={job.ranking?.replay?.weight}
+              />
+            ))}
+            {Array.from(
+              { length: Math.max(0, liveTotal - (liveClips?.length ?? 0)) },
+              (_, i) => (
+                <div
+                  key={`pending-${i}`}
+                  aria-hidden
+                  className="bg-muted aspect-[9/16] rounded-lg"
+                />
+              ),
+            )}
+          </div>
+        ) : job.clips.length > 0 ? (
           <div
             className={cn(
               "grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-5",
@@ -195,10 +248,10 @@ export function VideoPage({
           >
             {job.clips.map((clip) => (
               <ClipCard
-                key={`${clip}-${job.clipsVersion ?? ""}`}
+                key={`${clip}-${clipVersion(clip)}`}
                 jobId={job.id}
                 clip={clip}
-                version={job.clipsVersion ?? job.createdAt}
+                version={clipVersion(clip)}
                 detail={details.get(clip)}
                 replayWeight={job.ranking?.replay?.weight}
               />

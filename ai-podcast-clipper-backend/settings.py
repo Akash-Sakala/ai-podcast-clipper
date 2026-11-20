@@ -93,8 +93,27 @@ def get_float(name: str, default: float) -> float:
 #   MOST_REPLAYED  on/off - use the graph's replay hotspots and the audience score
 #   SPONSORBLOCK   on/off - keep sponsor reads, intros, outros and previews out of clips
 #   REPLAY_WEIGHT  share of the final score from the audience, 0-1 (0.4 = 60% Gemini, 40% viewers)
+# Rendered clips downloaded from Modal at the same time (1-16). 2 was the old value.
+CLIP_DOWNLOADS_AT_ONCE = min(max(get_int("CLIP_DOWNLOADS_AT_ONCE", 8), 1), 16)
+
 # YouTube downloads on this laptop use IPv4 (off: let the system choose). Read by runner.py.
 YOUTUBE_IPV4 = get_switch("YOUTUBE_IPV4", True)
+
+# Videos kept on this laptop after a successful run, so a re-rank needs no new download
+# (videostore.py). Read by runner.py when it needs them (functions: tests change them).
+#   VIDEO_KEEP_DAYS     days a video is kept after its last use (0 = keep none, delete after each run)
+#   VIDEO_CACHE_MAX_GB  total size of the kept videos; least recently used go first (0 = no cap)
+#   VIDEO_CACHE_DIR     where (empty = %LOCALAPPDATA%\ai-podcast-clipper\videos, outside OneDrive)
+def video_keep_days() -> float:
+    return max(get_float("VIDEO_KEEP_DAYS", 7.0), 0.0)
+
+
+def video_cache_max_gb() -> float:
+    return max(get_float("VIDEO_CACHE_MAX_GB", 10.0), 0.0)
+
+
+def video_cache_dir() -> str:
+    return (os.environ.get("VIDEO_CACHE_DIR") or "").strip()
 
 MOST_REPLAYED = get_switch("MOST_REPLAYED", True)
 SPONSORBLOCK = get_switch("SPONSORBLOCK", True)
@@ -140,7 +159,7 @@ RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX", "DETECT_BATCH",
                 "MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
                 "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS",
-                "CLIPPER_APP", "CLIPPER_SECRET")
+                "SCORE_PROFILE", "CLIPPER_APP", "CLIPPER_SECRET")
 # Keys where an empty value means something ("use the model's default"); it is sent as
 # "default" because an unset key would mean the built-in default instead.
 EMPTY_MEANS_DEFAULT = ("GEMINI_THINKING_LEVEL",)
