@@ -81,7 +81,7 @@ export function RunBar({
         id={tipId}
         role="tooltip"
         className={cn(
-          "bg-popover text-popover-foreground pointer-events-none absolute bottom-full left-0 z-10 mb-1 rounded-md border px-3 py-2 text-xs shadow-md group-hover:block group-has-focus-visible:block",
+          "bg-popover text-popover-foreground pop-in pointer-events-none absolute bottom-full left-0 z-10 mb-1 origin-bottom-left rounded-md border px-3 py-2 text-xs shadow-md group-hover:block group-has-focus-visible:block",
           open ? "block" : "hidden",
         )}
       >

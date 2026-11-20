@@ -125,7 +125,7 @@ export function SettingsPage({
               aria-label="Fewer clips"
               disabled={settings.maxClips <= MAX_CLIPS_RANGE[0]}
               onClick={() => update({ maxClips: settings.maxClips - 1 })}
-              className="text-muted-foreground hover:text-foreground inline-flex size-8 items-center justify-center disabled:opacity-40"
+              className="text-muted-foreground hover:text-foreground press inline-flex size-8 items-center justify-center disabled:opacity-40 pointer-coarse:size-11"
             >
               <Minus className="size-4" aria-hidden />
             </button>
@@ -140,7 +140,7 @@ export function SettingsPage({
               aria-label="More clips"
               disabled={settings.maxClips >= MAX_CLIPS_RANGE[1]}
               onClick={() => update({ maxClips: settings.maxClips + 1 })}
-              className="text-muted-foreground hover:text-foreground inline-flex size-8 items-center justify-center disabled:opacity-40"
+              className="text-muted-foreground hover:text-foreground press inline-flex size-8 items-center justify-center disabled:opacity-40 pointer-coarse:size-11"
             >
               <Plus className="size-4" aria-hidden />
             </button>
@@ -223,7 +223,7 @@ export function SettingsPage({
           onClick={() =>
             update({ ...DEFAULT_SETTINGS, currency: settings.currency })
           }
-          className="hover:text-foreground underline underline-offset-4"
+          className="hover:text-foreground underline underline-offset-4 pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center"
         >
           Reset clip settings
         </button>
@@ -299,8 +299,10 @@ function Toggle({
       aria-label={label}
       onClick={() => onChange(!checked)}
       className={cn(
-        "relative inline-flex h-6 w-10 shrink-0 items-center rounded-full transition-colors",
-        checked ? "bg-tally" : "bg-switch-off",
+        "relative inline-flex h-6 w-10 shrink-0 items-center rounded-full transition-colors pointer-coarse:before:absolute pointer-coarse:before:-inset-2.5 pointer-coarse:before:content-['']",
+        // On: the amber is only 2:1 against a white card, so a darker amber edge (the
+        // ring colour, 3.8:1) outlines it; in dark mode the two are the same amber.
+        checked ? "bg-tally ring-ring ring-1 ring-inset" : "bg-switch-off",
       )}
     >
       <span
@@ -373,7 +375,7 @@ function KeptVideosRow({ initial }: { initial: KeptVideos }) {
         type="button"
         onClick={() => void remove()}
         disabled={busy || kept.count === 0}
-        className="text-foreground/80 hover:text-foreground hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50"
+        className="text-foreground/80 hover:text-foreground hover:bg-muted press inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium whitespace-nowrap disabled:pointer-events-none disabled:opacity-50 pointer-coarse:h-11"
       >
         {busy ? (
           <Loader2 className="size-4 animate-spin" aria-hidden />

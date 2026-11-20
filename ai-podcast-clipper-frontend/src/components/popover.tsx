@@ -1,14 +1,19 @@
 "use client";
 
+import { AnimatePresence, m } from "motion/react";
 import { useEffect, useId, useRef, useState } from "react";
+import { popIn } from "~/lib/motion";
 import { cn } from "~/lib/utils";
+import { iconButtonClass } from "./ui/icon-button";
+import { Tooltip } from "./ui/tooltip";
 
 /**
  * Minimal accessible popover: a trigger button and a panel that closes on
  * outside click, Escape (focus returns to the trigger), when focus moves out of it
  * and, for menus, on select. A menu also follows the ARIA menu keyboard pattern:
  * focus moves to the checked item on open, arrow keys / Home / End move between
- * items, Tab closes it.
+ * items, Tab closes it. The panel grows from the trigger's corner and fades out on
+ * close; the trigger has a tooltip with its label while the panel is closed.
  */
 export function Popover({
   label,
@@ -97,39 +102,44 @@ export function Popover({
         if (open && to && !root.current?.contains(to)) setOpen(false);
       }}
     >
-      <button
-        ref={button}
-        type="button"
-        aria-label={label}
-        title={label}
-        aria-haspopup={role}
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        onClick={() => setOpen((value) => !value)}
-        className={cn(
-          "text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-9 items-center justify-center rounded-md transition-colors",
-          open && "bg-accent text-foreground",
-          triggerClassName,
-        )}
-      >
-        {trigger}
-      </button>
-      {open && (
-        <div
-          ref={panel}
-          id={id}
-          role={role}
-          onKeyDown={onMenuKeyDown}
+      <Tooltip label={label} disabled={open}>
+        <button
+          ref={button}
+          type="button"
           aria-label={label}
-          className={cn(
-            "bg-popover text-popover-foreground absolute top-full z-30 mt-2 rounded-lg border p-1.5 shadow-lg shadow-black/10 dark:shadow-black/40",
-            align === "end" ? "right-0" : "left-0",
-            className,
-          )}
+          aria-haspopup={role}
+          aria-expanded={open}
+          aria-controls={open ? id : undefined}
+          onClick={() => setOpen((value) => !value)}
+          className={cn(iconButtonClass("md", open), triggerClassName)}
         >
-          {children(close)}
-        </div>
-      )}
+          {trigger}
+        </button>
+      </Tooltip>
+      <AnimatePresence>
+        {open && (
+          <m.div
+            ref={panel}
+            id={id}
+            role={role}
+            onKeyDown={onMenuKeyDown}
+            aria-label={label}
+            variants={popIn}
+            initial="hidden"
+            animate="shown"
+            exit="exit"
+            className={cn(
+              "bg-popover text-popover-foreground absolute top-full z-30 mt-2 rounded-lg border p-1.5 shadow-lg shadow-black/10 dark:shadow-black/40",
+              align === "end"
+                ? "right-0 origin-top-right"
+                : "left-0 origin-top-left",
+              className,
+            )}
+          >
+            {children(close)}
+          </m.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

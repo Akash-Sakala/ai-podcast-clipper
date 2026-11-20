@@ -96,10 +96,11 @@ export function VideoPage({
   );
   const downloadAll = job.clips.length > 1 && !active && !comparing && (
     <ActionButton
-      icon={<Download className="size-4" />}
+      icon={<Download className="size-4" aria-hidden />}
       href={`/api/media/${job.id}/all`}
+      compact
     >
-      <span className="sr-only sm:not-sr-only">Download all</span>
+      Download all
     </ActionButton>
   );
   // Re-rank sits in the header only when no notice already offers it.
@@ -110,9 +111,9 @@ export function VideoPage({
     <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <Link
         href="/"
-        className="text-muted-foreground hover:text-foreground -ml-1.5 inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors"
+        className="text-muted-foreground hover:text-foreground press -ml-1.5 inline-flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium pointer-coarse:h-11"
       >
-        <ArrowLeft className="size-4" />
+        <ArrowLeft className="size-4" aria-hidden />
         All videos
       </Link>
 
@@ -133,20 +134,21 @@ export function VideoPage({
             <RelativeTime iso={job.createdAt} />
           </p>
         </div>
-        <div className="-mr-1.5 flex shrink-0 items-center gap-0.5 sm:mr-0">
+        <div className="-mr-1.5 flex shrink-0 items-center gap-0.5 sm:mr-0 pointer-coarse:gap-1">
           {downloadAll}
           {headerRerank && !!job.canRerank && (
             <ActionButton
-              icon={<ListRestart className="size-4" />}
+              icon={<ListRestart className="size-4" aria-hidden />}
               onClick={() => rerank(job)}
               busy={isBusy}
+              compact
             >
-              <span className="sr-only sm:not-sr-only">Re-rank</span>
+              Re-rank
             </ActionButton>
           )}
           <Popover
             label="Details"
-            trigger={<Info className="size-4" />}
+            trigger={<Info className="size-4" aria-hidden />}
             align="end"
           >
             {() => <DetailsPanel job={job} currency={currency} rate={rate} />}

@@ -1,13 +1,10 @@
 import NavHeader from "./nav-header";
 import { cn } from "~/lib/utils";
 
-/** Grey placeholder block; pulses gently (and not at all with reduced motion). */
+/** Grey placeholder block; a soft light passes over it (plain grey with reduced motion). */
 function Bone({ className }: { className?: string }) {
   return (
-    <div
-      aria-hidden
-      className={cn("bg-muted tally-pulse rounded-md", className)}
-    />
+    <div aria-hidden className={cn("bg-muted shimmer rounded-md", className)} />
   );
 }
 

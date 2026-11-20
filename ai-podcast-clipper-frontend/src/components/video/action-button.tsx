@@ -1,5 +1,9 @@
 import { Loader2 } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { Tooltip } from "../ui/tooltip";
+
+/** Matches Tailwind's `sm` breakpoint: below it a compact button shows its icon only. */
+const PHONE = "(max-width: 639.98px)";
 
 export function ActionButton({
   icon,
@@ -8,16 +12,20 @@ export function ActionButton({
   href,
   busy,
   primary,
+  compact,
 }: {
   icon: React.ReactNode;
-  children: React.ReactNode;
+  children: string;
   onClick?: () => void;
   href?: string;
   busy?: boolean;
   primary?: boolean;
+  /** Icon only on a phone (the words stay for screen readers and in a tooltip). */
+  compact?: boolean;
 }) {
   const className = cn(
-    "inline-flex h-8 items-center gap-1.5 rounded-md whitespace-nowrap px-2.5 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-60",
+    "press inline-flex h-8 items-center justify-center gap-1.5 rounded-md whitespace-nowrap px-2.5 text-sm font-medium disabled:pointer-events-none disabled:opacity-60 pointer-coarse:h-11",
+    compact && "pointer-coarse:min-w-11",
     primary
       ? "bg-foreground text-background hover:bg-foreground/85"
       : "text-muted-foreground hover:text-foreground hover:bg-accent",
@@ -25,17 +33,18 @@ export function ActionButton({
   const content = (
     <>
       {busy ? <Loader2 className="size-4 animate-spin" /> : icon}
-      {children}
+      {compact ? (
+        <span className="sr-only sm:not-sr-only">{children}</span>
+      ) : (
+        children
+      )}
     </>
   );
-  if (href) {
-    return (
-      <a href={href} className={className}>
-        {content}
-      </a>
-    );
-  }
-  return (
+  const control = href ? (
+    <a href={href} className={className}>
+      {content}
+    </a>
+  ) : (
     <button
       type="button"
       onClick={onClick}
@@ -44,5 +53,12 @@ export function ActionButton({
     >
       {content}
     </button>
+  );
+  return compact ? (
+    <Tooltip label={children} media={PHONE}>
+      {control}
+    </Tooltip>
+  ) : (
+    control
   );
 }

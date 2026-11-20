@@ -13,6 +13,7 @@ Everything beyond setup and everyday use. Backend commands run from `ai-podcast-
 - [Re-rank](#re-rank)
 - [Preview ranking locally](#preview-ranking-locally)
 - [Stats page](#stats-page)
+- [Interface: motion and touch](#interface-motion-and-touch)
 - [Choose a GPU](#choose-a-gpu)
 - [Test deployment](#test-deployment)
 - [Logs](#logs)
@@ -224,6 +225,15 @@ The chart icon in the header opens `/stats`, for this month or all time: Modal's
 - **Run ledger.** When a run ends (first run, re-rank or failure), the runner appends one line to `data/stats/runs.jsonl` (`run_history.py`): the job's id, title and source, the mode, result, start and end time, step timings, cost and Parakeet's speed. The stats page reads only this file, so **deleting a video keeps its runs in the stats**; such videos are listed as "Deleted video", without a link. The same run also goes into the job's own `job.json` `runs`.
 - **Starting the stats over:** delete `data/stats/runs.jsonl` (or the whole `data/stats` folder). Deleting job folders alone does not reset the stats.
 - **Failed runs** show where they stopped. One that ended before reporting a cost shows "—" and counts as $0. Averages count only runs that made clips, and say how many runs they are based on ("early estimate" below 3).
+
+## Interface: motion and touch
+
+- **Motion tokens** live in `src/styles/globals.css` in three layers: primitives (`--duration-100/130/200/320`, `--curve-*`), what they are for (`--motion-press`, `--motion-enter`, `--motion-exit` at about 65% of an enter, `--motion-emphasis`, `--motion-ease-*`) and one component value (`--tooltip-delay`, 400 ms). Tailwind classes: `press` (colour ease plus a 3% shrink while pressed), `ease-enter` / `ease-exit` / `ease-move`, `duration-(--motion-enter)`, and `pop-in`, `icon-swap`, `shimmer` for small one-off animations.
+- **The motion library** (`motion`, pinned) is loaded once by `components/motion-provider.tsx` (`LazyMotion` with DOM features only; components use `m.*`). `src/lib/motion.ts` mirrors the tokens in seconds; change both together. It is used where CSS can't do the job: popovers fade out after they close.
+- **Reduced motion:** the CSS animations stop, transitions become instant, and the motion library drops movement but keeps fades (`reducedMotion="user"`).
+- **Touch:** with a touch screen (`pointer: coarse`) icon buttons, header links, clip actions, the settings stepper and text buttons grow to 44 px and switches get a 44 px hit area; with a mouse the layout stays as compact as before. The clip score badge grows to 34 px (it sits on the video). Below 360 px wide the header shows the logo without the wordmark.
+- **Tooltips** (`components/ui/tooltip.tsx`) name icon-only controls: after 400 ms under a mouse, at once on keyboard focus, and on a 0.5 s long press on a touch screen (that press doesn't click). `components/ui/icon-button.tsx` builds an icon button or link with a required label and its tooltip.
+- **Stats bars** name their stage inside a segment when it is wide enough, show only the value when narrower, and nothing when too small (size container queries, no guessing by share).
 
 ## Choose a GPU
 

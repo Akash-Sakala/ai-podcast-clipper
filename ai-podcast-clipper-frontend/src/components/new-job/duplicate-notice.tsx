@@ -70,7 +70,7 @@ export function DuplicateNotice({
         ? `You already clipped this video: ${duplicate.clips} ${duplicate.clips === 1 ? "clip is" : "clips are"} ready.`
         : "You already processed this video, but it produced no clips.";
   const secondary =
-    "text-foreground/80 hover:text-foreground hover:bg-background/60 inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium whitespace-nowrap transition-colors disabled:opacity-60";
+    "text-foreground/80 hover:text-foreground hover:bg-background/60 press inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium whitespace-nowrap disabled:opacity-60 pointer-coarse:h-11";
 
   return (
     <div
@@ -96,7 +96,7 @@ export function DuplicateNotice({
       <div className="flex shrink-0 flex-wrap items-center gap-1">
         <Link
           href={href}
-          className="bg-tally text-tally-ink hover:bg-tally/90 inline-flex h-8 items-center rounded-md px-3 text-sm font-semibold whitespace-nowrap transition-colors"
+          className="bg-tally text-tally-ink hover:bg-tally/90 press inline-flex h-8 items-center rounded-md px-3 text-sm font-semibold whitespace-nowrap pointer-coarse:h-11"
         >
           {active
             ? "Show progress"
