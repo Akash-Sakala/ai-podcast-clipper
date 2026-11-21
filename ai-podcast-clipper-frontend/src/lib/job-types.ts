@@ -1,4 +1,5 @@
 // Shared between server code and client components (no Node.js imports here).
+import { failureSentence } from "./format";
 
 export type JobStatus =
   | "queued"
@@ -322,6 +323,12 @@ export type JobSummary = StageJob & {
   durationSeconds: number | null;
   /** A re-rank's new clips wait for the owner to choose which clips to keep. */
   choosing?: boolean;
+  /** Score of the best clip (0-100), and whether Gemini scored it (not a fallback pick). */
+  bestScore?: number | null;
+  bestFromGemini?: boolean;
+  /** Where a failed run stopped, and why, in words (failureSentence). */
+  failedStage?: string | null;
+  failure?: string | null;
 };
 
 export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
@@ -339,5 +346,22 @@ export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
     durationSeconds:
       job.meta?.duration ?? job.engine?.parakeet?.audioSeconds ?? null,
     choosing: !!job.comparison,
+    ...bestClip(job),
+    failedStage: job.status === "failed" ? (job.failedStage ?? null) : null,
+    failure: job.status === "failed" ? failureSentence(job) : null,
+  };
+}
+
+/** The top-scored clip of the live set, for the row's score chip. */
+function bestClip(job: Job) {
+  let best: ClipDetail | null = null;
+  for (const detail of job.clipDetails ?? []) {
+    if (detail.score == null) continue;
+    if (!best || detail.score > (best.score ?? -1)) best = detail;
+  }
+  if (!best || !job.clips.length) return { bestScore: null };
+  return {
+    bestScore: Math.round(best.score ?? 0),
+    bestFromGemini: (best.source ?? "gemini") === "gemini",
   };
 }

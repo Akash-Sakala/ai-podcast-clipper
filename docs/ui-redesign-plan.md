@@ -45,8 +45,8 @@ Ranking = your focus areas first, then impact on daily use, then effort. Items 1
 | 2 | Touch, labels and accessibility pass (done, `feat/ui-foundation`) | W1, W2, W9 (part) | S-M | ui-ux-pro-max, ui-styling |
 | 3 | Live run experience (done, `feat/ui-live-run`) | W5, W6 | M | ui-ux-pro-max, frontend-design, ui-styling |
 | 4 | "Something is running" logo signal and tab title (done, `feat/ui-live-run`) | W5 | S | frontend-design, ui-ux-pro-max |
-| 5 | Input bar and drop zone | W7 | M | frontend-design, ui-ux-pro-max, ui-styling |
-| 6 | Video list at a glance | W8 | M | ui-ux-pro-max, ui-styling |
+| 5 | Input bar and drop zone (done, `feat/ui-home`) | W7 | M | frontend-design, ui-ux-pro-max, ui-styling |
+| 6 | Video list at a glance (done, `feat/ui-home`) | W8 | M | ui-ux-pro-max, ui-styling |
 | 7 | Stats page polish | W9 | M | ui-ux-pro-max (chart), dataviz, ui-styling |
 | 8 | Settings feedback | W10 | S | ui-ux-pro-max, ui-styling |
 | 9 | Full-screen clip viewer | W3 | L | frontend-design, ui-ux-pro-max, ui-styling |
@@ -249,7 +249,7 @@ Verify the logo looks right at 16 px favicon size is unchanged (only the header 
 
 ---
 
-### 5. Input bar and drop zone
+### 5. Input bar and drop zone (done)
 
 **Why:** W7, your second focus. The first thing you touch every day.
 
@@ -295,7 +295,7 @@ Screenshots of each state in light, dark, phone.
 
 ---
 
-### 6. Video list at a glance
+### 6. Video list at a glance (done)
 
 **Why:** W8. The list is where you decide what to open; today every row looks the same.
 

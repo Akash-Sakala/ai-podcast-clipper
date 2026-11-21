@@ -86,9 +86,9 @@ export function DashboardClient({
         {jobs.length === 0 ? (
           <div className="text-muted-foreground rounded-xl border border-dashed px-6 py-10 text-sm leading-relaxed">
             <p className="text-foreground mb-1 font-medium">No videos yet</p>
-            Paste a YouTube link or drop an MP4 above. Each video is
-            transcribed, its strongest moments are ranked, and every pick comes
-            back as a vertical clip with subtitles.
+            Paste a YouTube link in the box above, or drop an MP4 anywhere on
+            this page. Each video is transcribed, its strongest moments are
+            ranked, and every pick comes back as a vertical clip with subtitles.
           </div>
         ) : (
           <VideoList jobs={jobs} busy={busy} onRetry={retry} />

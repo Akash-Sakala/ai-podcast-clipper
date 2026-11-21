@@ -9,7 +9,7 @@ import {
   timecode,
   transferShare,
 } from "~/lib/format";
-import type { Job } from "~/lib/job-types";
+import type { Job, StageJob } from "~/lib/job-types";
 import { useNow } from "~/lib/use-now";
 import { cn } from "~/lib/utils";
 
@@ -27,7 +27,7 @@ export function StepRail({
   share = null,
   failedAt = -1,
 }: {
-  job: Job;
+  job: StageJob;
   /** Index of the running step (-1: none). */
   current: number;
   /** Share of the running step done (0-1), when known. */
@@ -102,6 +102,45 @@ export function StepRail({
         );
       })}
     </ol>
+  );
+}
+
+/**
+ * The same steps as the rail, without names, for a row in the video list: one short
+ * bar per step (done, filling, to do). Decorative; the row's sentence says the stage.
+ */
+export function MiniRail({ job }: { job: StageJob }) {
+  const steps = stepsFor(job);
+  const current = steps.findIndex((s) => s.stage === currentStage(job));
+  const share = transferShare(job) ?? renderShare(job);
+  return (
+    <div aria-hidden className="flex w-full gap-0.5 sm:w-40">
+      {steps.map((step, i) => {
+        const fill =
+          i < current
+            ? 1
+            : i === current
+              ? share != null
+                ? Math.max(0.15, share)
+                : null
+              : 0;
+        return (
+          <div
+            key={step.stage}
+            className="bg-muted relative h-1.5 flex-1 overflow-hidden rounded-full"
+          >
+            {fill == null ? (
+              <span className="bg-tally tally-pulse absolute inset-0" />
+            ) : (
+              <span
+                className="bg-tally ease-move absolute inset-0 origin-left transition-transform duration-(--motion-emphasis)"
+                style={{ transform: `scaleX(${fill})` }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
