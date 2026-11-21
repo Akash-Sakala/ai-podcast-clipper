@@ -9,10 +9,20 @@ import {
   Upload,
   Youtube,
 } from "lucide-react";
+import { AnimatePresence, m } from "motion/react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { failureSentence, fallbackCount, displayTitle } from "~/lib/format";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import {
+  currentStage,
+  displayTitle,
+  failedStepIndex,
+  failureSentence,
+  fallbackCount,
+} from "~/lib/format";
 import { isActive, type Job } from "~/lib/job-types";
+import { duration, ease } from "~/lib/motion";
+import { useRunReport } from "~/lib/run-signal";
 import type { Currency } from "~/lib/settings-types";
 import { usePolling } from "~/lib/use-polling";
 import { useStable } from "~/lib/use-stable";
@@ -25,11 +35,15 @@ import { ActionButton } from "./action-button";
 import { useComparisonSelection } from "./compare-selection";
 import { CompareView, RerankProgressView } from "./compare-view";
 import { DetailsPanel } from "./details-panel";
+import { LiveClips } from "./live-clips";
 import { Notice } from "./notice";
-import { ProgressStrip } from "./progress-strip";
+import { FailedRail, ProgressStrip } from "./progress-strip";
+import { readyText, RunFinished } from "./run-finished";
 import { useJobActions } from "./use-job-actions";
 
 const POLL_INTERVAL_MS = 3000;
+/** In a background tab, slowly, so the tab title and notification hear about the end. */
+const HIDDEN_POLL_INTERVAL_MS = 15_000;
 
 export function VideoPage({
   initialJob,
@@ -43,12 +57,52 @@ export function VideoPage({
   const [job, setJob] = useState(initialJob);
   const active = isActive(job);
 
-  // Polls every 3 s while the job runs. A 304, or a hidden tab, changes nothing.
+  // Polls every 3 s while the job runs (every 15 s in a background tab). A 304 changes nothing.
   const refresh = usePolling<Job>({
     url: `/api/jobs/${job.id}`,
     intervalMs: active ? POLL_INTERVAL_MS : null,
+    hiddenIntervalMs: active ? HIDDEN_POLL_INTERVAL_MS : null,
     onData: setJob,
   });
+
+  // The header logo, the tab title and the "done" notification follow this job.
+  const report = useMemo(
+    () => [
+      {
+        id: job.id,
+        title: job.title,
+        status: job.status,
+        progress: job.progress,
+        videoTransfer: job.videoTransfer,
+        source: job.source,
+        mode: job.mode,
+        clipCount: job.clips.length,
+      },
+    ],
+    [job],
+  );
+  useRunReport(report);
+
+  // A first run that ends while the page is open: the strip turns into "5 clips ready
+  // in 6 min 12 s", with a toast that says the same.
+  const [finishedRun, setFinishedRun] = useState<{
+    clips: number;
+    seconds: number | null;
+  } | null>(null);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const before = wasActive.current;
+    wasActive.current = active;
+    if (!before || active) return;
+    if (job.status !== "done" || job.mode === "rerank" || !job.clips.length)
+      return;
+    const total = job.timings?.total;
+    setFinishedRun({
+      clips: job.clips.length,
+      seconds: typeof total === "number" ? total : null,
+    });
+    toast.success(readyText(job.clips.length), { id: `finished-${job.id}` });
+  }, [active, job]);
 
   const { busy, rerank, retry } = useJobActions(refresh);
   const isBusy = busy === job.id;
@@ -70,11 +124,12 @@ export function VideoPage({
   // clips shows its new clips as they are saved above the current ones; once it is done,
   // both sets wait side by side until the owner keeps a choice (job.comparison).
   const liveClips = useStable(job.liveClips);
+  const plannedClips = useStable(job.plannedClips);
   const live =
     active &&
     job.mode !== "rerank" &&
     job.liveClipsSet !== "new" &&
-    !!liveClips?.length;
+    (!!liveClips?.length || !!plannedClips?.length);
   const rerankLive = active && job.mode === "rerank" && job.clips.length > 0;
   const comparison = useStable(job.comparison);
   const selection = useComparisonSelection(comparison);
@@ -157,17 +212,38 @@ export function VideoPage({
       </header>
 
       <div className="space-y-6">
-        {active && (
-          <div className="bg-card rounded-xl border p-4 sm:p-5">
-            <ProgressStrip job={job} />
-          </div>
-        )}
+        <AnimatePresence initial={false} mode="wait">
+          {active ? (
+            <m.div
+              key="running"
+              exit={{
+                opacity: 0,
+                transition: { duration: duration.exit, ease: ease.exit },
+              }}
+              className="bg-card rounded-xl border p-4 sm:p-5"
+            >
+              <ProgressStrip job={job} />
+            </m.div>
+          ) : finishedRun ? (
+            <RunFinished
+              key="finished"
+              clips={finishedRun.clips}
+              seconds={finishedRun.seconds}
+            />
+          ) : null}
+        </AnimatePresence>
 
         {comparing && job.error && (
           <Notice tone="error">
             Couldn&apos;t keep the chosen clips, so nothing was changed. If a
             clip is open in a player, close it and try again.
           </Notice>
+        )}
+
+        {job.status === "failed" && !comparing && failedStepIndex(job) >= 0 && (
+          <div className="bg-card rounded-xl border p-4 sm:p-5">
+            <FailedRail job={job} />
+          </div>
         )}
 
         {job.status === "failed" && !comparing && (
@@ -219,28 +295,15 @@ export function VideoPage({
         ) : rerankLive ? (
           <RerankProgressView job={job} />
         ) : live ? (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-5">
-            {liveClips?.map((detail) => (
-              <ClipCard
-                key={`${detail.name}-${clipVersion(detail.name)}`}
-                jobId={job.id}
-                clip={detail.name}
-                version={clipVersion(detail.name)}
-                detail={detail}
-                replayWeight={job.ranking?.replay?.weight}
-              />
-            ))}
-            {Array.from(
-              { length: Math.max(0, liveTotal - (liveClips?.length ?? 0)) },
-              (_, i) => (
-                <div
-                  key={`pending-${i}`}
-                  aria-hidden
-                  className="bg-muted aspect-[9/16] rounded-lg"
-                />
-              ),
-            )}
-          </div>
+          <LiveClips
+            jobId={job.id}
+            saved={liveClips ?? []}
+            planned={plannedClips ?? null}
+            total={liveTotal}
+            stage={currentStage(job)}
+            versionOf={clipVersion}
+            replayWeight={job.ranking?.replay?.weight}
+          />
         ) : job.clips.length > 0 ? (
           <div
             className={cn(
@@ -267,7 +330,7 @@ export function VideoPage({
                   key={i}
                   aria-hidden
                   className={cn(
-                    "bg-muted aspect-[9/16] rounded-lg",
+                    "bg-muted shimmer aspect-[9/16] rounded-lg",
                     i > 1 && "hidden sm:block",
                     i > 2 && "sm:hidden lg:block",
                   )}

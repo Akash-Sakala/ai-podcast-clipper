@@ -136,7 +136,7 @@ export function stepsFor(job: StageJob): Step[] {
 }
 
 /** ", downloading the video meanwhile, 40%" while a two-phase run overlaps the two. */
-function meanwhile(job: StageJob) {
+function meanwhileText(job: StageJob) {
   const share = job.progress?.download;
   return typeof share === "number"
     ? `, downloading the video meanwhile, ${Math.round(share * 100)}%`
@@ -172,9 +172,17 @@ export function currentStage(job: StageJob): ProgressStage | "queued" {
   }
 }
 
-export function stageSentence(job: StageJob) {
+/**
+ * What the run is doing, in a sentence. `withDownload: false` leaves out the video
+ * download that runs alongside the cloud stage (the progress strip shows it on its own row).
+ */
+export function stageSentence(
+  job: StageJob,
+  { withDownload = true }: { withDownload?: boolean } = {},
+) {
   const stage = currentStage(job);
   const p = job.progress;
+  const meanwhile = withDownload ? meanwhileText : () => "";
   switch (stage) {
     case "queued":
       return "Starting";
@@ -218,6 +226,43 @@ export function stageSentence(job: StageJob) {
     case "saving":
       return "Saving clips";
   }
+}
+
+/** A few words for the browser tab: "Transcribing", "Sending audio, 45%", "Rendering, 2 of 5 ready". */
+export function shortStage(job: StageJob) {
+  const p = job.progress;
+  const share =
+    typeof p?.fraction === "number" ? `, ${Math.round(p.fraction * 100)}%` : "";
+  switch (currentStage(job)) {
+    case "queued":
+      return "Starting";
+    case "audio":
+      return `Sending audio${share}`;
+    case "downloading":
+      return `Downloading${share}`;
+    case "uploading":
+      return `Uploading${share}`;
+    case "transcribing":
+      return "Transcribing";
+    case "ranking":
+      return "Finding moments";
+    case "clips":
+      return `Sending clips${share}`;
+    case "rendering":
+      return p?.total && p.done
+        ? `Rendering, ${p.done} of ${p.total} ready`
+        : "Rendering";
+    case "saving":
+      return "Saving clips";
+  }
+}
+
+/**
+ * Index of the step a failed run stopped at, or -1 when it can't be placed (the runner
+ * writes "processing" or "starting" when it failed outside a known stage).
+ */
+export function failedStepIndex(job: Job) {
+  return stepsFor(job).findIndex((s) => s.stage === job.failedStage);
 }
 
 /** Plain-language reason for a failed job. */

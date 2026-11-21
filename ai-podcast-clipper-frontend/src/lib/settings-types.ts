@@ -14,6 +14,8 @@ export type AppSettings = {
   sponsorBlock: boolean;
   /** Share of a clip's score from the audience, 0-0.6. */
   replayWeight: number;
+  /** A browser notification when a run ends while the app's tab is in the background. */
+  notifyWhenDone: boolean;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mostReplayed: true,
   sponsorBlock: true,
   replayWeight: 0.4,
+  notifyWhenDone: false,
 };
 
 export const MAX_CLIPS_RANGE = [3, 8] as const;
@@ -56,5 +59,7 @@ export function sanitizeSettings(
       Math.round(
         Math.min(REPLAY_WEIGHT_MAX, Math.max(0, value.replayWeight)) * 100,
       ) / 100;
+  if (typeof value.notifyWhenDone === "boolean")
+    out.notifyWhenDone = value.notifyWhenDone;
   return out;
 }

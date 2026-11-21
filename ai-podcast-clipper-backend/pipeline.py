@@ -159,7 +159,9 @@ def clip_details(clips: list[str], clip_moments: list[dict]) -> list[dict]:
 def live_clip_saver(job: Job, volume, target_dir: pathlib.Path, clip_set: str | None = None) -> ClipSaver:
     """A ClipSaver that publishes the clips saved so far as job.json "liveClips", so the app
     shows each clip as soon as it is on this laptop. A re-rank saves into clips_new/ and
-    marks them liveClipsSet = "new" (the app then reads them from there)."""
+    marks them liveClipsSet = "new" (the app then reads them from there). As soon as the
+    moments are known, every clip still to come is published as "plannedClips" (rank, title,
+    start and end), so the app can show a titled slot for each one while it renders."""
     holder: list[ClipSaver] = []
 
     def publish(names: list[str]) -> None:
@@ -167,7 +169,11 @@ def live_clip_saver(job: Job, volume, target_dir: pathlib.Path, clip_set: str | 
         if moments:
             job.update(liveClips=clip_details(names, moments), liveClipsSet=clip_set)
 
-    saver = ClipSaver(job, volume, target_dir, on_saved=publish)
+    def plan(moments: list) -> None:
+        names = [f"clip_{i}.mp4" for i in range(len(moments))]
+        job.update(plannedClips=clip_details(names, moments))
+
+    saver = ClipSaver(job, volume, target_dir, on_saved=publish, on_described=plan)
     holder.append(saver)
     return saver
 
@@ -302,7 +308,7 @@ def stopped(job: Job, failed_stage: str, keep_clips: bool) -> None:
                message="Stopped - previous clips kept" if keep_clips else "Stopped",
                error="The runner was stopped before the job finished", progress=None,
                failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, liveClips=None,
-               liveClipsSet=None)
+               liveClipsSet=None, plannedClips=None)
 
 
 def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video: bool = False) -> int:
@@ -310,7 +316,7 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
 
     job = Job(job_dir)
     job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None, liveClips=None,
-               liveClipsSet=None, message="Re-rank & re-render: getting the video ready")
+               liveClipsSet=None, plannedClips=None, message="Re-rank & re-render: getting the video ready")
     discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {"rerank": True}
@@ -343,7 +349,8 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
             set_fields = {"clips": clips, "clipDetails": details, "clipErrors": errors}
         job.update(status="done", message=message, timings=timings, ranking=ranking,
                    reranks=int(job.data.get("reranks") or 0) + 1, rerankedAt=now_iso(), progress=None, cost=cost,
-                   runs=runs, pendingSave=None, liveClips=None, liveClipsSet=None, **set_fields, **extra)
+                   runs=runs, pendingSave=None, liveClips=None, liveClipsSet=None, plannedClips=None,
+                   **set_fields, **extra)
         log(f"{message}. Timings: {timings}")
         settle_video(job, keep_video)
         refresh_modal_bill(job.dir.parent.parent)   # for the stats page; best effort
@@ -357,7 +364,8 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
         job.update(status="done" if job.data.get("clips") else "failed",
                    message="Re-rank failed - previous clips kept" if job.data.get("clips") else "Failed",
                    error=f"{type(exc).__name__}: {exc}", progress=None, runs=runs, liveClips=None,
-                   liveClipsSet=None, failedStage=(job.data.get("progress") or {}).get("stage") or "processing")
+                   liveClipsSet=None, plannedClips=None,
+                   failedStage=(job.data.get("progress") or {}).get("stage") or "processing")
         discard_extras(job)
         shutil.rmtree(job.dir / NEW_DIR, ignore_errors=True)
         return 1
@@ -385,7 +393,7 @@ def finish_full_run(job: Job, result: dict, clips: list[str], timings: dict, job
                       timings=timings, cost=cost, clips=clips, details=details, ranking=ranking, extra=extra)
     job.update(status="done", message=message, clips=clips, clipErrors=errors, timings=timings,
                ranking=ranking, progress=None, clipDetails=details, cost=cost, runs=runs, pendingSave=None,
-               liveClips=None, liveClipsSet=None, **extra)
+               liveClips=None, liveClipsSet=None, plannedClips=None, **extra)
     log(f"{message}. Timings: {timings}")
     settle_video(job, keep_video)
     refresh_modal_bill(job.dir.parent.parent)   # for the stats page; best effort
@@ -402,7 +410,8 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, liveClips=None, liveClipsSet=None)
+    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, liveClips=None, liveClipsSet=None,
+               plannedClips=None)
     discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {}
@@ -457,7 +466,7 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
                           failed_stage=(job.data.get("progress") or {}).get("stage") or failed_stage)
         job.update(status="failed", message="Failed", error=f"{type(exc).__name__}: {exc}", timings=timings,
                    failedStage=(job.data.get("progress") or {}).get("stage") or failed_stage, progress=None,
-                   runs=runs, liveClips=None, liveClipsSet=None)
+                   runs=runs, liveClips=None, liveClipsSet=None, plannedClips=None)
         discard_extras(job)
         return 1
     except BaseException:   # a stop signal or Ctrl+C

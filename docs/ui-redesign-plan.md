@@ -43,8 +43,8 @@ Ranking = your focus areas first, then impact on daily use, then effort. Items 1
 |---|---|---|---|---|
 | 1 | Motion and interaction foundation (done, `feat/ui-foundation`) | W6, part of W1 | S | ui-ux-pro-max, design-system, ui-styling |
 | 2 | Touch, labels and accessibility pass (done, `feat/ui-foundation`) | W1, W2, W9 (part) | S-M | ui-ux-pro-max, ui-styling |
-| 3 | Live run experience | W5, W6 | M | ui-ux-pro-max, frontend-design, ui-styling |
-| 4 | "Something is running" logo signal and tab title | W5 | S | frontend-design, ui-ux-pro-max |
+| 3 | Live run experience (done, `feat/ui-live-run`) | W5, W6 | M | ui-ux-pro-max, frontend-design, ui-styling |
+| 4 | "Something is running" logo signal and tab title (done, `feat/ui-live-run`) | W5 | S | frontend-design, ui-ux-pro-max |
 | 5 | Input bar and drop zone | W7 | M | frontend-design, ui-ux-pro-max, ui-styling |
 | 6 | Video list at a glance | W8 | M | ui-ux-pro-max, ui-styling |
 | 7 | Stats page polish | W9 | M | ui-ux-pro-max (chart), dataviz, ui-styling |
@@ -169,7 +169,7 @@ Deliver a before/after table of target sizes and contrast ratios, plus screensho
 
 ---
 
-### 3. Live run experience
+### 3. Live run experience (done)
 
 **Why:** W5, W6, and your top focus. A run is 4-8 minutes; today it is a thin bar, a sentence and a timer. The run has a real story (audio up, transcribe, find moments, download in parallel, send clips, render N clips at once, save) that can be shown without noise.
 
@@ -217,7 +217,7 @@ states in light, dark and phone.
 
 ---
 
-### 4. "Something is running" signal: logo and tab title
+### 4. "Something is running" signal: logo and tab title (done)
 
 **Why:** W5. Runs are long and you leave the tab. A shared signal tells you from any page and from the tab strip.
 

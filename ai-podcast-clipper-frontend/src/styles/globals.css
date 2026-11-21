@@ -240,7 +240,44 @@
   animation: shimmer 1.6s var(--motion-ease-move) infinite;
 }
 
+/* The header logo while a video is processed: the wave's bars move like a level meter. */
+@keyframes logo-bar {
+  0%,
+  100% {
+    scale: 1 1;
+  }
+  50% {
+    scale: 1 0.45;
+  }
+}
+
+.logo-bar {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: logo-bar 1.1s var(--motion-ease-move) infinite;
+}
+
+/* A clip that was just saved during a run: its frame lights up amber once. */
+@keyframes clip-arrive {
+  from {
+    box-shadow:
+      0 0 0 2px var(--tally),
+      0 0 24px 2px color-mix(in oklab, var(--tally) 45%, transparent);
+  }
+  to {
+    box-shadow:
+      0 0 0 2px transparent,
+      0 0 24px 2px transparent;
+  }
+}
+
+.clip-arrive {
+  animation: clip-arrive 1.2s var(--motion-ease-exit) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .logo-bar,
+  .clip-arrive,
   .tally-pulse,
   .shimmer,
   .pop-in,

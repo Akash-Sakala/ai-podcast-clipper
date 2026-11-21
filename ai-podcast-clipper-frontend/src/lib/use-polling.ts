@@ -9,16 +9,21 @@ import { useCallback, useEffect, useRef } from "react";
  * - ignores a slow answer that arrives after a newer one;
  * - fetches right away when `url` changes.
  * The interval only runs while `intervalMs` is a number; the visibility refresh runs
- * either way. Returns `refresh`, which fetches now (also in a hidden tab).
+ * either way. `hiddenIntervalMs` (optional) keeps a slow poll going while the tab is
+ * hidden (browsers may stretch it to a minute). Returns `refresh`, which fetches now
+ * (also in a hidden tab).
  */
 export function usePolling<T>({
   url,
   intervalMs,
+  hiddenIntervalMs = null,
   onData,
 }: {
   url: string;
   /** null: no interval (still refreshes when the tab becomes visible). */
   intervalMs: number | null;
+  /** null (default): nothing while the tab is hidden. */
+  hiddenIntervalMs?: number | null;
   onData: (data: T) => void;
 }) {
   const etag = useRef<{ url: string; value: string } | null>(null);
@@ -67,11 +72,19 @@ export function usePolling<T>({
       intervalMs === null
         ? null
         : setInterval(() => void fetchNow(true), intervalMs);
+    // A hidden tab still hears about a run finishing (tab title, notification), slowly.
+    const hiddenTimer =
+      hiddenIntervalMs === null
+        ? null
+        : setInterval(() => {
+            if (document.visibilityState === "hidden") void fetchNow(false);
+          }, hiddenIntervalMs);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       if (timer) clearInterval(timer);
+      if (hiddenTimer) clearInterval(hiddenTimer);
     };
-  }, [fetchNow, intervalMs]);
+  }, [fetchNow, intervalMs, hiddenIntervalMs]);
 
   return useCallback(() => fetchNow(false), [fetchNow]);
 }

@@ -3,6 +3,7 @@ import "~/styles/globals.css";
 import { type Metadata } from "next";
 import localFont from "next/font/local";
 import { MotionProvider } from "~/components/motion-provider";
+import { RunSignalEffects } from "~/components/run-signal-effects";
 import { ThemeProvider } from "~/components/theme-provider";
 
 export const metadata: Metadata = {
@@ -44,7 +45,10 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <MotionProvider>{children}</MotionProvider>
+          <MotionProvider>
+            {children}
+            <RunSignalEffects />
+          </MotionProvider>
         </ThemeProvider>
       </body>
     </html>

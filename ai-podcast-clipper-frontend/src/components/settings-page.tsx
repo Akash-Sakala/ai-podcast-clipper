@@ -80,6 +80,29 @@ export function SettingsPage({
     };
   }, []);
 
+  // The browser asks for permission only when the switch is turned on, never on load.
+  const [blocked, setBlocked] = useState<"blocked" | "unsupported" | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!("Notification" in window)) setBlocked("unsupported");
+    else if (Notification.permission === "denied") setBlocked("blocked");
+  }, []);
+  const setNotify = async (on: boolean) => {
+    if (!on) return update({ notifyWhenDone: false });
+    if (!("Notification" in window)) return setBlocked("unsupported");
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return setBlocked("blocked");
+    setBlocked(null);
+    update({ notifyWhenDone: true });
+  };
+  const notifyText =
+    blocked === "unsupported"
+      ? "This browser can't show notifications."
+      : blocked === "blocked"
+        ? "Notifications are blocked for this site. Allow them in the browser's site settings, then turn this on."
+        : "A browser notification when a video finishes or fails while Podcast Clipper is open in a background tab.";
+
   const weight = Math.round(settings.replayWeight * 100);
   const rateText = rate
     ? `Today $1 = ₹${rate.rate.toFixed(2)}${rate.stale ? ` (saved on ${rate.date ?? "an earlier day"})` : ""}, rates by ${rate.source === "exchangerate-api" ? "ExchangeRate-API (exchangerate-api.com)" : "Frankfurter (frankfurter.dev)"}.`
@@ -110,6 +133,16 @@ export function SettingsPage({
               ["inr", "Rupees (₹)"],
             ]}
             onChange={(currency) => update({ currency })}
+          />
+        </Row>
+      </Group>
+
+      <Group title="Notifications">
+        <Row title="Notify me when a video is done" description={notifyText}>
+          <Toggle
+            label="Notify me when a video is done"
+            checked={settings.notifyWhenDone}
+            onChange={(on) => void setNotify(on)}
           />
         </Row>
       </Group>
@@ -221,7 +254,11 @@ export function SettingsPage({
         <button
           type="button"
           onClick={() =>
-            update({ ...DEFAULT_SETTINGS, currency: settings.currency })
+            update({
+              ...DEFAULT_SETTINGS,
+              currency: settings.currency,
+              notifyWhenDone: settings.notifyWhenDone,
+            })
           }
           className="hover:text-foreground underline underline-offset-4 pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center"
         >

@@ -379,6 +379,10 @@ def two_phase_run(job: Job, volume, functions: dict, max_clips: int, mode: str, 
         raise video_error
     if not first.get("moments"):
         return merge_results(first, None)
+    # The app shows a titled slot per clip from here on (cutting and sending the footage
+    # can take a minute or two before rendering starts).
+    if saver is not None and hasattr(saver, "describe"):
+        saver.describe(first["moments"])
     if video is None:
         raise RuntimeError("The video download stopped before the clips could be cut")
     timings["downloadWait"] = round(max(0.0, video_ready - (cloud.finished_at or video_ready)), 1)
