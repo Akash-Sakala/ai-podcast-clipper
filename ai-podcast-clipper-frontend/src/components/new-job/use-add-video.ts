@@ -1,5 +1,5 @@
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { fingerprintFile } from "~/lib/fingerprint";
 import { uploadVideo } from "~/lib/upload";
@@ -7,6 +7,19 @@ import { parseYoutubeLink } from "~/lib/youtube";
 import type { Duplicate } from "./duplicate-notice";
 
 type Pending = { kind: "url"; url: string } | { kind: "file"; file: File };
+
+/** A YouTube link is looked up this long after the last keystroke. */
+const LOOKUP_DELAY_MS = 350;
+
+export type LinkState = "empty" | "valid" | "invalid";
+
+export type UploadState = {
+  name: string;
+  percent: number;
+  loaded: number;
+  total: number;
+  startedAt: number;
+};
 
 async function findDuplicate(query: {
   youtubeUrl?: string;
@@ -29,31 +42,74 @@ async function findDuplicate(query: {
 /**
  * Adding a video, from a YouTube link or an MP4: check whether it was processed
  * before (showing `duplicate` if so), then create the job or upload the file.
+ * A YouTube link is checked as soon as it is typed or pasted, so a duplicate shows
+ * before "Make clips" is pressed.
  */
 export function useAddVideo(onCreated: () => Promise<void>) {
   const router = useRouter();
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [upload, setUpload] = useState<{
-    name: string;
-    percent: number;
-  } | null>(null);
+  const [upload, setUpload] = useState<UploadState | null>(null);
   const [invalid, setInvalid] = useState(false);
   const [checking, setChecking] = useState(false);
   const [duplicate, setDuplicate] = useState<{
     job: Duplicate;
     pending: Pending;
   } | null>(null);
+  /** The last link looked up and what was found (a job added before, or none). */
+  const [lookup, setLookup] = useState<{
+    url: string;
+    job: Duplicate | null;
+  } | null>(null);
   const busy = submitting || checking || upload !== null;
+
+  const value = url.trim();
+  const linkState: LinkState = !value
+    ? "empty"
+    : parseYoutubeLink(value)
+      ? "valid"
+      : "invalid";
+  const lookingUp = linkState === "valid" && lookup?.url !== value;
+
+  // A link typed or pasted is looked up in the background. A link changed away from a
+  // duplicate's link drops that notice.
+  const duplicateRef = useRef(duplicate);
+  duplicateRef.current = duplicate;
+  useEffect(() => {
+    const shown = duplicateRef.current;
+    if (shown?.pending.kind === "url" && shown.pending.url !== value)
+      setDuplicate(null);
+    if (!parseYoutubeLink(value)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void findDuplicate({ youtubeUrl: value }).then((job) => {
+        if (cancelled) return;
+        setLookup({ url: value, job });
+        if (job) setDuplicate({ job, pending: { kind: "url", url: value } });
+      });
+    }, LOOKUP_DELAY_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [value]);
 
   /** Uploads a new video, or (rerankJobId) the same video again to re-rank its job. */
   const startUpload = async (file: File, rerankJobId?: string) => {
-    setUpload({ name: file.name, percent: 0 });
+    const startedAt = Date.now();
+    const state = (percent: number, loaded: number): UploadState => ({
+      name: file.name,
+      percent,
+      loaded,
+      total: file.size,
+      startedAt,
+    });
+    setUpload(state(0, 0));
     try {
       await uploadVideo(
         rerankJobId ? `/api/jobs/${rerankJobId}/rerank` : "/api/jobs",
         file,
-        (percent) => setUpload({ name: file.name, percent }),
+        (percent, loaded) => setUpload(state(percent, loaded)),
       );
       toast.success(rerankJobId ? "Re-ranking" : "Video added", {
         description: rerankJobId
@@ -84,16 +140,22 @@ export function useAddVideo(onCreated: () => Promise<void>) {
 
   const submitUrl = async (event: React.FormEvent) => {
     event.preventDefault();
-    const value = url.trim();
     if (!value) return;
     if (!parseYoutubeLink(value)) {
       setInvalid(true);
       return;
     }
-    setDuplicate(null);
-    setChecking(true);
-    const job = await findDuplicate({ youtubeUrl: value });
-    setChecking(false);
+    // The notice for this link is already showing: its buttons say what happens next.
+    if (duplicate?.pending.kind === "url" && duplicate.pending.url === value)
+      return;
+    let job = lookup?.url === value ? lookup.job : undefined;
+    if (job === undefined) {
+      setChecking(true);
+      job = await findDuplicate({ youtubeUrl: value });
+      setChecking(false);
+      setLookup({ url: value, job });
+    }
+    // Added before (also after its notice was closed): show the choices again.
     if (job) {
       setDuplicate({ job, pending: { kind: "url", url: value } });
       return;
@@ -109,13 +171,13 @@ export function useAddVideo(onCreated: () => Promise<void>) {
     else void addUrl(pending.url);
   };
 
-  const addUrl = async (value: string) => {
+  const addUrl = async (link: string) => {
     setSubmitting(true);
     try {
       const response = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ youtubeUrl: value }),
+        body: JSON.stringify({ youtubeUrl: link }),
       });
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as {
@@ -140,6 +202,8 @@ export function useAddVideo(onCreated: () => Promise<void>) {
   return {
     url,
     setUrl,
+    linkState,
+    lookingUp,
     invalid,
     setInvalid,
     submitting,

@@ -1,10 +1,13 @@
 // Browser only: sending an MP4 to the app, with upload progress.
 
-/** POSTs `file` as the raw body (XMLHttpRequest, not fetch, so large uploads can show progress). */
+/**
+ * POSTs `file` as the raw body (XMLHttpRequest, not fetch, so large uploads can show
+ * progress). `onProgress` gets the percent and the bytes sent so far.
+ */
 export function uploadVideo(
   url: string,
   file: File,
-  onProgress: (percent: number) => void,
+  onProgress: (percent: number, loaded: number) => void,
 ) {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -13,7 +16,10 @@ export function uploadVideo(
     xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
+        onProgress(
+          Math.round((event.loaded / event.total) * 100),
+          event.loaded,
+        );
       }
     };
     xhr.onload = () => {
