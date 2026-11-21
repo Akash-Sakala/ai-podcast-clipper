@@ -82,12 +82,12 @@ The app's **Settings page** (gear icon) saves `data/settings.json`: currency, cl
 | `SCORE_PROFILE` | `value` | deploy | Rubric weights. `value`: payoff 25%, value 25%, standalone 15%, hook 15%, emotion 10%, shareability 10%. `classic`: the earlier hook-first weights (hook 25%, standalone 20%, payoff 20%, emotion 15%, value 10%, shareability 10%) |
 | `CLIP_GRACE_SECONDS` | `5` | deploy | Extra seconds a clip may run past the maximum, only to finish its last sentence |
 | `GEMINI_MODELS` | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` | deploy | Models tried in order. `GEMINI_MODEL` in the Modal secret, if set, goes first |
-| `GEMINI_BUSY_RETRIES` / `GEMINI_BUSY_WAIT_SECONDS` | `1` / `3` | deploy | Quick retries for a busy model (429/503/504) before moving to the next |
+| `GEMINI_BUSY_RETRIES` / `GEMINI_BUSY_WAIT_SECONDS` | `1` / `3` | deploy | Quick retries for a busy model (500/502/503) before moving to the next. A stalled request (no reply within the timeout, or 408/504) and a used-up quota (429) go to the next model at once |
 | `GEMINI_THINKING_LEVEL` | `low` | deploy | `minimal`, `low`, `medium` or `high`; empty = model default |
 | `GEMINI_TEMPERATURE` | empty | deploy | Empty = model default (recommended for Gemini 3) |
 | `CLIPPER_APP` / `CLIPPER_SECRET` | `ai-podcast-clipper` / `ai-podcast-clipper-secret` | deploy and runner | Names of the Modal app and secret, for a [test deployment](#test-deployment) |
 | `YTDLP_COOKIES_FILE` / `YTDLP_COOKIES_FROM_BROWSER` | none | runner | YouTube login for yt-dlp: see [YouTube cookies](#youtube-cookies) |
-| `GEMINI_TIMEOUT_SECONDS` / `RANKING_TIME_LIMIT_SECONDS` | `120` / `240` | deploy | Per-request timeout and the total ranking budget before the transcript fallback |
+| `GEMINI_TIMEOUT_SECONDS` / `RANKING_TIME_LIMIT_SECONDS` | `75` / `240` | deploy | How long a request may go without a reply, and the total ranking budget before the transcript fallback. Answers stream within 38-55 s, so 75 s only cuts stalls and leaves the next model most of the budget |
 
 Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional, read in `src/env.ts`): `DATA_DIR` and `RUNNER_PYTHON`. The cookie settings belong in the backend `.env`; an older frontend `.env` that still sets them keeps working and wins.
 
