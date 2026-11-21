@@ -1,5 +1,42 @@
-import { formatMoney } from "~/lib/format";
+"use client";
+
+import { formatMoney, type Money, stepTime } from "~/lib/format";
+import type { Currency } from "~/lib/settings-types";
 import { MODAL_MONTHLY_CREDIT, type Stats } from "~/lib/stats-types";
+import { useTween } from "~/lib/use-tween";
+
+/** An amount that glides to its new value when the period changes ("—" when none). */
+export function MoneyValue({
+  value,
+  currency,
+  period,
+}: {
+  value: Money | null;
+  currency: Currency;
+  period: string;
+}) {
+  const [usd, inr] = useTween(
+    value ? [value.usd, value.inr ?? -1] : [],
+    period,
+  );
+  if (!value || usd === undefined) return "—";
+  return formatMoney(
+    { usd, inr: value.inr === null ? null : (inr ?? 0) },
+    currency,
+  );
+}
+
+/** A duration that glides to its new value when the period changes. */
+export function TimeValue({
+  seconds,
+  period,
+}: {
+  seconds: number;
+  period: string;
+}) {
+  const [shown] = useTween([seconds], period);
+  return stepTime(shown ?? seconds);
+}
 
 export function Tile({
   label,
@@ -8,8 +45,8 @@ export function Tile({
   note,
 }: {
   label: string;
-  value: string;
-  second?: string;
+  value: React.ReactNode;
+  second?: React.ReactNode;
   note?: string;
 }) {
   return (

@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { formatMoney, type Money, plural, stepTime } from "~/lib/format";
+import { formatMoney, type Money, plural } from "~/lib/format";
 import { type Period, RUNS_PAGE, type Stats } from "~/lib/stats-types";
 import { usePolling } from "~/lib/use-polling";
 import { Segmented } from "../ui/segmented";
 import { ClipSourcesCard } from "./clip-sources-card";
 import { RunsCard } from "./runs-card";
 import { StageCard } from "./stage-card";
-import { BillTile, Tile } from "./tiles";
+import { BillTile, MoneyValue, Tile, TimeValue } from "./tiles";
 import { TrendCard } from "./trend-card";
 
 const ACTIVE_POLL_MS = 5000;
@@ -62,8 +62,18 @@ export function StatsPage({ initialStats }: { initialStats: Stats }) {
         <BillTile stats={stats} />
         <Tile
           label="New video, average"
-          value={stats.newAvg ? m(stats.newAvg.cost) : "—"}
-          second={stats.newAvg ? stepTime(stats.newAvg.seconds) : undefined}
+          value={
+            <MoneyValue
+              value={stats.newAvg?.cost ?? null}
+              currency={stats.currency}
+              period={stats.period}
+            />
+          }
+          second={
+            stats.newAvg ? (
+              <TimeValue seconds={stats.newAvg.seconds} period={stats.period} />
+            ) : undefined
+          }
           note={
             stats.newAvg
               ? `${stats.newAvg.perHour ? `${m(stats.newAvg.perHour)} per podcast hour, ` : ""}${sample(stats.newAvg.runs)}`
@@ -72,9 +82,20 @@ export function StatsPage({ initialStats }: { initialStats: Stats }) {
         />
         <Tile
           label="Re-rank, average"
-          value={stats.rerankAvg ? m(stats.rerankAvg.cost) : "—"}
+          value={
+            <MoneyValue
+              value={stats.rerankAvg?.cost ?? null}
+              currency={stats.currency}
+              period={stats.period}
+            />
+          }
           second={
-            stats.rerankAvg ? stepTime(stats.rerankAvg.seconds) : undefined
+            stats.rerankAvg ? (
+              <TimeValue
+                seconds={stats.rerankAvg.seconds}
+                period={stats.period}
+              />
+            ) : undefined
           }
           note={
             stats.rerankAvg

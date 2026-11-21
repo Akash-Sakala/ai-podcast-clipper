@@ -9,6 +9,7 @@ import {
 } from "~/lib/stats-types";
 import { cn } from "~/lib/utils";
 import { Card } from "../ui/card";
+import { BarPopover } from "./bar-popover";
 import { STAGE_COLORS, STAGE_INKS, STAGE_LABELS, Swatch } from "./stage-style";
 
 function compactTime(seconds: number) {
@@ -33,43 +34,68 @@ function StageBar({
 }) {
   const sumValues = values.reduce((a, [, v]) => a + v, 0);
   const shown = values.filter(([, v]) => v > 0);
+  const spoken = `${label}: ${shown.map(([k, v]) => `${STAGE_LABELS[k]} ${format(k, v)}`).join(", ")}`;
   return (
     <div className="grid grid-cols-[3.75rem_1fr_auto] items-center gap-3">
       <span className="text-muted-foreground text-xs">{label}</span>
       <div className="min-w-0">
-        <div
-          className="flex h-6 gap-[2px]"
-          style={{ width: `${max ? (sumValues / max) * 100 : 0}%` }}
-          role="img"
-          aria-label={`${label}: ${shown.map(([k, v]) => `${STAGE_LABELS[k]} ${format(k, v)}`).join(", ")}`}
-        >
-          {shown.map(([stage, value], i) => {
-            const share = value / sumValues;
-            // Each segment is a size container: it names its stage when it is wide
-            // enough (so the bar reads without the colours), else shows the value
-            // alone, else nothing (the legend and the tooltip still name it).
-            return (
-              <span
-                key={stage}
-                title={`${STAGE_LABELS[stage]}: ${format(stage, value)}`}
-                className={cn(
-                  "@container h-full min-w-[3px] overflow-hidden",
-                  STAGE_COLORS[stage],
-                  STAGE_INKS[stage],
-                  i === shown.length - 1 && "rounded-r-[4px]",
-                )}
-                style={{ width: `${share * 100}%` }}
-              >
-                <span className="hidden h-full items-center justify-center gap-1 text-[11px] font-semibold whitespace-nowrap @min-[2.5rem]:flex">
-                  <span className="hidden font-medium @min-[7.5rem]:inline">
-                    {STAGE_LABELS[stage]}
+        <BarPopover
+          label={spoken}
+          className="ease-move transition-[width] duration-(--motion-emphasis)"
+          bar={
+            <span aria-hidden className="flex h-6 w-full gap-[2px]">
+              {shown.map(([stage, value], i) => {
+                const share = value / sumValues;
+                // Each segment is a size container: it names its stage when it is
+                // wide enough (so the bar reads without the colours), else shows the
+                // value alone, else nothing (the legend and the table still name it).
+                return (
+                  <span
+                    key={stage}
+                    className={cn(
+                      "ease-move @container h-full min-w-[3px] overflow-hidden transition-[width] duration-(--motion-emphasis)",
+                      STAGE_COLORS[stage],
+                      STAGE_INKS[stage],
+                      i === shown.length - 1 && "rounded-r-[4px]",
+                    )}
+                    style={{ width: `${share * 100}%` }}
+                  >
+                    <span className="hidden h-full items-center justify-center gap-1 text-[11px] font-semibold whitespace-nowrap @min-[2.5rem]:flex">
+                      <span className="hidden font-medium @min-[7.5rem]:inline">
+                        {STAGE_LABELS[stage]}
+                      </span>
+                      {format(stage, value)}
+                    </span>
                   </span>
-                  {format(stage, value)}
-                </span>
-              </span>
-            );
-          })}
-        </div>
+                );
+              })}
+            </span>
+          }
+          // The bar's length is its share of the longest one; it glides when the
+          // period changes (a handful of elements, so width is fine to animate).
+          style={{ width: `${max ? (sumValues / max) * 100 : 0}%` }}
+        >
+          <table className="tabular">
+            <tbody>
+              {shown.map(([stage, value]) => (
+                <tr key={stage}>
+                  <td className="pr-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Swatch stage={stage} />
+                      {STAGE_LABELS[stage]}
+                    </span>
+                  </td>
+                  <td className="pr-4 text-right whitespace-nowrap">
+                    {format(stage, value)}
+                  </td>
+                  <td className="text-muted-foreground text-right whitespace-nowrap">
+                    {Math.round((value / sumValues) * 100)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </BarPopover>
       </div>
       <span className="tabular w-[5.5rem] text-right text-sm font-semibold">
         {total}
@@ -100,7 +126,10 @@ export function StageCard({
   );
   const label = (key: "new" | "rerank") => (key === "new" ? "New" : "Re-rank");
   return (
-    <Card title="By stage" description="An average run, start to finish.">
+    <Card
+      title="By stage"
+      description="An average run, start to finish. Hover, tap or focus a bar for each stage."
+    >
       <div className="grid gap-6 md:grid-cols-2 md:gap-8">
         <div className="space-y-2.5">
           <h3 className="text-sm font-medium">Time</h3>

@@ -47,8 +47,8 @@ Ranking = your focus areas first, then impact on daily use, then effort. Items 1
 | 4 | "Something is running" logo signal and tab title (done, `feat/ui-live-run`) | W5 | S | frontend-design, ui-ux-pro-max |
 | 5 | Input bar and drop zone (done, `feat/ui-home`) | W7 | M | frontend-design, ui-ux-pro-max, ui-styling |
 | 6 | Video list at a glance (done, `feat/ui-home`) | W8 | M | ui-ux-pro-max, ui-styling |
-| 7 | Stats page polish | W9 | M | ui-ux-pro-max (chart), dataviz, ui-styling |
-| 8 | Settings feedback | W10 | S | ui-ux-pro-max, ui-styling |
+| 7 | Stats page polish (done, `feat/ui-stats-settings`) | W9 | M | ui-ux-pro-max (chart), dataviz, ui-styling |
+| 8 | Settings feedback (done, `feat/ui-stats-settings`) | W10 | S | ui-ux-pro-max, ui-styling |
 | 9 | Full-screen clip viewer | W3 | L | frontend-design, ui-ux-pro-max, ui-styling |
 | 10 | Clip cards: one player, fallback titles | W3, W4 | M | ui-ux-pro-max, ui-styling |
 | 11 | Re-rank comparison motion | W6 | S | ui-ux-pro-max |
@@ -328,7 +328,7 @@ Keep the whole-row link and its focus ring behaviour (has-[a:focus-visible]) int
 
 ---
 
-### 7. Stats page polish
+### 7. Stats page polish (done)
 
 **Why:** W9, your third focus. The page is clear; the charts need to work without hover and without colour, and the first view can show the numbers arriving.
 
@@ -360,7 +360,7 @@ Screenshots in light, dark, phone; note the n<3 "early estimate" states still re
 
 ---
 
-### 8. Settings feedback
+### 8. Settings feedback (done)
 
 **Why:** W10. Autosave is right; the confirmation is in the wrong place.
 

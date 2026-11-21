@@ -93,6 +93,23 @@ export function transferShare(job: StageJob) {
 
 type Step = { stage: ProgressStage; label: string };
 
+/** The name of each step, the same on the progress rail, the video list and the stats. */
+export const STEP_LABELS: Record<ProgressStage, string> = {
+  audio: "Send audio",
+  transcribing: "Transcribe",
+  ranking: "Find moments",
+  downloading: "Download",
+  clips: "Send clips",
+  uploading: "Upload",
+  rendering: "Render",
+  saving: "Save",
+};
+
+const step = (stage: ProgressStage): Step => ({
+  stage,
+  label: STEP_LABELS[stage],
+});
+
 /**
  * Steps shown in the progress strip, in order. A YouTube video is downloaded on the
  * laptop, then uploaded; an uploaded MP4 is only uploaded. A two-phase run ("audio-first")
@@ -101,15 +118,17 @@ type Step = { stage: ProgressStage; label: string };
  */
 export function stepsFor(job: StageJob): Step[] {
   if (job.videoTransfer === "audio-first") {
-    const steps: Step[] = [
-      { stage: "audio", label: "Send audio" },
-      { stage: "transcribing", label: "Transcribe" },
-      { stage: "ranking", label: "Find moments" },
-      { stage: "downloading", label: "Download" },
-      { stage: "clips", label: "Send clips" },
-      { stage: "rendering", label: "Render" },
-      { stage: "saving", label: "Save" },
-    ];
+    const steps = (
+      [
+        "audio",
+        "transcribing",
+        "ranking",
+        "downloading",
+        "clips",
+        "rendering",
+        "saving",
+      ] as const
+    ).map(step);
     return steps.filter((step) => {
       if (step.stage === "audio" || step.stage === "transcribing")
         return job.mode !== "rerank";
@@ -117,14 +136,16 @@ export function stepsFor(job: StageJob): Step[] {
       return true;
     });
   }
-  const steps: Step[] = [
-    { stage: "downloading", label: "Download" },
-    { stage: "uploading", label: "Upload" },
-    { stage: "transcribing", label: "Transcribe" },
-    { stage: "ranking", label: "Find moments" },
-    { stage: "rendering", label: "Render" },
-    { stage: "saving", label: "Save" },
-  ];
+  const steps = (
+    [
+      "downloading",
+      "uploading",
+      "transcribing",
+      "ranking",
+      "rendering",
+      "saving",
+    ] as const
+  ).map(step);
   const transfer =
     job.videoTransfer ??
     (job.source === "youtube" ? "laptop-download" : "upload");

@@ -1,9 +1,11 @@
 "use client";
 
-import { Loader2, Minus, Plus, Trash2 } from "lucide-react";
+import { Check, Loader2, Minus, Plus, Trash2 } from "lucide-react";
+import { AnimatePresence, m } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { UsdInr } from "~/lib/job-types";
+import { duration, ease } from "~/lib/motion";
 import {
   type AppSettings,
   DEFAULT_SETTINGS,
@@ -14,7 +16,39 @@ import { cn } from "~/lib/utils";
 import type { KeptVideos } from "~/lib/video-store";
 import { Segmented } from "./ui/segmented";
 
-type SaveState = "saved" | "saving" | "error";
+type Key = keyof AppSettings;
+
+/** What the last save did, shown next to the rows it touched. */
+type SaveStatus = {
+  keys: Key[];
+  state: "saved" | "error";
+  change: Partial<AppSettings>;
+  at: number;
+};
+
+/** How long "Saved" stays next to a row. */
+const SAVED_FOR_MS = 1600;
+
+const NAMES: Record<Key, string> = {
+  currency: "Currency",
+  notifyWhenDone: "Notifications",
+  maxClips: "Clips per video",
+  mostReplayed: "Most replayed",
+  replayWeight: "Audience weight",
+  sponsorBlock: "SponsorBlock",
+};
+
+/** "Clips per video, 6" or "Most replayed, on": what a screen reader hears after a save. */
+function spoken(key: Key, settings: AppSettings) {
+  const value = settings[key];
+  if (typeof value === "boolean")
+    return `${NAMES[key]}, ${value ? "on" : "off"}`;
+  if (key === "replayWeight")
+    return `${NAMES[key]}, ${Math.round(settings.replayWeight * 100)}%`;
+  if (key === "currency")
+    return `${NAMES[key]}, ${settings.currency === "inr" ? "rupees" : "dollars"}`;
+  return `${NAMES[key]}, ${String(value)}`;
+}
 
 export function SettingsPage({
   initialSettings,
@@ -26,7 +60,10 @@ export function SettingsPage({
   initialKept: KeptVideos;
 }) {
   const [settings, setSettings] = useState(initialSettings);
-  const [state, setState] = useState<SaveState>("saved");
+  /** What the server last confirmed: a failed save puts its rows back to this. */
+  const saved = useRef(initialSettings);
+  const [status, setStatus] = useState<SaveStatus | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<Partial<AppSettings>>({});
 
@@ -34,7 +71,7 @@ export function SettingsPage({
   const update = (change: Partial<AppSettings>) => {
     setSettings((s) => ({ ...s, ...change }));
     pending.current = { ...pending.current, ...change };
-    setState("saving");
+    setStatus(null);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => void save(), 400);
   };
@@ -42,6 +79,8 @@ export function SettingsPage({
   const save = async () => {
     const change = pending.current;
     pending.current = {};
+    const keys = Object.keys(change) as Key[];
+    const at = Date.now();
     try {
       const response = await fetch("/api/settings", {
         method: "PUT",
@@ -49,14 +88,40 @@ export function SettingsPage({
         body: JSON.stringify(change),
       });
       if (!response.ok) throw new Error(String(response.status));
-      const saved = (await response.json()) as AppSettings;
+      const confirmed = (await response.json()) as AppSettings;
+      saved.current = confirmed;
       // Newer changes made while this request was in flight stay as they are.
-      if (Object.keys(pending.current).length === 0) setSettings(saved);
-      setState("saved");
+      if (Object.keys(pending.current).length === 0) setSettings(confirmed);
+      setStatus({ keys, state: "saved", change, at });
+      setAnnouncement(
+        `Saved: ${keys.map((key) => spoken(key, confirmed)).join("; ")}.`,
+      );
+      window.setTimeout(
+        () => setStatus((s) => (s?.at === at ? null : s)),
+        SAVED_FOR_MS,
+      );
     } catch {
-      setState("error");
+      // The rows go back to what is really saved, and say so next to them.
+      const back: Partial<AppSettings> = {};
+      for (const key of keys)
+        Object.assign(back, { [key]: saved.current[key] });
+      setSettings((s) => ({ ...s, ...back }));
+      setStatus({ keys, state: "error", change, at });
+      setAnnouncement(
+        `Couldn't save ${keys.map((key) => NAMES[key]).join(", ")}. Is the app still running?`,
+      );
     }
   };
+
+  /** The mark for the row of `key`: "Saved" for a moment, or the error with Retry. */
+  const statusFor = (key: Key) =>
+    status?.keys.includes(key) ? (
+      <SaveMark
+        key={`${status.at}-${status.state}`}
+        state={status.state}
+        onRetry={() => update(status.change)}
+      />
+    ) : null;
 
   // Leaving the page (a link, the back button, closing the tab) must not lose a change
   // made in the last 400 ms: send what is pending with keepalive, which outlives the page.
@@ -115,7 +180,8 @@ export function SettingsPage({
           Settings
         </h1>
         <p className="text-muted-foreground text-sm">
-          Changes apply to your next video or re-rank.
+          Changes are saved as you make them and apply to your next video or
+          re-rank.
         </p>
       </div>
 
@@ -124,6 +190,7 @@ export function SettingsPage({
           title="Currency"
           description={`Rupee costs use the dollar rate on the day each run finished. ${rateText}`}
           stackOnPhone
+          status={statusFor("currency")}
         >
           <Segmented
             label="Currency"
@@ -138,7 +205,11 @@ export function SettingsPage({
       </Group>
 
       <Group title="Notifications">
-        <Row title="Notify me when a video is done" description={notifyText}>
+        <Row
+          title="Notify me when a video is done"
+          description={notifyText}
+          status={statusFor("notifyWhenDone")}
+        >
           <Toggle
             label="Notify me when a video is done"
             checked={settings.notifyWhenDone}
@@ -151,37 +222,20 @@ export function SettingsPage({
         <Row
           title="Clips per video"
           description="How many clips a new video or re-rank makes."
+          status={statusFor("maxClips")}
         >
-          <div className="inline-flex items-center rounded-lg border">
-            <button
-              type="button"
-              aria-label="Fewer clips"
-              disabled={settings.maxClips <= MAX_CLIPS_RANGE[0]}
-              onClick={() => update({ maxClips: settings.maxClips - 1 })}
-              className="text-muted-foreground hover:text-foreground press inline-flex size-8 items-center justify-center disabled:opacity-40 pointer-coarse:size-11"
-            >
-              <Minus className="size-4" aria-hidden />
-            </button>
-            <output
-              className="tabular w-8 text-center text-sm font-semibold"
-              aria-live="polite"
-            >
-              {settings.maxClips}
-            </output>
-            <button
-              type="button"
-              aria-label="More clips"
-              disabled={settings.maxClips >= MAX_CLIPS_RANGE[1]}
-              onClick={() => update({ maxClips: settings.maxClips + 1 })}
-              className="text-muted-foreground hover:text-foreground press inline-flex size-8 items-center justify-center disabled:opacity-40 pointer-coarse:size-11"
-            >
-              <Plus className="size-4" aria-hidden />
-            </button>
-          </div>
+          <Stepper
+            label="Clips per video"
+            value={settings.maxClips}
+            min={MAX_CLIPS_RANGE[0]}
+            max={MAX_CLIPS_RANGE[1]}
+            onChange={(maxClips) => update({ maxClips })}
+          />
         </Row>
         <Row
           title="Most replayed"
           description="Use the parts YouTube viewers rewatch most as clip candidates."
+          status={statusFor("mostReplayed")}
         >
           <Toggle
             label="Most replayed"
@@ -198,6 +252,8 @@ export function SettingsPage({
           }
           muted={!settings.mostReplayed}
           stackOnPhone
+          id="audience-weight"
+          status={statusFor("replayWeight")}
         >
           <div className="flex items-center gap-3">
             <input
@@ -208,6 +264,8 @@ export function SettingsPage({
               value={weight}
               disabled={!settings.mostReplayed}
               aria-label="Audience weight"
+              // Read with the slider: what it does, or why it is off.
+              aria-describedby="audience-weight-description"
               onChange={(e) =>
                 update({ replayWeight: Number(e.target.value) / 100 })
               }
@@ -221,6 +279,7 @@ export function SettingsPage({
         <Row
           title="SponsorBlock"
           description="Keep sponsor reads, intros, outros and previews out of clips."
+          status={statusFor("sponsorBlock")}
         >
           <Toggle
             label="SponsorBlock"
@@ -234,23 +293,11 @@ export function SettingsPage({
         <KeptVideosRow initial={initialKept} />
       </Group>
 
-      <div className="text-muted-foreground flex items-center justify-between px-1 text-sm">
-        <span className="inline-flex items-center gap-2" aria-live="polite">
-          <span
-            aria-hidden
-            className={cn(
-              "inline-block size-2 rounded-full",
-              state === "saved" && "bg-stage-transcribe",
-              state === "saving" && "bg-tally",
-              state === "error" && "bg-destructive",
-            )}
-          />
-          {state === "saved"
-            ? "Saved"
-            : state === "saving"
-              ? "Saving…"
-              : "Could not save. Is the app still running?"}
-        </span>
+      <div className="text-muted-foreground flex items-center justify-end px-1 text-sm">
+        {/* One place where screen readers hear every save (the marks are visual). */}
+        <p className="sr-only" aria-live="polite">
+          {announcement}
+        </p>
         <button
           type="button"
           onClick={() =>
@@ -294,12 +341,18 @@ function Row({
   children,
   muted,
   stackOnPhone,
+  id,
+  status,
 }: {
   title: string;
   description: string;
   children: React.ReactNode;
   muted?: boolean;
   stackOnPhone?: boolean;
+  /** Gives the description the id `<id>-description`, for aria-describedby. */
+  id?: string;
+  /** The save mark ("Saved" or an error), shown beside the control. */
+  status?: React.ReactNode;
 }) {
   return (
     <div
@@ -310,11 +363,167 @@ function Row({
     >
       <div className={cn("min-w-0 space-y-0.5", muted && "opacity-60")}>
         <div className="text-sm font-medium">{title}</div>
-        <p className="text-muted-foreground text-sm leading-relaxed">
+        <p
+          id={id ? `${id}-description` : undefined}
+          className="text-muted-foreground text-sm leading-relaxed"
+        >
           {description}
         </p>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="flex shrink-0 items-center gap-3">
+        <AnimatePresence>{status}</AnimatePresence>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Beside a control after a save: "Saved" with a check for a moment, then gone; or,
+ * when the save failed, what happened and Retry (the control is back to the saved
+ * value). Visual only: the page's live region says the same to screen readers.
+ */
+function SaveMark({
+  state,
+  onRetry,
+}: {
+  state: "saved" | "error";
+  onRetry: () => void;
+}) {
+  return (
+    <m.span
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{
+        opacity: 1,
+        scale: 1,
+        transition: { duration: duration.enter, ease: ease.enter },
+      }}
+      exit={{
+        opacity: 0,
+        transition: { duration: duration.emphasis, ease: ease.exit },
+      }}
+      className={cn(
+        "inline-flex items-center gap-1 text-xs whitespace-nowrap",
+        state === "saved" ? "text-muted-foreground" : "text-destructive",
+      )}
+    >
+      {state === "saved" ? (
+        <>
+          <Check className="text-foreground size-3.5" aria-hidden />
+          <span aria-hidden>Saved</span>
+        </>
+      ) : (
+        <>
+          <span aria-hidden>Couldn&apos;t save.</span>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-foreground press rounded underline underline-offset-4 pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center"
+          >
+            Retry
+          </button>
+        </>
+      )}
+    </m.span>
+  );
+}
+
+/** The number rolls the way it changed: up for more, down for fewer. */
+const roll = {
+  enter: (direction: number) => ({ y: direction * 10, opacity: 0 }),
+  center: {
+    y: 0,
+    opacity: 1,
+    transition: { duration: duration.enter, ease: ease.enter },
+  },
+  exit: (direction: number) => ({
+    y: direction * -10,
+    opacity: 0,
+    transition: { duration: duration.exit, ease: ease.exit },
+  }),
+};
+
+/**
+ * A number between `min` and `max` with minus and plus buttons. The number itself is a
+ * spinbutton: arrow keys step it, Home and End jump to the ends.
+ */
+function Stepper({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  const [direction, setDirection] = useState(1);
+  const set = (next: number) => {
+    if (next < min || next > max || next === value) return;
+    setDirection(next > value ? 1 : -1);
+    onChange(next);
+  };
+  const step: Record<string, number> = {
+    ArrowUp: value + 1,
+    ArrowRight: value + 1,
+    ArrowDown: value - 1,
+    ArrowLeft: value - 1,
+    Home: min,
+    End: max,
+  };
+  const button =
+    "text-muted-foreground hover:text-foreground press inline-flex size-8 items-center justify-center disabled:opacity-40 pointer-coarse:size-11";
+  return (
+    <div className="inline-flex items-center rounded-lg border">
+      <button
+        type="button"
+        aria-label="Fewer clips"
+        disabled={value <= min}
+        onClick={() => set(value - 1)}
+        className={button}
+      >
+        <Minus className="size-4" aria-hidden />
+      </button>
+      <div
+        role="spinbutton"
+        tabIndex={0}
+        aria-label={label}
+        aria-valuenow={value}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        onKeyDown={(event) => {
+          const next = step[event.key];
+          if (next === undefined) return;
+          event.preventDefault();
+          set(next);
+        }}
+        className="tabular relative grid h-8 w-8 place-items-center overflow-hidden rounded text-sm font-semibold pointer-coarse:h-11"
+      >
+        <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+          <m.span
+            key={value}
+            custom={direction}
+            variants={roll}
+            initial="enter"
+            animate="center"
+            exit="exit"
+          >
+            {value}
+          </m.span>
+        </AnimatePresence>
+      </div>
+      <button
+        type="button"
+        aria-label="More clips"
+        disabled={value >= max}
+        onClick={() => set(value + 1)}
+        className={button}
+      >
+        <Plus className="size-4" aria-hidden />
+      </button>
     </div>
   );
 }
@@ -373,6 +582,17 @@ function keptText(kept: KeptVideos) {
 function KeptVideosRow({ initial }: { initial: KeptVideos }) {
   const [kept, setKept] = useState(initial);
   const [busy, setBusy] = useState(false);
+  // Removing can't be undone, so the button asks once more, saying what goes.
+  const [confirming, setConfirming] = useState(false);
+  const keep = useRef<HTMLButtonElement>(null);
+  const start = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirming) keep.current?.focus();
+  }, [confirming]);
+  const cancel = () => {
+    setConfirming(false);
+    window.setTimeout(() => start.current?.focus());
+  };
 
   const refresh = async () => {
     const response = await fetch("/api/videos-kept", { cache: "no-store" });
@@ -380,6 +600,7 @@ function KeptVideosRow({ initial }: { initial: KeptVideos }) {
   };
 
   const remove = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
       const response = await fetch("/api/videos-kept", { method: "DELETE" });
@@ -408,19 +629,52 @@ function KeptVideosRow({ initial }: { initial: KeptVideos }) {
 
   return (
     <Row title="Kept videos" description={keptText(kept)} stackOnPhone>
-      <button
-        type="button"
-        onClick={() => void remove()}
-        disabled={busy || kept.count === 0}
-        className="text-foreground/80 hover:text-foreground hover:bg-muted press inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium whitespace-nowrap disabled:pointer-events-none disabled:opacity-50 pointer-coarse:h-11"
-      >
-        {busy ? (
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-        ) : (
-          <Trash2 className="size-4" aria-hidden />
-        )}
-        Remove kept videos
-      </button>
+      {confirming ? (
+        <div
+          role="group"
+          aria-label="Remove the kept videos?"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") cancel();
+          }}
+          className="pop-in flex flex-wrap items-center gap-2 sm:max-w-56 sm:justify-end"
+        >
+          <span className="text-sm">
+            Remove {kept.count === 1 ? "1 video" : `${kept.count} videos`},{" "}
+            {formatSize(kept.bytes)}?
+          </span>
+          <button
+            type="button"
+            onClick={() => void remove()}
+            // Page-background ink on red: 4.7:1 light, 5.7:1 dark (white is 3.3:1 in dark).
+            className="bg-destructive text-background press inline-flex h-8 items-center rounded-lg px-3 text-sm font-medium pointer-coarse:h-11"
+          >
+            Remove
+          </button>
+          <button
+            ref={keep}
+            type="button"
+            onClick={cancel}
+            className="text-foreground/80 hover:text-foreground hover:bg-muted press inline-flex h-8 items-center rounded-lg border px-3 text-sm font-medium pointer-coarse:h-11"
+          >
+            Keep them
+          </button>
+        </div>
+      ) : (
+        <button
+          ref={start}
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={busy || kept.count === 0}
+          className="text-foreground/80 hover:text-foreground hover:bg-muted press inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium whitespace-nowrap disabled:pointer-events-none disabled:opacity-50 pointer-coarse:h-11"
+        >
+          {busy ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+          ) : (
+            <Trash2 className="size-4" aria-hidden />
+          )}
+          Remove kept videos
+        </button>
+      )}
     </Row>
   );
 }
