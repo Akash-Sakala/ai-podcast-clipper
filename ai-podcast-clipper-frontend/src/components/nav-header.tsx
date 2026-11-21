@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LogoMark } from "./logo";
+import { HeaderLogo } from "./header-logo";
 import { SettingsLink } from "./settings-link";
 import { StatsLink } from "./stats-link";
 import { ThemeMenu } from "./theme-menu";
@@ -12,7 +12,7 @@ const NavHeader = () => {
           href="/"
           className="font-display -ml-1 flex items-center gap-2 rounded-md px-1 text-lg font-semibold tracking-tight"
         >
-          <LogoMark className="text-muted-foreground size-7" />
+          <HeaderLogo />
           {/* Below 360 px the three 44 px touch buttons need the room: the mark stays. */}
           <span className="max-[359px]:sr-only">podcast clipper</span>
         </Link>

@@ -258,6 +258,7 @@ export const ClipCard = memo(function ClipCard({
   note,
   dimmed = false,
   outlined = false,
+  arrived = false,
 }: {
   jobId: string;
   clip: string;
@@ -276,6 +277,8 @@ export const ClipCard = memo(function ClipCard({
   dimmed?: boolean;
   /** A thin amber outline around the player (a clip that will be kept). */
   outlined?: boolean;
+  /** Saved during a run while the page was open: the player's frame lights up once. */
+  arrived?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const base = `/api/media/${jobId}/${clip}`;
@@ -310,6 +313,7 @@ export const ClipCard = memo(function ClipCard({
         className={cn(
           "relative rounded-lg",
           outlined && "ring-tally ring-offset-background ring-2 ring-offset-2",
+          arrived && "clip-arrive",
         )}
       >
         <video

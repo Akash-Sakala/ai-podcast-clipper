@@ -250,6 +250,9 @@ export type Job = {
   liveClips?: ClipDetail[] | null;
   /** "new" while a re-rank saves its clips into clips_new/ (they are served with ?set=new). */
   liveClipsSet?: "new" | null;
+  /** Every clip a running run will make (rank, title, times), from the moment the ranking is
+   *  known (runner.py), so each gets a titled slot until it is saved; null once the run ends. */
+  plannedClips?: ClipDetail[] | null;
   /** A re-rank's new clips waiting to be compared with the previous ones; null once chosen. */
   comparison?: ClipComparison | null;
   /** When the last comparison was applied. */

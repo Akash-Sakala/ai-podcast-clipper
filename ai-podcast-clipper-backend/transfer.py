@@ -331,12 +331,14 @@ class ClipSaver:
 
     def __init__(self, job: Job, volume, target_dir: pathlib.Path, workers: int | None = None,
                  sleep: Callable[[float], None] | None = None,
-                 on_saved: Callable[[list[str]], None] | None = None):
+                 on_saved: Callable[[list[str]], None] | None = None,
+                 on_described: Callable[[list], None] | None = None):
         self.job, self.volume, self.dir, self.sleep = job, volume, target_dir, sleep
         self.workers = workers or settings.CLIP_DOWNLOADS_AT_ONCE
         self.futures: dict = {}
         self.pool: ThreadPoolExecutor | None = None
         self.on_saved = on_saved
+        self.on_described = on_described
         self.moments: list | None = None
         self._lock = threading.Lock()
         self._done: dict[str, dict] = {}     # name -> {bytes, seconds, start, end}
@@ -375,8 +377,14 @@ class ClipSaver:
             log(f"Could not publish the saved clips ({type(exc).__name__}: {exc})")
 
     def describe(self, moments: list | None) -> None:
-        """The ranked moments (clip_N is moments[N]); republishes what is already saved."""
+        """The ranked moments (clip_N is moments[N]): tells on_described (the app then knows
+        every clip that is coming) and republishes what is already saved."""
         self.moments = moments
+        if self.on_described is not None and moments:
+            try:
+                self.on_described(moments)
+            except Exception as exc:  # noqa: BLE001 - progress publishing must never fail a run
+                log(f"Could not publish the planned clips ({type(exc).__name__}: {exc})")
         self._notify()
 
     def stats(self) -> dict | None:

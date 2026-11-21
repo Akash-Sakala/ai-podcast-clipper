@@ -5,12 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { displayTitle } from "~/lib/format";
 import { isActive, type JobSummary } from "~/lib/job-types";
+import { useRunReport } from "~/lib/run-signal";
 import { usePolling } from "~/lib/use-polling";
 import { NewJobBar } from "./new-job/new-job-bar";
 import { VideoList } from "./video-list";
 import { useJobActions } from "./video/use-job-actions";
 
 const POLL_INTERVAL_MS = 3000;
+const HIDDEN_POLL_INTERVAL_MS = 15_000;
 
 export function DashboardClient({
   initialJobs,
@@ -26,8 +28,12 @@ export function DashboardClient({
   const refreshJobs = usePolling<JobSummary[]>({
     url: "/api/jobs",
     intervalMs: anyActive ? POLL_INTERVAL_MS : null,
+    // A background tab still hears about a run ending (tab title, notification).
+    hiddenIntervalMs: anyActive ? HIDDEN_POLL_INTERVAL_MS : null,
     onData: setJobs,
   });
+  // The header logo, the tab title and the "done" notification follow these jobs.
+  useRunReport(jobs);
 
   // Announce videos that finish while this page is open. The last known state of each
   // job is kept in a ref, and the toast fires from an effect (never during render).

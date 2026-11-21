@@ -310,6 +310,23 @@ def test_youtube_job_sends_audio_then_only_the_clip_footage(tmp_path, monkeypatc
     assert line["timings"] == data["runs"][-1]["timings"] and line["clips"] == 2
 
 
+def test_planned_clips_are_in_job_json_before_the_footage_is_cut(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+    real_update = jobstore.Job.update
+
+    def spy(self, **fields):
+        if fields.get("plannedClips"):
+            world.events.append("planned " + ",".join(c["name"] for c in fields["plannedClips"]))
+        return real_update(self, **fields)
+
+    monkeypatch.setattr(jobstore.Job, "update", spy)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    events = world.events
+    assert events.index("planned clip_0.mp4,clip_1.mp4") < events.index("cut input.mp4")
+    assert read(job_dir)["plannedClips"] is None
+
+
 def test_uploaded_mp4_copies_its_audio_and_cuts_its_own_file(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path, source="upload", youtubeUrl=None, title="talk.mp4")
     (job_dir / "input.mp4").write_bytes(b"x" * 4096)

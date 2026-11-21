@@ -770,6 +770,43 @@ def test_live_clips_grow_as_clips_are_saved_and_clear_on_success(tmp_path, monke
     assert read(job_dir)["liveClips"] is None and len(read(job_dir)["clipDetails"]) == 2
 
 
+def test_planned_clips_are_published_before_any_clip_is_saved(tmp_path, monkeypatch):
+    """Every clip still to come (rank, title, times) is in job.json as soon as the moments are
+    known, so the app can show a titled slot per clip; it is cleared when the run ends."""
+    planned = []
+    real_update = jobstore.Job.update
+
+    def spy(self, **fields):
+        if fields.get("plannedClips"):
+            planned.append(fields["plannedClips"])
+        return real_update(self, **fields)
+
+    monkeypatch.setattr(jobstore.Job, "update", spy)
+    job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch)
+    assert code == 0 and planned
+    first = planned[0]
+    assert [c["name"] for c in first] == ["clip_0.mp4", "clip_1.mp4"]
+    assert [c["title"] for c in first] == ["First", "Second"] and first[0]["rank"] == 1
+    assert read(job_dir)["plannedClips"] is None
+
+
+def test_planned_clips_clear_when_the_run_fails(tmp_path, monkeypatch):
+    job_dir, code, _ = live_run_world(tmp_path, monkeypatch, outcome="fail")
+    assert code == 1 and read(job_dir)["plannedClips"] is None
+
+
+def test_a_failing_planned_clips_hook_never_stops_the_save(tmp_path, monkeypatch):
+    job = jobstore.Job(make_job(tmp_path))
+
+    def broken(moments):
+        raise RuntimeError("disk full")
+
+    saver = transfer.ClipSaver(job, FakeVolume(remote_files()), job.dir / "clips", workers=1,
+                               on_described=broken)
+    saver.describe([{"rank": 1}])
+    assert saver.moments == [{"rank": 1}]
+
+
 def test_live_clips_clear_when_the_run_fails(tmp_path, monkeypatch):
     job_dir, code, snapshots = live_run_world(tmp_path, monkeypatch, outcome="fail")
     assert code == 1 and len(snapshots[1]) == 2
