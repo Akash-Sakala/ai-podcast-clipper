@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { plural, stepTime, timecode, type Money } from "~/lib/format";
+import {
+  plural,
+  STEP_LABELS,
+  stepTime,
+  timecode,
+  type Money,
+} from "~/lib/format";
+import type { ProgressStage } from "~/lib/job-types";
 import { RUNS_PAGE, type RunRow, type Stats } from "~/lib/stats-types";
 import { cn } from "~/lib/utils";
 import { Card } from "../ui/card";
@@ -14,22 +21,15 @@ function shortDate(iso: string) {
   });
 }
 
-const FAILED_AT: Record<string, string> = {
-  audio: "audio upload",
-  downloading: "download",
-  uploading: "upload",
-  clips: "clip upload",
-  transcribing: "transcription",
-  ranking: "ranking",
-  rendering: "render",
-  saving: "saving",
-};
-
 function result(run: RunRow) {
-  if (run.status === "failed")
-    return run.failedStage && FAILED_AT[run.failedStage]
-      ? `Failed at ${FAILED_AT[run.failedStage]}`
-      : "Failed";
+  if (run.status === "failed") {
+    // The step's own name, as on the progress rail and in the video list.
+    const label =
+      run.failedStage && run.failedStage in STEP_LABELS
+        ? STEP_LABELS[run.failedStage as ProgressStage]
+        : null;
+    return label ? `Failed at ${label}` : "Failed";
+  }
   if (run.status === "no-clips" || !run.clips) return "No clips";
   return plural(run.clips, "clip");
 }
@@ -152,7 +152,7 @@ export function RunsCard({
         <button
           type="button"
           onClick={onShowMore}
-          className="text-muted-foreground hover:text-foreground mt-3 text-sm underline-offset-4 hover:underline"
+          className="text-muted-foreground hover:text-foreground mt-3 text-sm underline-offset-4 hover:underline pointer-coarse:min-h-11"
         >
           Show {Math.min(RUNS_PAGE, remaining)} more
         </button>

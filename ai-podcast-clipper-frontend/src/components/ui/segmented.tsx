@@ -1,11 +1,14 @@
 "use client";
 
-import { useRef } from "react";
+import { m } from "motion/react";
+import { useId, useRef } from "react";
+import { duration, ease } from "~/lib/motion";
 import { cn } from "~/lib/utils";
 
 /**
  * A two-or-more way choice drawn as a pill, with the radio-group keyboard pattern:
  * one tab stop (the selected option), arrow keys move the choice, Home/End jump.
+ * The white pill slides to the chosen option (a shared layout animation).
  */
 export function Segmented<T extends string>({
   label,
@@ -19,6 +22,7 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const thumb = useId();
 
   const move = (to: number) => {
     const index = (to + options.length) % options.length;
@@ -69,13 +73,21 @@ export function Segmented<T extends string>({
           onClick={() => onChange(option)}
           onKeyDown={(event) => onKeyDown(event, index)}
           className={cn(
-            "press rounded-md px-3 py-1 whitespace-nowrap pointer-coarse:py-2.5",
+            "press relative rounded-md px-3 py-1 whitespace-nowrap pointer-coarse:py-2.5",
             value === option
-              ? "bg-card text-foreground shadow-sm"
+              ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {text}
+          {value === option && (
+            <m.span
+              layoutId={thumb}
+              aria-hidden
+              className="bg-card absolute inset-0 rounded-md shadow-sm"
+              transition={{ duration: duration.enter, ease: ease.move }}
+            />
+          )}
+          <span className="relative">{text}</span>
         </button>
       ))}
     </div>
