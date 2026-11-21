@@ -318,6 +318,65 @@ def test_busy_model_gets_one_retry_then_next_model(monkeypatch):
     assert report["modelUsed"] == "backup" and len(report["errors"]) == 2
 
 
+class ReadTimeout(Exception):
+    """Named like httpx's, which the SDK raises when no byte arrives within the timeout."""
+
+
+class _Quota(Exception):
+    code = 429
+
+
+def test_stalled_model_moves_to_the_next_without_a_second_wait(monkeypatch):
+    """2026-11-21: two 120 s stalls on one model used the whole 240 s budget before the
+    next model got a turn. A stall now goes straight to the next model."""
+    _chain(monkeypatch)
+    calls = []
+
+    def fake(client, model, system, user, schema, timeout_s=None, thinking=None, deadline=None):
+        calls.append(model)
+        if model == "primary":
+            raise ReadTimeout("The read operation timed out")
+        return [{"start": 1, "end": 40}]
+
+    out, report = _run(fake, monkeypatch)
+    assert out == [{"start": 1, "end": 40}]
+    assert calls == ["primary", "backup"] and report["modelUsed"] == "backup"
+    assert "stall" in report["errors"][0]
+
+
+def test_used_up_quota_moves_to_the_next_model_at_once(monkeypatch):
+    _chain(monkeypatch)
+    calls = []
+
+    def fake(client, model, system, user, schema, timeout_s=None, thinking=None, deadline=None):
+        calls.append(model)
+        if model == "primary":
+            raise _Quota("429 RESOURCE_EXHAUSTED. You exceeded your current quota")
+        return [{"start": 1, "end": 40}]
+
+    out, report = _run(fake, monkeypatch)
+    assert out and calls == ["primary", "backup"] and "quota" in report["errors"][0]
+
+
+def test_error_kinds():
+    kind = moments.classify_error
+    assert kind(_Busy("503 UNAVAILABLE high demand")) == "busy"
+    assert kind(ReadTimeout("The read operation timed out")) == "stall"
+    assert kind(Exception("504 DEADLINE_EXCEEDED")) == "stall"
+    assert kind(_Quota("429 RESOURCE_EXHAUSTED")) == "quota"
+    assert kind(Exception("RESOURCE_EXHAUSTED")) == "quota"
+    assert kind(moments.ResponseFormatError("x")) == "format"
+    assert kind(moments.RankingTimeout("x")) == "timeout"
+    assert kind(_Bad("400 bad request")) == "fatal"
+
+
+def test_a_stall_leaves_the_next_model_most_of_the_budget():
+    """The default wait is well under half the ranking budget, so after one stall the next
+    model (and the judge) still have time; successful answers took 38-55 s."""
+    assert moments.GEMINI_TIMEOUT_S <= 0.35 * moments.RANKING_TIME_LIMIT_S
+    assert moments.GEMINI_TIMEOUT_S >= 60
+
+
 def test_format_problem_retries_as_plain_json_on_same_model(monkeypatch):
     _chain(monkeypatch)
     calls = []

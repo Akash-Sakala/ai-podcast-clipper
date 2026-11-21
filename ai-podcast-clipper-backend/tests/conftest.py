@@ -15,7 +15,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 # may hold other values (an older CLIP_MAX_SECONDS=60, say). The tests expect the code's
 # defaults, so pin them before any test module imports moments.
 os.environ.update({"CLIP_MIN_SECONDS": "30", "CLIP_MAX_SECONDS": "120", "CLIP_GRACE_SECONDS": "5",
-                   "MIN_CLIPS": "3", "SCORE_PROFILE": "value"})
+                   "MIN_CLIPS": "3", "SCORE_PROFILE": "value",
+                   "GEMINI_TIMEOUT_SECONDS": "75", "RANKING_TIME_LIMIT_SECONDS": "240"})
 
 import replay  # noqa: E402
 import youtube  # noqa: E402

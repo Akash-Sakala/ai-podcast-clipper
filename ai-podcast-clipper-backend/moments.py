@@ -75,7 +75,8 @@ MIN_CLIPS = int(_env_float("MIN_CLIPS", 3))
 DEFAULT_GEMINI_MODELS = "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
 GEMINI_MODELS = [m.strip() for m in (os.environ.get("GEMINI_MODELS") or DEFAULT_GEMINI_MODELS).split(",")
                  if m.strip()]
-# Extra attempts on the same model when it answers 429/503/504 ("busy").
+# Extra attempts on the same model when it answers 500/502/503 ("busy"). A stall or a
+# used-up quota (429) moves to the next model without one (see classify_error).
 GEMINI_BUSY_RETRIES = max(0, int(_env_float("GEMINI_BUSY_RETRIES", 1)))
 GEMINI_BUSY_WAIT_S = _env_float("GEMINI_BUSY_WAIT_SECONDS", 3.0)
 def thinking_level(env: dict | None = None) -> str | None:
@@ -91,7 +92,10 @@ GEMINI_THINKING_LEVEL = thinking_level()
 # Empty = the model's default temperature (recommended for Gemini 3 models).
 GEMINI_TEMPERATURE = _env_float("GEMINI_TEMPERATURE", None)
 # Per-request timeout, and the total time ranking may take before the transcript fallback.
-GEMINI_TIMEOUT_S = _env_float("GEMINI_TIMEOUT_SECONDS", 120.0)
+# The timeout is how long a request may go without a byte: answers stream within 38-55 s
+# (measured 2026-11-21), so 75 s only ever cuts a stalled request, and a stall still
+# leaves the next model most of the 240 s budget (it was 120 s: two stalls used it all).
+GEMINI_TIMEOUT_S = _env_float("GEMINI_TIMEOUT_SECONDS", 75.0)
 RANKING_TIME_LIMIT_S = _env_float("RANKING_TIME_LIMIT_SECONDS", 240.0)
 
 
@@ -682,16 +686,25 @@ class ResponseFormatError(Exception):
 
 
 def classify_error(exc: Exception) -> str:
-    """busy (try once more, then next model) | thinking | format | fatal (next model)."""
+    """What a failed request means for the next step:
+    busy  - a moment of high demand (500/502/503): one quick retry, then the next model;
+    stall - no reply within GEMINI_TIMEOUT_SECONDS, or the server's own deadline (408/504):
+            the next model at once (a second wait on the same model could use the whole budget);
+    quota - 429, the key's quota for this model is used up: the next model at once (it has
+            its own quota; a few seconds won't refill this one);
+    thinking | format | fatal (the next model)."""
     if isinstance(exc, RankingTimeout):
         return "timeout"
     if isinstance(exc, ResponseFormatError) or type(exc).__name__ in ("JSONDecodeError", "ValidationError"):
         return "format"
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     text = str(exc)
-    if code in (408, 429, 500, 502, 503, 504) or any(
-            s in text for s in ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "high demand")) \
+    if code in (408, 504) or "DEADLINE_EXCEEDED" in text \
             or "timeout" in type(exc).__name__.lower() or "timed out" in text.lower():
+        return "stall"
+    if code == 429 or "RESOURCE_EXHAUSTED" in text:
+        return "quota"
+    if code in (500, 502, 503) or any(s in text for s in ("UNAVAILABLE", "high demand")):
         return "busy"
     if code == 400 and "thinking" in text.lower():
         return "thinking"
@@ -747,7 +760,8 @@ def count_call(report: dict) -> None:
 def _generate_json(client, model: str, system: str, user: str, schema, report: dict | None = None,
                    log=print, sleep=None) -> list[dict]:
     """Try each model in `model_chain(model)`:
-    busy (429/503/504/timeout) -> GEMINI_BUSY_RETRIES quick retries, then the next model;
+    busy (500/502/503)         -> GEMINI_BUSY_RETRIES quick retries, then the next model;
+    stalled or out of quota    -> the next model at once (see classify_error);
     bad/empty JSON             -> one retry as plain JSON on the same model;
     thinking not supported     -> retry without the thinking setting;
     anything else              -> the next model.
@@ -784,6 +798,8 @@ def _generate_json(client, model: str, system: str, user: str, schema, report: d
                 message = f"{m} ({mode}, {took:.0f}s, {kind}): {type(exc).__name__}: {str(exc)[:240]}"
                 log(f"Gemini call failed - {message}")
                 report.setdefault("errors", []).append(message)
+                if kind in ("stall", "quota"):
+                    break                                    # next model, no second wait
                 if kind == "busy" and busy_left > 0:
                     busy_left -= 1
                     sleep(GEMINI_BUSY_WAIT_S)
