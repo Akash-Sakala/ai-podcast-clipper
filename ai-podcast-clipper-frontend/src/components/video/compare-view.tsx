@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { plural } from "~/lib/format";
 import type { ClipDetail, ClipSet, Job } from "~/lib/job-types";
 import { ClipCard } from "../clip-card";
+import { clipTitle } from "../clip-details";
 import {
   matchesOf,
   pickKey,
@@ -183,9 +184,10 @@ export function CompareView({
 
   const card = (set: ClipSet, clip: string, detail?: ClipDetail) => {
     const keep = picked.has(pickKey(set, clip));
-    const title = detail?.title?.trim()
-      ? detail.title.trim()
-      : `Clip ${detail?.rank ?? ""}`.trim();
+    const title = clipTitle(
+      detail,
+      detail?.rank ?? Number(/\d+/.exec(clip)?.[0] ?? 0) + 1,
+    );
     const match = set === "new" ? matches.get(clip) : undefined;
     const note =
       set === "new" ? (
@@ -255,7 +257,11 @@ export function CompareView({
             className="bg-tally text-tally-ink hover:bg-tally/90 focus-visible:ring-tally focus-visible:ring-offset-background inline-flex h-11 items-center gap-1.5 rounded-md px-4 text-sm font-semibold whitespace-nowrap shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 sm:h-9"
           >
             {sending && <Loader2 className="size-4 animate-spin" />}
-            Keep {plural(count, "clip")}
+            Keep {/* The number pops when a tick changes it. */}
+            <span key={count} className="pop-in tabular inline-block">
+              {count}
+            </span>{" "}
+            {count === 1 ? "clip" : "clips"}
           </button>
         </div>
       </section>
