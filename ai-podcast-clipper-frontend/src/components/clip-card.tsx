@@ -1,119 +1,24 @@
 "use client";
 
-import { Check, Copy, Download, Repeat } from "lucide-react";
+import { Check, Copy, Download, Play } from "lucide-react";
+import { useReducedMotion } from "motion/react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { clipLength } from "~/lib/format";
 import type { ClipDetail } from "~/lib/job-types";
 import { cn } from "~/lib/utils";
+import {
+  clipTitle,
+  FallbackTag,
+  isFallback,
+  PeakBadge,
+  ScoreDetails,
+} from "./clip-details";
 import { IconButton } from "./ui/icon-button";
+import { useOpenClip } from "./video/clip-viewer";
 
-const SCORE_LABELS: { key: string; label: string }[] = [
-  { key: "hook", label: "Hook" },
-  { key: "standalone", label: "Stands alone" },
-  { key: "payoff", label: "Payoff" },
-  { key: "emotion", label: "Emotion" },
-  { key: "value", label: "Value" },
-  { key: "shareability", label: "Shareable" },
-];
-
-function ScoreRow({ label, value }: { label: string; value: number }) {
-  const shown = Math.max(0, Math.min(10, value));
-  return (
-    <div className="contents">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="bg-muted h-1.5 overflow-hidden rounded-full">
-        <span
-          className="bg-tally block h-full rounded-full"
-          style={{ width: `${shown * 10}%` }}
-        />
-      </dd>
-      <dd className="tabular text-right font-medium">{shown}</dd>
-    </div>
-  );
-}
-
-/** "Audience" row: how often YouTube viewers replay this part (0-10). */
-function AudienceRow({ audience }: { audience: number }) {
-  return (
-    <dl className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1.5 text-sm">
-      <ScoreRow label="Audience" value={Math.round(audience / 10)} />
-    </dl>
-  );
-}
-
-function ScoreDetails({
-  detail,
-  weight,
-}: {
-  detail: ClipDetail;
-  weight: number;
-}) {
-  const audience = detail.audience ?? null;
-  if (detail.source === "fallback" || detail.source === "replay") {
-    return (
-      <div className="space-y-3">
-        {audience != null && <AudienceRow audience={audience} />}
-        <p
-          className={cn(
-            "text-muted-foreground text-sm leading-relaxed",
-            audience != null && "border-t pt-3",
-          )}
-        >
-          {detail.source === "replay"
-            ? "Gemini was busy, so this clip was cut around a moment YouTube viewers replay most."
-            : "Gemini returned too few moments, so this one was picked from the transcript by pacing and pauses."}{" "}
-          Re-rank to give Gemini another try.
-        </p>
-      </div>
-    );
-  }
-  const scores = detail.scores ?? {};
-  const viewers = Math.round(weight * 100);
-  return (
-    <div className="space-y-3">
-      <dl className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1.5 text-sm">
-        {SCORE_LABELS.map(({ key, label }) => (
-          <ScoreRow key={key} label={label} value={scores[key] ?? 0} />
-        ))}
-      </dl>
-      {audience != null && (
-        <div className="space-y-2 border-t pt-3">
-          <AudienceRow audience={audience} />
-          <p className="text-muted-foreground text-xs leading-relaxed">
-            The score is {100 - viewers}% Gemini
-            {detail.gemini != null
-              ? ` (${Math.round(detail.gemini)})`
-              : ""} and {viewers}% how often viewers replay this part (
-            {Math.round(audience)}).
-          </p>
-        </div>
-      )}
-      {detail.reason && (
-        <p className="border-t pt-3 text-sm leading-relaxed">{detail.reason}</p>
-      )}
-    </div>
-  );
-}
-
-/** "Most replayed" pill for clips that contain a replay hotspot. */
-function PeakBadge({ detail }: { detail?: ClipDetail }) {
-  if (!detail?.peak) return null;
-  const highlight = detail.peak.kind === "highlight";
-  return (
-    <span
-      className="bg-tally-soft text-foreground mt-1.5 inline-flex h-5 items-center gap-1 rounded-md px-1.5 text-xs font-medium"
-      title={
-        highlight
-          ? "Contains the moment SponsorBlock users marked as the highlight"
-          : "Contains one of the parts YouTube viewers replay most"
-      }
-    >
-      <Repeat className="size-3" aria-hidden />
-      {highlight ? "Viewer highlight" : "Most replayed"}
-    </span>
-  );
-}
+/** A hovered poster starts its muted preview after this long (a mouse only). */
+const PREVIEW_DELAY_MS = 400;
 
 /**
  * The score badge and its details panel. Hover and keyboard focus open it (as before);
@@ -204,7 +109,7 @@ function ScoreBadge({
         type="button"
         aria-describedby={open ? tipId : undefined}
         aria-expanded={open}
-        aria-label={`Rank ${rank}${score != null ? `, score ${score} of 100` : ""}. Show score details`}
+        aria-label={`Rank ${rank}${score != null ? `, score ${score} of 100` : ""}${isFallback(detail) ? ", picked without Gemini" : ""}. Show score details`}
         onFocus={show}
         onBlur={(e) => {
           if (!root.current?.contains(e.relatedTarget as Node | null)) close();
@@ -218,8 +123,7 @@ function ScoreBadge({
           // 26 px tall with a mouse, 34 px on a touch screen (it sits on the video, so
           // it stays smaller than a full 44 px button).
           "bg-tally text-tally-ink press flex items-baseline gap-1.5 rounded-md px-2 py-1 shadow-sm pointer-coarse:px-2.5 pointer-coarse:py-2",
-          (detail?.source === "fallback" || detail?.source === "replay") &&
-            "bg-card text-foreground",
+          isFallback(detail) && "bg-card text-foreground",
         )}
       >
         <span className="font-display tabular text-lg leading-none font-bold">
@@ -292,7 +196,14 @@ export const ClipCard = memo(function ClipCard({
     detail?.start != null && detail?.end != null
       ? clipLength(detail.end - detail.start)
       : null;
-  const title = detail?.title?.trim() ? detail.title.trim() : `Clip ${rank}`;
+  const title = clipTitle(detail, rank);
+  const openClip = useOpenClip();
+  const poster_ = useRef<HTMLButtonElement>(null);
+  const reduce = useReducedMotion();
+  // A mouse resting on the poster plays a muted preview; touch screens never do.
+  const [preview, setPreview] = useState(false);
+  const previewTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(previewTimer.current), []);
 
   const copyTitle = async () => {
     try {
@@ -311,25 +222,70 @@ export const ClipCard = memo(function ClipCard({
     >
       <div
         className={cn(
-          "relative rounded-lg",
+          "ease-move relative rounded-lg transition-[box-shadow] duration-(--motion-enter)",
           outlined && "ring-tally ring-offset-background ring-2 ring-offset-2",
           arrived && "clip-arrive",
         )}
       >
-        <video
-          src={src}
-          poster={poster}
-          controls
-          preload="none"
-          aria-label={title}
-          playsInline
-          // object-contain, not cover: in fullscreen the player fills the screen and
-          // "cover" would crop the vertical clip to the screen's width.
+        <button
+          ref={poster_}
+          type="button"
+          aria-label={`Play clip ${rank}: ${title}`}
+          onClick={() => {
+            setPreview(false);
+            openClip?.(
+              set === "new" ? "new" : "main",
+              clip,
+              poster_.current?.getBoundingClientRect() ?? null,
+            );
+          }}
+          onPointerEnter={(event) => {
+            if (event.pointerType !== "mouse" || reduce) return;
+            window.clearTimeout(previewTimer.current);
+            previewTimer.current = window.setTimeout(
+              () => setPreview(true),
+              PREVIEW_DELAY_MS,
+            );
+          }}
+          onPointerLeave={() => {
+            window.clearTimeout(previewTimer.current);
+            setPreview(false);
+          }}
           className={cn(
-            "aspect-[9/16] w-full rounded-lg bg-black object-contain transition-opacity [&:fullscreen]:rounded-none",
+            "group/poster relative block aspect-[9/16] w-full overflow-hidden rounded-lg bg-black transition-opacity",
             dimmed && "opacity-50",
           )}
-        />
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- local API image */}
+          <img
+            src={poster}
+            alt=""
+            loading="lazy"
+            className="size-full object-contain"
+          />
+          {preview && (
+            <video
+              src={src}
+              muted
+              autoPlay
+              loop
+              playsInline
+              aria-hidden
+              className="pop-in absolute inset-0 size-full object-contain"
+            />
+          )}
+          <span
+            aria-hidden
+            className={cn(
+              "absolute right-2 bottom-2 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white transition-opacity duration-(--motion-enter)",
+              preview
+                ? "opacity-0"
+                : "opacity-80 group-hover/poster:opacity-100",
+            )}
+          >
+            <Play className="ml-0.5 size-4" aria-hidden />
+          </span>
+        </button>
         <ScoreBadge
           detail={detail}
           rank={rank}
@@ -346,6 +302,7 @@ export const ClipCard = memo(function ClipCard({
         >
           {title}
         </h3>
+        <FallbackTag detail={detail} />
         <PeakBadge detail={detail} />
         <div className="mt-1 flex items-center justify-between gap-2">
           <span className="text-muted-foreground tabular text-xs">

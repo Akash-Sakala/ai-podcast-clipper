@@ -103,7 +103,7 @@ npm run start
 `npm run preview` does both in one go. For development with hot reload use `npm run dev`. Open http://127.0.0.1:3000.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with live status.
-- **Clips page:** clips best first, with score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing or downloading, then shows the new clips beside the previous ones so you keep the ones you want, clip by clip; **Try again** restarts a failed video.
+- **Clips page:** clips best first (a poster each; a mouse resting on one plays a muted preview), a full-screen viewer to watch them one after another (arrow keys or a swipe; the address links to the clip), score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing or downloading, then shows the new clips beside the previous ones so you keep the ones you want, clip by clip; **Try again** restarts a failed video.
 - **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock, and the kept videos with a button to remove them).
 
 Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line, cancelling a job and troubleshooting: [docs/advanced.md](docs/advanced.md).

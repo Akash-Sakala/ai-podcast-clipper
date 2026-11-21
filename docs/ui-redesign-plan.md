@@ -49,9 +49,9 @@ Ranking = your focus areas first, then impact on daily use, then effort. Items 1
 | 6 | Video list at a glance (done, `feat/ui-home`) | W8 | M | ui-ux-pro-max, ui-styling |
 | 7 | Stats page polish (done, `feat/ui-stats-settings`) | W9 | M | ui-ux-pro-max (chart), dataviz, ui-styling |
 | 8 | Settings feedback (done, `feat/ui-stats-settings`) | W10 | S | ui-ux-pro-max, ui-styling |
-| 9 | Full-screen clip viewer | W3 | L | frontend-design, ui-ux-pro-max, ui-styling |
-| 10 | Clip cards: one player, fallback titles | W3, W4 | M | ui-ux-pro-max, ui-styling |
-| 11 | Re-rank comparison motion | W6 | S | ui-ux-pro-max |
+| 9 | Full-screen clip viewer (done, `feat/ui-clip-viewer`) | W3 | L | frontend-design, ui-ux-pro-max, ui-styling |
+| 10 | Clip cards: one player, fallback titles (done, `feat/ui-clip-viewer`) | W3, W4 | M | ui-ux-pro-max, ui-styling |
+| 11 | Re-rank comparison motion (done, `feat/ui-clip-viewer`) | W6 | S | ui-ux-pro-max |
 
 ---
 
@@ -385,7 +385,7 @@ Research: "autosave confirmation feedback" --domain ux, "error near field" --dom
 
 ---
 
-### 9. Full-screen clip viewer
+### 9. Full-screen clip viewer (done)
 
 **Why:** your viewer choice, and W3. Reviewing 5-8 vertical clips in 150 px cards with native controls is the weakest part of the clips page.
 
@@ -430,7 +430,7 @@ Screenshots in light, dark, phone; keyboard-only walkthrough described in the ha
 
 ---
 
-### 10. Clip cards: one player at a time, fallback titles
+### 10. Clip cards: one player at a time, fallback titles (done)
 
 **Why:** W3, W4. Several clips can play at once; fallback clips show transcript sentences as titles.
 
@@ -458,7 +458,7 @@ Task: fix two clip-card problems (components/clip-card.tsx).
 
 ---
 
-### 11. Re-rank comparison motion
+### 11. Re-rank comparison motion (done)
 
 **Why:** W6, small. Ticking clips in the comparison view and confirming "Keep the new set" changes the order of clips with no visual link between before and after.
 
