@@ -80,6 +80,8 @@ def resume_pending(job: Job, mode: str, timings: dict) -> dict | None:
         return None
     log(f"Clips of the previous attempt ({pending.get('savedAt')}) are still on Modal: downloading "
         "them instead of rendering again")
+    if pending.get("videoTransfer"):          # how that attempt sent the video (this one sends nothing)
+        job.update(videoTransfer=pending["videoTransfer"])
     timings.update({k: v for k, v in (pending.get("timings") or {}).items() if k not in ("save", "total")})
     return {**pending["result"], "resumedFrom": pending.get("savedAt")}
 
@@ -98,7 +100,8 @@ def save_clips(job: Job, volume, result: dict, saver: ClipSaver, mode: str, timi
         raise
     except Exception:
         if result.get("clips"):
-            job.update(pendingSave=pending_record(mode, result, timings, time.time() - started))
+            job.update(pendingSave=pending_record(mode, result, timings, time.time() - started,
+                                                  job.data.get("videoTransfer")))
             log("The clips are kept on Modal: Try again (or Re-rank) downloads them without rendering again")
         raise
     timings["save"] = round(time.time() - saving, 1)

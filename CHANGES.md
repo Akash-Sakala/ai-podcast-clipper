@@ -55,3 +55,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-22 `feat/gemini-token-costs`: Gemini token counts per call and their estimated cost in each video's details, the stats page (a Gemini tile, Rank's cost split into Gemini and Modal) and `rank_moments.py`
 - 2026-11-22 `fix/live-sync`: the home list and a video's page stay in sync (one shared job store, read again on every page, Back included, and across tabs); job.json writes retry while the file is busy instead of failing the request
 - 2026-11-22 `fix/run-timings`: the Modal time of a run no longer counts the wait for the video download; a run that succeeds after a failure no longer keeps "failed at"
+- 2026-11-22 `fix/resume-video-transfer`: Try again after a failed save keeps how the video was sent (audio first or whole), so the app names the right steps
