@@ -501,6 +501,22 @@ def cancel_call_id(call_id: str) -> bool:
         return False
 
 
+def leftover_call_ids(data: dict) -> list[str]:
+    """Modal calls a job's runner left registered in job.json: the spawned call
+    ("modalCallId") and the clip renders render_clips started ("modalChildCallIds"; they
+    keep running when only the call that spawned them is cancelled)."""
+    ids = [data.get("modalCallId"), *(data.get("modalChildCallIds") or [])]
+    return [i for i in ids if isinstance(i, str) and i]
+
+
+def cancel_leftover_calls(data: dict) -> bool:
+    """Cancel every call of leftover_call_ids(data). True when there was one."""
+    ids = leftover_call_ids(data)
+    for call_id in ids:
+        cancel_call_id(call_id)
+    return bool(ids)
+
+
 def local_state(job_dir: pathlib.Path) -> tuple[str, dict]:
     """How the sweep treats a volume folder, from the local job.json:
     active   a runner is on it, or about to start (non-final status with a live pid or no pid yet),
@@ -542,7 +558,9 @@ def sweep_remote(volume, data_dir: pathlib.Path, current_job: str | None = None,
     of every run; never raises. Rules (see local_state): the current job and active jobs are
     never touched; idle jobs are removed now (their leftover Modal call, if any, is
     cancelled first); kept and unknown folders only once nothing in them changed for
-    min_age_hours. Folder names that are not job ids are left alone. Returns the removed names."""
+    min_age_hours. Folder names that are not job ids are left alone. Returns the removed names.
+    The leftover calls include the clip renders (leftover_call_ids): cancelling only the call
+    that spawned them let them finish and write their clips into the removed folder again."""
     now = time.time() if now is None else now
     try:
         entries = volume.listdir("/")
@@ -567,8 +585,7 @@ def sweep_remote(volume, data_dir: pathlib.Path, current_job: str | None = None,
         state, data = local_state(job_dir)                   # again, right before deleting
         if state == "active":
             continue
-        if data.get("modalCallId"):
-            cancel_call_id(data["modalCallId"])
+        cancelled = cancel_leftover_calls(data)
         try:
             volume.remove_file(f"/{name}", recursive=True)
             removed.append(name)
@@ -577,10 +594,10 @@ def sweep_remote(volume, data_dir: pathlib.Path, current_job: str | None = None,
         except Exception as exc:  # noqa: BLE001
             log(f"Could not remove /{name} from the volume: {exc}")
             continue
-        if data and (data.get("pendingSave") or data.get("modalCallId")):
+        if data and (data.get("pendingSave") or cancelled):
             try:
                 job = Job(job_dir)
-                job.update(pendingSave=None, modalCallId=None)
+                job.update(pendingSave=None, modalCallId=None, modalChildCallIds=None)
             except Exception:  # noqa: BLE001
                 pass
     if removed:

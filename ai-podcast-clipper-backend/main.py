@@ -412,49 +412,64 @@ def render_source(footage: dict | None) -> tuple[str, int | None]:
 def render_in_parallel(job_id: str, clip_moments: list, words_per_clip: list, renderer=None,
                        footage: list | None = None) -> tuple[list, list, list, list]:
     """Spawn one render per clip and report combined progress, with the clips already on the
-    volume in "ready". footage: per clip {"index", "targetUs"} (None: the whole video).
+    volume in "ready" and the renders' call ids in "calls" (the laptop keeps them, so it can
+    cancel them even when this function was killed). footage: per clip {"index", "targetUs"}
+    (None: the whole video). If this call is cancelled or fails while rendering, the renders
+    still running are cancelled: a spawned call does not end with the call that spawned it.
     Returns clips, errors, usages and clipTimings in clip order."""
     total = len(clip_moments)
     renderer = renderer or Renderer()
     by_index = {int(f["index"]): f for f in footage or []}
     calls = {}
-    for i, moment in enumerate(clip_moments):
-        source, target_us = render_source(by_index.get(i))
-        calls[i] = renderer.render.spawn(job_id, i, moment, words_per_clip[i], source=source, target_us=target_us)
     results: dict[int, dict] = {}
     on_volume: dict[int, bool] = {}
-    fractions = {i: 0.0 for i in calls}
-    started = time.time()
-    while len(results) < total:
-        for i, call in calls.items():
-            if i in results:
-                continue
-            try:
-                results[i] = call.get(timeout=0)
-                fractions[i] = 1.0
-            except (TimeoutError, modal.exception.TimeoutError):
+    try:
+        for i, moment in enumerate(clip_moments):
+            source, target_us = render_source(by_index.get(i))
+            calls[i] = renderer.render.spawn(job_id, i, moment, words_per_clip[i], source=source,
+                                             target_us=target_us)
+        call_ids = [cid for cid in (getattr(call, "object_id", None) for call in calls.values())
+                    if isinstance(cid, str)]
+        fractions = {i: 0.0 for i in calls}
+        started = time.time()
+        while len(results) < total:
+            for i, call in calls.items():
+                if i in results:
+                    continue
                 try:
-                    fractions[i] = max(fractions[i], float(progress_dict.get(f"{job_id}:clip{i}") or 0))
-                except Exception:  # noqa: BLE001
+                    results[i] = call.get(timeout=0)
+                    fractions[i] = 1.0
+                except (TimeoutError, modal.exception.TimeoutError):
+                    try:
+                        fractions[i] = max(fractions[i], float(progress_dict.get(f"{job_id}:clip{i}") or 0))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                except Exception as exc:  # noqa: BLE001 - e.g. the container crashed
+                    results[i] = {"index": i, "name": f"clip_{i}.mp4", "error": f"clip_{i}: {exc}"}
+                    fractions[i] = 1.0
+                try:
+                    on_volume[i] = collect_clip(job_id, results[i])
+                except Exception as exc:  # noqa: BLE001
+                    results[i] = {**results[i], "error": f"clip_{i}: could not save it ({exc})"}
+                    results[i].pop("data", None)
+                    on_volume[i] = False
+            fraction = sum(fractions.values()) / total
+            elapsed = time.time() - started
+            eta = round(elapsed / fraction * (1 - fraction)) if fraction >= 0.15 and len(results) < total else None
+            report_progress(job_id, {"stage": "rendering", "done": len(results), "total": total,
+                                     "fraction": round(fraction, 3), "etaSeconds": eta, "calls": call_ids,
+                                     "ready": [f"clip_{i}.mp4" for i in sorted(on_volume) if on_volume[i]]})
+            if len(results) < total:
+                time.sleep(POLL_SECONDS)
+    except BaseException:   # cancelled (modal.exception.InputCancellation), or failed
+        for i, call in calls.items():
+            if i not in results:
+                try:
+                    call.cancel(terminate_containers=True)
+                except Exception:  # noqa: BLE001 - the laptop cancels them too ("calls")
                     pass
-                continue
-            except Exception as exc:  # noqa: BLE001 - e.g. the container crashed
-                results[i] = {"index": i, "name": f"clip_{i}.mp4", "error": f"clip_{i}: {exc}"}
-                fractions[i] = 1.0
-            try:
-                on_volume[i] = collect_clip(job_id, results[i])
-            except Exception as exc:  # noqa: BLE001
-                results[i] = {**results[i], "error": f"clip_{i}: could not save it ({exc})"}
-                results[i].pop("data", None)
-                on_volume[i] = False
-        fraction = sum(fractions.values()) / total
-        elapsed = time.time() - started
-        eta = round(elapsed / fraction * (1 - fraction)) if fraction >= 0.15 and len(results) < total else None
-        report_progress(job_id, {"stage": "rendering", "done": len(results), "total": total,
-                                 "fraction": round(fraction, 3), "etaSeconds": eta,
-                                 "ready": [f"clip_{i}.mp4" for i in sorted(on_volume) if on_volume[i]]})
-        if len(results) < total:
-            time.sleep(POLL_SECONDS)
+        raise
 
     clips, errors, usages, timings = [], [], [], []
     for i in range(total):

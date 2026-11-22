@@ -157,6 +157,55 @@ def test_a_call_that_could_not_be_cancelled_is_cancelled_by_the_next_run(tmp_pat
     assert calls == [("cancel-id", "fc-old", True)] and read(job_dir).get("modalCallId") is None
 
 
+def test_try_again_also_cancels_the_clip_renders_a_killed_runner_left(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path, modalCallId="fc-old", modalChildCallIds=["fc-r0", "fc-r1"], status="failed")
+    calls = []
+    install_fake_modal(monkeypatch, FakeVolume(), calls)
+    cloud.cancel_stale_call(jobstore.Job(job_dir))
+    assert [c[1] for c in calls] == ["fc-old", "fc-r0", "fc-r1"]
+    data = read(job_dir)
+    assert data.get("modalCallId") is None and data.get("modalChildCallIds") is None
+
+
+def test_a_failed_run_cancels_the_clip_renders_too(tmp_path, monkeypatch):
+    job = jobstore.Job(make_job(tmp_path))
+    order, calls = [], []
+    install_fake_modal(monkeypatch, FakeVolume(), calls)
+    job.remote_call = FakeCall(order)
+    job.update(modalCallId="fc-123", modalChildCallIds=["fc-r0", "fc-r1"])
+    cloud.cancel_remote_call(job)
+    assert order == [("cancel", True)] and [c[1] for c in calls] == ["fc-r0", "fc-r1"]
+    data = read(job.dir)
+    assert data.get("modalCallId") is None and data.get("modalChildCallIds") is None
+
+
+def test_waiting_keeps_the_render_call_ids_out_of_the_shown_progress(tmp_path, monkeypatch):
+    job = jobstore.Job(make_job(tmp_path))
+    rendering = {"stage": "rendering", "done": 0, "total": 2, "fraction": 0.1, "calls": ["fc-r0", "fc-r1"],
+                 "ready": []}
+
+    class Call:
+        polls = 0
+
+        def get(self, timeout=None):
+            Call.polls += 1
+            if Call.polls < 3:
+                raise TimeoutError()
+            return {"clips": []}
+
+    fake = types.SimpleNamespace(
+        Dict=types.SimpleNamespace(from_name=lambda *a, **k: types.SimpleNamespace(
+            get=lambda key: dict(rendering), pop=lambda key: None)),
+        exception=types.SimpleNamespace(TimeoutError=TimeoutError, ConnectionError=ConnectionError))
+    monkeypatch.setitem(sys.modules, "modal", fake)
+    assert cloud.wait_for(Call(), job) == {"clips": []}
+    data = read(job.dir)
+    assert data["modalChildCallIds"] == ["fc-r0", "fc-r1"]
+    assert "calls" not in data["progress"] and data["progress"]["stage"] == "rendering"
+    cloud.finished(job)
+    assert read(job.dir).get("modalChildCallIds") is None
+
+
 def test_modal_call_cancel_has_the_terminate_containers_option():
     modal = pytest.importorskip("modal")
     assert "terminate_containers" in inspect.signature(modal.FunctionCall.cancel).parameters
@@ -170,7 +219,8 @@ def test_sweep_removes_only_folders_no_run_can_use(tmp_path, monkeypatch):
         "20261101-000000-aaaaa1": dict(status="processing", pid=os.getpid()),       # running here: keep
         "20261101-000000-aaaaa2": dict(status="queued"),                             # about to start: keep
         "20261101-000000-aaaaa3": dict(status="done"),                               # finished: remove now
-        "20261101-000000-aaaaa4": dict(status="processing", pid=99999999, modalCallId="fc-9"),  # killed runner
+        "20261101-000000-aaaaa4": dict(status="processing", pid=99999999, modalCallId="fc-9",   # killed runner,
+                                       modalChildCallIds=["fc-9r0", "fc-9r1"]),  # with its clip renders
         "20261101-000000-aaaaa5": dict(status="failed", pendingSave={"mode": "full"}),  # kept clips, recent
         "20261101-000000-aaaaa6": dict(status="failed", pendingSave={"mode": "full"}),  # kept clips, old
     }
@@ -189,7 +239,9 @@ def test_sweep_removes_only_folders_no_run_can_use(tmp_path, monkeypatch):
     removed = transfer.sweep_remote(volume, tmp_path, current_job=JOB_ID, now=now)
     assert sorted(removed) == ["20261101-000000-aaaaa3", "20261101-000000-aaaaa4", "20261101-000000-aaaaa6",
                                "20261101-000000-bbbbb1"]
-    assert calls == [("cancel-id", "fc-9", True)]
+    assert calls == [("cancel-id", "fc-9", True), ("cancel-id", "fc-9r0", True), ("cancel-id", "fc-9r1", True)]
+    killed = read(tmp_path / "jobs" / "20261101-000000-aaaaa4")
+    assert killed.get("modalCallId") is None and killed.get("modalChildCallIds") is None
     assert read(tmp_path / "jobs" / "20261101-000000-aaaaa6").get("pendingSave") is None
     assert read(tmp_path / "jobs" / "20261101-000000-aaaaa5")["pendingSave"] == {"mode": "full"}
 
