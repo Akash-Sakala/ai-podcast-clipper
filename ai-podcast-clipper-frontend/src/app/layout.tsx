@@ -2,6 +2,7 @@ import "~/styles/globals.css";
 
 import { type Metadata } from "next";
 import localFont from "next/font/local";
+import { JobsSync } from "~/components/jobs-sync";
 import { MotionProvider } from "~/components/motion-provider";
 import { RunSignalEffects } from "~/components/run-signal-effects";
 import { ThemeProvider } from "~/components/theme-provider";
@@ -47,6 +48,7 @@ export default function RootLayout({
         >
           <MotionProvider>
             {children}
+            <JobsSync />
             <RunSignalEffects />
           </MotionProvider>
         </ThemeProvider>

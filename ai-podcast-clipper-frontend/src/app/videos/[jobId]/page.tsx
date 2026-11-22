@@ -9,19 +9,23 @@ import { todayUsdInr } from "~/lib/fx";
 import { getJob } from "~/lib/jobs";
 
 // One read per request: generateMetadata and the page both ask for the same job.
-const loadJob = cache((jobId: string) => getJob(jobId));
+// The time is taken before the read: the browser keeps whichever copy is newer.
+const loadJob = cache(async (jobId: string) => {
+  const servedAt = Date.now();
+  return { job: await getJob(jobId), servedAt };
+});
 
 export const dynamic = "force-dynamic";
 
 type Params = { params: Promise<{ jobId: string }> };
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
-  const job = await loadJob((await params).jobId);
+  const { job } = await loadJob((await params).jobId);
   return { title: job ? `${job.title} | Podcast Clipper` : "Podcast Clipper" };
 }
 
 export default async function VideoRoute({ params }: Params) {
-  const job = await loadJob((await params).jobId);
+  const { job, servedAt } = await loadJob((await params).jobId);
   if (!job) notFound();
   const settings = await readSettings();
   const rate = settings.currency === "inr" ? await todayUsdInr() : null;
@@ -32,6 +36,7 @@ export default async function VideoRoute({ params }: Params) {
       <main className="flex-1">
         <VideoPage
           initialJob={job}
+          servedAt={servedAt}
           currency={settings.currency}
           rate={rate?.rate ?? null}
         />

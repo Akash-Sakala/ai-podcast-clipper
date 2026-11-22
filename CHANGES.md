@@ -30,7 +30,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Modal calls are cancelled on failure or interrupt, and every run sweeps leftover volume folders. Rendered clips stay on Modal when saving fails (`pendingSave`). Keeping chosen clips swaps them in file by file. Downloads resume; the video download starts while the audio uploads; all clips are saved at once and appear in the app as each lands; uploads use 4 pieces at once with a per-piece time limit; waiting for Modal rides out connection drops.
 
 **Frontend**
-- Loading, error and not-found screens; a slim job list with ETag/304 and polling that pauses in hidden tabs; accessibility fixes; `src/env.ts` instead of zod and t3-env; components split into `components/{stats,new-job,video}/` and `lib/` modules.
+- Loading, error and not-found screens; one live copy of the jobs shared by every page and tab (the newest read wins, so Back never shows an old list), a slim job list with ETag/304, job files written and read safely while Windows or OneDrive holds them open; accessibility fixes; `src/env.ts` instead of zod and t3-env; components split into `components/{stats,new-job,video}/` and `lib/` modules.
 
 **Unchanged from upstream:** the LR-ASD model and speaker-selection rules, and the subtitle style.
 
@@ -53,3 +53,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-21 `feat/ui-clip-viewer`: full-screen clip viewer, poster cards with hover previews, neutral titles for fallback clips
 - 2026-11-21 `fix/gemini-failover`: a stalled request or a used-up quota goes straight to the next Gemini model; 75 s request timeout; default chain `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`
 - 2026-11-22 `feat/gemini-token-costs`: Gemini token counts per call and their estimated cost in each video's details, the stats page (a Gemini tile, Rank's cost split into Gemini and Modal) and `rank_moments.py`
+- 2026-11-22 `fix/live-sync`: the home list and a video's page stay in sync (one shared job store, read again on every page, Back included, and across tabs); job.json writes retry while the file is busy instead of failing the request

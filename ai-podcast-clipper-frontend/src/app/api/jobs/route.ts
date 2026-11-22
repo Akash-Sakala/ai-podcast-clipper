@@ -15,11 +15,12 @@ import { jobDir } from "~/lib/paths";
 import { parseYoutubeLink } from "~/lib/youtube";
 
 /**
- * List all jobs (newest first) as slim summaries (see JobSummary). The dashboard
- * polls this with If-None-Match, so an unchanged list is a 304.
+ * List all jobs (newest first) as slim summaries (see JobSummary). Every page polls
+ * this (lib/job-sync.ts) with If-None-Match, so an unchanged list is a 304.
  */
 export async function GET(request: Request) {
-  return jsonWithEtag(request, await listJobSummaries());
+  const servedAt = Date.now();
+  return jsonWithEtag(request, await listJobSummaries(), servedAt);
 }
 
 /**

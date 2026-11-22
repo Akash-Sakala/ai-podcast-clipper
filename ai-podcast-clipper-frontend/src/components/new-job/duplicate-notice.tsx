@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
+import { jobsChanged } from "~/lib/job-sync";
 import { ACTIVE_STATUSES, type JobStatus } from "~/lib/job-types";
 
 export type Duplicate = {
@@ -53,6 +54,7 @@ export function DuplicateNotice({
         };
         throw new Error(body.error ?? `Request failed (${response.status})`);
       }
+      void jobsChanged(duplicate.id);
       router.push(href);
     } catch (error) {
       toast.error("Couldn't re-rank", {
