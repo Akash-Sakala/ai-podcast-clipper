@@ -143,7 +143,7 @@ Add `--keep-video` to a run to keep `input.mp4` in the job folder afterwards ins
 - **Waiting for the GPU:** if the connection to Modal drops while a function runs there, the runner keeps asking for the result for up to 15 minutes (`runner.log`: "Lost the connection to Modal"), instead of failing the run.
 - **After a successful run** the video, audio and footage are deleted locally and the job's volume folder is removed. After a failed run the volume copy is removed too (except rendered clips, see below), and a video already in the job folder stays for **Try again**.
 - **Clips that rendered but could not be saved** stay on Modal: `job.json` `pendingSave` records them, and **Try again** (or Re-rank) downloads them instead of rendering again. The next run's sweep removes such folders after a day.
-- **Cleanup of killed runs:** at the start of every run the runner sweeps the volume and removes folders of jobs that are finished, failed or gone (cancelling any Modal call still running for them); folders of active jobs are never touched. When a run fails or is interrupted, its running Modal calls are cancelled.
+- **Cleanup of killed runs:** at the start of every run the runner sweeps the volume and removes folders of jobs that are finished, failed or gone (cancelling any Modal call still running for them, including the clip renders `render_clips` started, which do not stop with it); folders of active jobs are never touched. When a run fails or is interrupted, its running Modal calls and clip renders are cancelled. A clip render still waiting for a GPU when it is cancelled runs anyway once one is free (Modal does not drop it), but its footage is gone by then, so it fails within a second (checked 2026-11-22).
 
 ## Most replayed and SponsorBlock
 
@@ -218,7 +218,7 @@ Only phase 2 falls back (the whole video is uploaded after ranking, and clips re
 
 ### job.json fields
 
-Besides status, progress and clip details (each with `complete` and `issue` from the judge, and `from` after a comparison): `videoTransfer` (`audio-first`, `laptop-download` or `upload`), `engine` (Parakeet's audio length and speed, GPU), `timings`, `cost`, `runs`, `reranks`, `failedStage`, and run state: `modalCallId` (the running Modal call, so a killed runner's call can be cancelled), `pendingSave` (rendered clips still on Modal), `keepRemote`. A run adds optional `clipTimings` (per clip: seconds, container start-up, render steps, encoder), `coldStarts` (per container that started: stage, start-up seconds, GPU) and `resumedFrom` (clips of an earlier attempt were downloaded instead of rendered). New `timings` keys of a two-phase run: `audio` (getting and uploading the audio), `download` (the video, in parallel with phase 1), `downloadWait` (how long the run then waited for it), `cut`, `clipUpload`; only `downloadWait` of the download adds to the total. `clipSave` (megabytes, seconds, Mbps and clips at once of the clip download), `keptVideo`, `liveClips` / `liveClipsSet` (clips saved so far, during a run), `plannedClips` (every clip the run will make, published as soon as the ranking is known, so the clips page shows a titled place per clip; cleared when the run ends) and `comparison` (a re-rank's new set waiting for a choice) are also stored. The ledger line of a run carries the same run fields.
+Besides status, progress and clip details (each with `complete` and `issue` from the judge, and `from` after a comparison): `videoTransfer` (`audio-first`, `laptop-download` or `upload`), `engine` (Parakeet's audio length and speed, GPU), `timings`, `cost`, `runs`, `reranks`, `failedStage`, and run state: `modalCallId` (the running Modal call, so a killed runner's call can be cancelled), `modalChildCallIds` (the clip renders of that call, cancelled with it), `pendingSave` (rendered clips still on Modal), `keepRemote`. A run adds optional `clipTimings` (per clip: seconds, container start-up, render steps, encoder), `coldStarts` (per container that started: stage, start-up seconds, GPU) and `resumedFrom` (clips of an earlier attempt were downloaded instead of rendered). New `timings` keys of a two-phase run: `audio` (getting and uploading the audio), `download` (the video, in parallel with phase 1), `downloadWait` (how long the run then waited for it), `cut`, `clipUpload`; only `downloadWait` of the download adds to the total. `clipSave` (megabytes, seconds, Mbps and clips at once of the clip download), `keptVideo`, `liveClips` / `liveClipsSet` (clips saved so far, during a run), `plannedClips` (every clip the run will make, published as soon as the ranking is known, so the clips page shows a titled place per clip; cleared when the run ends) and `comparison` (a re-rank's new set waiting for a choice) are also stored. The ledger line of a run carries the same run fields.
 
 ## Stats page
 
@@ -282,11 +282,11 @@ Put the winner in `CLIPPER_GPU`, then `modal deploy main.py`.
 
 ## Cancel a running job
 
-Stopping `npm run dev` does not stop a job. To cancel one:
+Stopping `npm run dev` does not stop a job. To cancel one, stop its runner (step 1). The next run of any video, or Try again on this one, then cancels its Modal call and clip renders and removes its files from the volume by itself; steps 2 and 3 do the same by hand, without starting another run:
 
 ```powershell
 # 1. stop the runner(s) on this laptop
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -like '*runner.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*.exe' -and $_.CommandLine -like '*runner.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # 2. stop the job's containers: transcribe_and_rank or render_clips, then any Transcriber or Renderer ones
 #    (an empty list = nothing running, nothing billed)

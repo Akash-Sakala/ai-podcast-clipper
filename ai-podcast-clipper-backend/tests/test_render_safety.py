@@ -288,6 +288,46 @@ def test_render_in_parallel_reports_each_clip_once_it_is_on_the_volume(tmp_path,
     json.dumps(timings)
 
 
+def test_render_in_parallel_cancels_the_renders_still_running_when_it_is_cancelled(tmp_path, monkeypatch):
+    """A spawned call does not end with the call that spawned it: when render_clips is
+    cancelled (Modal raises InputCancellation in it), the clip renders still running must be
+    cancelled too, and their ids must have been reported for the laptop ("calls")."""
+    pytest.importorskip("modal")
+    import main
+
+    puts, cancelled = [], []
+    monkeypatch.setattr(main, "JOBS_PATH", tmp_path)
+    monkeypatch.setattr(main, "jobs_volume", types.SimpleNamespace(commit=lambda: None))
+    monkeypatch.setattr(main, "progress_dict", types.SimpleNamespace(
+        put=lambda k, v: puts.append((k, v)), get=lambda k: 0.2, pop=lambda k: None))
+
+    class Cancelled(BaseException):       # stands in for modal.exception.InputCancellation
+        pass
+
+    def cancelled_while_waiting(seconds):
+        raise Cancelled()
+
+    monkeypatch.setattr(main.time, "sleep", cancelled_while_waiting)
+
+    class Call:
+        def __init__(self, i):
+            self.i, self.object_id = i, f"fc-r{i}"
+
+        def get(self, timeout=None):
+            if self.i == 0:
+                return {"index": 0, "name": "clip_0.mp4", "written": True, "usage": {"seconds": 1.0}}
+            raise TimeoutError()
+
+        def cancel(self, terminate_containers=False):
+            cancelled.append((self.i, terminate_containers))
+
+    renderer = types.SimpleNamespace(render=types.SimpleNamespace(spawn=lambda job, i, *a, **k: Call(i)))
+    with pytest.raises(Cancelled):
+        main.render_in_parallel("job1", [{}, {}, {}], [[], [], []], renderer)
+    assert cancelled == [(1, True), (2, True)]                    # clip 0 had finished
+    assert [v["calls"] for k, v in puts if k == "job1"] == [["fc-r0", "fc-r1", "fc-r2"]]
+
+
 def test_a_clip_is_committed_under_its_name_only_when_complete(tmp_path, monkeypatch):
     pytest.importorskip("modal")
     import main

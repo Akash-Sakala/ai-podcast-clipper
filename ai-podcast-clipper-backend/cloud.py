@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from clipper_names import APP_NAME, PROGRESS_DICT, RENDER_FUNCTION, TRANSCRIBE_FUNCTION
 from jobstore import Job, log, set_progress
-from transfer import cancel_call_id
+from transfer import cancel_call_id, cancel_leftover_calls
 
 POLL_SECONDS = 3
 
@@ -43,7 +43,7 @@ def mirror_progress(job: Job) -> Callable[[dict], None]:
     """The default progress handler: the call's stage and numbers into job.json."""
 
     def mirror(current: dict) -> None:
-        fields = {k: v for k, v in current.items() if k not in ("stage", "ready")}
+        fields = {k: v for k, v in current.items() if k not in ("stage", "ready", "calls")}
         set_progress(job, current.get("stage", "processing"), **fields)
 
     return mirror
@@ -87,6 +87,7 @@ def wait_for(call, job: Job, on_ready=None, on_progress: Callable[[dict], None] 
                 current = None
             if current and current != last:
                 last = current
+                remember_child_calls(job, current.get("calls"))
                 on_progress(current)
                 if on_ready and current.get("ready"):
                     try:
@@ -112,20 +113,37 @@ def spawn(job: Job, function, *args, **kwargs):
     return call
 
 
+def remember_child_calls(job: Job, call_ids) -> None:
+    """job.json "modalChildCallIds": the clip renders render_clips reports ("calls" in its
+    progress). A spawned call keeps running when the call that spawned it is cancelled, so
+    every cancel below (and the next run's sweep, if this runner is killed) cancels these too."""
+    ids = [i for i in call_ids or [] if isinstance(i, str) and i]
+    if ids and ids != job.data.get("modalChildCallIds"):
+        job.update(modalChildCallIds=ids)
+
+
 def finished(job: Job) -> None:
     """The spawned call returned: nothing to cancel any more."""
     job.remote_call = None
-    if job.data.get("modalCallId"):
-        job.update(modalCallId=None)
+    if job.data.get("modalCallId") or job.data.get("modalChildCallIds"):
+        job.update(modalCallId=None, modalChildCallIds=None)
+
+
+def cancel_child_calls(job: Job) -> None:
+    for call_id in job.data.get("modalChildCallIds") or []:
+        cancel_call_id(call_id)
+    if job.data.get("modalChildCallIds"):
+        job.update(modalChildCallIds=None)
 
 
 def cancel_remote_call(job: Job) -> None:
     """Stop the spawned call (and its GPU containers) when this run ends without its result:
-    a failure, a stop signal, or giving up on a Modal outage. Called before the volume
-    folder is removed, so nothing keeps running on deleted inputs. A no-op once the call
-    has returned."""
+    a failure, a stop signal, or giving up on a Modal outage, and then the clip renders it
+    started. Called before the volume folder is removed, so nothing keeps running on deleted
+    inputs (or writes clips into it again). A no-op once the call has returned."""
     call = getattr(job, "remote_call", None)
     if call is None:
+        cancel_child_calls(job)
         return
     job.remote_call = None
     try:
@@ -135,15 +153,16 @@ def cancel_remote_call(job: Job) -> None:
             job.update(modalCallId=None)
     except Exception as exc:  # noqa: BLE001 - the next run's sweep tries again (modalCallId)
         log(f"Could not cancel the job on Modal: {exc}")
+    cancel_child_calls(job)
 
 
 def cancel_stale_call(job: Job) -> None:
-    """A previous attempt of this job whose runner was killed may still be running on Modal."""
-    call_id = job.data.get("modalCallId")
-    if call_id:
+    """A previous attempt of this job whose runner was killed may still be running on Modal
+    (with the clip renders it started)."""
+    if job.data.get("modalCallId") or job.data.get("modalChildCallIds"):
         log("Cancelling the previous attempt still registered on Modal")
-        cancel_call_id(call_id)
-        job.update(modalCallId=None)
+        cancel_leftover_calls(job.data)
+        job.update(modalCallId=None, modalChildCallIds=None)
 
 
 class BackgroundCall:
