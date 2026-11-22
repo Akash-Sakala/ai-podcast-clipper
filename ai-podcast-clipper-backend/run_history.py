@@ -16,7 +16,10 @@ A run entry:
                  "gpu_render", "gpu_total", "total"}  (seconds; a step that did not run is missing;
                  two-phase runs add "audio", "downloadWait", "cut", "clipUpload", see phases.py,
                  and their "download" overlaps phase 1: only "downloadWait" of it adds to "total"),
-     "cost": {"usd", "gpuSeconds", "gpu", "containers"} | null}
+     "cost": {"usd", "gpuSeconds", "gpu", "containers", "stages", "rates",
+              "gemini": {"usd", "calls", "tokens", "models", "unpriced", "prices"}} | null}
+     ("usd" is Modal's alone; "gemini" is the Gemini API estimate from the calls' token
+     counts, see gemini_costs.py, and is missing for runs before it was recorded)
 
 Optional run fields (only when known): "failedStage", "maxClips", "promptVersion",
 "usdInr", "clipSources", and for measuring speed "clipTimings" (per clip: seconds,

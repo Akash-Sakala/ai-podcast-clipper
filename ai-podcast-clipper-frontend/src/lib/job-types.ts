@@ -44,8 +44,36 @@ export type JobProgress = {
  */
 export type VideoTransfer = "laptop-download" | "upload" | "audio-first";
 
-/** Estimated Modal cost of the last run (see backend costs.py). */
+/** Gemini API calls of a run, priced from their token counts (backend gemini_costs.py). */
+export type GeminiCost = {
+  usd: number;
+  calls: number;
+  /** Output excludes thinking; both are billed at the output price. */
+  tokens: { input: number; cached: number; output: number; thinking: number };
+  models?: Record<
+    string,
+    {
+      calls: number;
+      usd: number;
+      input: number;
+      cached: number;
+      output: number;
+      thinking: number;
+    }
+  >;
+  /** Models the price table does not know (their calls count as $0). */
+  unpriced?: string[];
+  /** The date the price table was checked against Google's pricing page. */
+  prices?: string;
+};
+
+/**
+ * Estimated cost of the last run: Modal (see backend costs.py) in `usd` and `stages`,
+ * Gemini in `gemini` (missing for runs before token counts were recorded). The run's
+ * total is usd + gemini.usd (see runTotalUsd).
+ */
 export type JobCost = {
+  /** Modal's part alone, so it can be checked against Modal's bill. */
   usd: number;
   gpuSeconds?: number | null;
   gpu?: string | null;
@@ -54,6 +82,7 @@ export type JobCost = {
   stages?: Partial<Record<CostStage, number>> | null;
   /** "modal": priced with Modal's live rates; "built-in": costs.py's table. */
   rates?: "modal" | "built-in";
+  gemini?: GeminiCost | null;
 };
 
 export type CostStage = "transcribe" | "rank" | "render";

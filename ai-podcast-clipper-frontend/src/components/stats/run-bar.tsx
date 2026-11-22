@@ -1,9 +1,10 @@
+import { Fragment } from "react";
 import { type Money, stepTime } from "~/lib/format";
 import type { CostStage } from "~/lib/job-types";
 import { type RunRow, TIME_STAGES } from "~/lib/stats-types";
 import { cn } from "~/lib/utils";
 import { BarPopover } from "./bar-popover";
-import { STAGE_COLORS, STAGE_LABELS, Swatch } from "./stage-style";
+import { rankNote, STAGE_COLORS, STAGE_LABELS, Swatch } from "./stage-style";
 
 export function RunBar({
   run,
@@ -56,22 +57,34 @@ export function RunBar({
         </thead>
         <tbody>
           {shown.map((k) => (
-            <tr key={k}>
-              <td className="pr-4 whitespace-nowrap">
-                <span className="inline-flex items-center gap-1.5">
-                  <Swatch stage={k} />
-                  {STAGE_LABELS[k]}
-                </span>
-              </td>
-              <td className="pr-4 text-right whitespace-nowrap">
-                {stepTime(run.time[k])}
-              </td>
-              <td className="text-right whitespace-nowrap">
-                {run.stageCost && k in run.stageCost
-                  ? m(run.stageCost[k as CostStage])
-                  : "—"}
-              </td>
-            </tr>
+            <Fragment key={k}>
+              <tr>
+                <td className="pr-4 whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Swatch stage={k} />
+                    {STAGE_LABELS[k]}
+                  </span>
+                </td>
+                <td className="pr-4 text-right whitespace-nowrap">
+                  {stepTime(run.time[k])}
+                </td>
+                <td className="text-right whitespace-nowrap">
+                  {run.stageCost && k in run.stageCost
+                    ? m(run.stageCost[k as CostStage])
+                    : "—"}
+                </td>
+              </tr>
+              {k === "rank" && run.rankSplit && (
+                <tr>
+                  <td
+                    colSpan={3}
+                    className="text-muted-foreground pb-1 pl-4 text-xs whitespace-nowrap"
+                  >
+                    {rankNote(run.rankSplit, m)}
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>

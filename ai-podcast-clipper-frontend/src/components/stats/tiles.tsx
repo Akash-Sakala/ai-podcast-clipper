@@ -1,6 +1,12 @@
 "use client";
 
-import { formatMoney, type Money, stepTime } from "~/lib/format";
+import {
+  formatMoney,
+  type Money,
+  plural,
+  stepTime,
+  tokenCount,
+} from "~/lib/format";
 import type { Currency } from "~/lib/settings-types";
 import { MODAL_MONTHLY_CREDIT, type Stats } from "~/lib/stats-types";
 import { useTween } from "~/lib/use-tween";
@@ -92,5 +98,30 @@ export function BillTile({ stats }: { stats: Stats }) {
             : "Modal's bill could not be read yet."}
       </span>
     </div>
+  );
+}
+
+/** Estimated Gemini spend of the period, from the calls' token counts. */
+export function GeminiTile({ stats }: { stats: Stats }) {
+  const g = stats.gemini;
+  const when =
+    stats.period === "month" ? stats.periodLabel.split(" ")[0] : "all time";
+  let note = "Token counts start with the next run.";
+  if (g) {
+    note = `${plural(g.calls, "call")}, ${tokenCount(g.tokensIn)} tokens in, ${tokenCount(g.tokensOut)} out. Estimated from ${plural(g.runs, "run")}.`;
+    if (g.unpriced.length) note += ` No price for ${g.unpriced.join(", ")}.`;
+  }
+  return (
+    <Tile
+      label={`Gemini, ${when}`}
+      value={
+        <MoneyValue
+          value={g?.spend ?? null}
+          currency={stats.currency}
+          period={stats.period}
+        />
+      }
+      note={note}
+    />
   );
 }

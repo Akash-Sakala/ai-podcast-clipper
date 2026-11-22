@@ -159,8 +159,9 @@ export function RunsCard({
       )}
       {stats.reconcile && (
         <p className="text-muted-foreground mt-3 text-xs leading-relaxed">
-          This month these runs add up to {m(stats.reconcile.runs)} of the{" "}
-          {m(stats.reconcile.apps)} Modal charged for running the app.
+          This month the Modal part of these runs adds up to{" "}
+          {m(stats.reconcile.runs)} of the {m(stats.reconcile.apps)} Modal
+          charged for running the app.
         </p>
       )}
     </Card>

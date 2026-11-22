@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { type Money, stepTime } from "~/lib/format";
 import type { CostStage } from "~/lib/job-types";
 import {
@@ -10,7 +11,13 @@ import {
 import { cn } from "~/lib/utils";
 import { Card } from "../ui/card";
 import { BarPopover } from "./bar-popover";
-import { STAGE_COLORS, STAGE_INKS, STAGE_LABELS, Swatch } from "./stage-style";
+import {
+  rankNote,
+  STAGE_COLORS,
+  STAGE_INKS,
+  STAGE_LABELS,
+  Swatch,
+} from "./stage-style";
 
 function compactTime(seconds: number) {
   const s = Math.round(seconds);
@@ -25,16 +32,19 @@ function StageBar({
   label,
   total,
   format,
+  notes,
 }: {
   values: [TimeStage, number][];
   max: number;
   label: string;
   total: string;
   format: (stage: TimeStage, value: number) => string;
+  /** A line under a stage in the popover (Rank's Gemini and Modal parts). */
+  notes?: Partial<Record<TimeStage, string>>;
 }) {
   const sumValues = values.reduce((a, [, v]) => a + v, 0);
   const shown = values.filter(([, v]) => v > 0);
-  const spoken = `${label}: ${shown.map(([k, v]) => `${STAGE_LABELS[k]} ${format(k, v)}`).join(", ")}`;
+  const spoken = `${label}: ${shown.map(([k, v]) => `${STAGE_LABELS[k]} ${format(k, v)}${notes?.[k] ? ` (${notes[k]})` : ""}`).join(", ")}`;
   return (
     <div className="grid grid-cols-[3.75rem_1fr_auto] items-center gap-3">
       <span className="text-muted-foreground text-xs">{label}</span>
@@ -78,20 +88,32 @@ function StageBar({
           <table className="tabular">
             <tbody>
               {shown.map(([stage, value]) => (
-                <tr key={stage}>
-                  <td className="pr-4 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1.5">
-                      <Swatch stage={stage} />
-                      {STAGE_LABELS[stage]}
-                    </span>
-                  </td>
-                  <td className="pr-4 text-right whitespace-nowrap">
-                    {format(stage, value)}
-                  </td>
-                  <td className="text-muted-foreground text-right whitespace-nowrap">
-                    {Math.round((value / sumValues) * 100)}%
-                  </td>
-                </tr>
+                <Fragment key={stage}>
+                  <tr>
+                    <td className="pr-4 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Swatch stage={stage} />
+                        {STAGE_LABELS[stage]}
+                      </span>
+                    </td>
+                    <td className="pr-4 text-right whitespace-nowrap">
+                      {format(stage, value)}
+                    </td>
+                    <td className="text-muted-foreground text-right whitespace-nowrap">
+                      {Math.round((value / sumValues) * 100)}%
+                    </td>
+                  </tr>
+                  {notes?.[stage] && (
+                    <tr>
+                      <td
+                        colSpan={3}
+                        className="text-muted-foreground pb-1 pl-4 text-xs whitespace-nowrap"
+                      >
+                        {notes[stage]}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -155,6 +177,9 @@ export function StageCard({
                 total={m(b.totalCost)}
                 values={COST_STAGES.map((k) => [k, b.cost![k].usd])}
                 format={(stage) => m(b.cost![stage as CostStage])}
+                notes={
+                  b.rankSplit ? { rank: rankNote(b.rankSplit, m) } : undefined
+                }
               />
             ))
           ) : (
@@ -174,9 +199,10 @@ export function StageCard({
       </div>
       <p className="text-muted-foreground mt-3 text-xs leading-relaxed">
         Render runs one GPU per clip at the same time: its time is the slowest
-        clip, its cost is all of them. Download (with the upload) and Save run
-        on your laptop, so they cost nothing. Overhead is mostly Modal
-        containers starting.
+        clip, its cost is all of them. Rank&rsquo;s cost includes the Gemini
+        API, estimated from each call&rsquo;s tokens at Google&rsquo;s prices.
+        Download (with the upload) and Save run on your laptop, so they cost
+        nothing. Overhead is mostly Modal containers starting.
       </p>
     </Card>
   );

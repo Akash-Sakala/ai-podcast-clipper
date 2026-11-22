@@ -106,7 +106,7 @@ modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<key> GEMINI_MODEL=
 - the folders `asd/` and `prompts/` (editing a ranking prompt included);
 - a **deploy** setting in `.env` (see [Settings](#settings)).
 
-No redeploy is needed for the laptop-side modules (`runner.py`, `pipeline.py`, `phases.py`, `cloud.py`, `cutter.py`, `transfer.py`, `youtube.py`, `downloader.py`, `jobstore.py`, `media.py`, `billing.py`, `maintenance.py`, `run_history.py`, `fx.py`, `videostore.py`, `clipsets.py`), for the frontend, or for the **runner** settings. `modal deploy` and `modal run` stop with a message when the S3FD weights are missing (`python download_weights.py` fetches them); `CLIPPER_SKIP_WEIGHT_CHECK=1` skips that check.
+No redeploy is needed for the laptop-side modules (`runner.py`, `pipeline.py`, `phases.py`, `cloud.py`, `cutter.py`, `transfer.py`, `youtube.py`, `downloader.py`, `jobstore.py`, `media.py`, `billing.py`, `maintenance.py`, `run_history.py`, `fx.py`, `gemini_costs.py`, `videostore.py`, `clipsets.py`), for the frontend, or for the **runner** settings. `modal deploy` and `modal run` stop with a message when the S3FD weights are missing (`python download_weights.py` fetches them); `CLIPPER_SKIP_WEIGHT_CHECK=1` skips that check.
 
 ## Command line
 
@@ -177,7 +177,7 @@ python rank_moments.py --compare "..\data\jobs\<id 1>" "..\data\jobs\<id 2>"    
 python rank_moments.py --compare "..\data\jobs\<id 1>" --reuse                         # rebuild the report from <job>\eval\ with no calls
 ```
 
-The report shows old and new picks side by side with scores under both profiles, the first and payoff sentences marked, and the lines after each cut, so a clip that stops before its answer is easy to see.
+The report shows old and new picks side by side with scores under both profiles, the first and payoff sentences marked, and the lines after each cut, so a clip that stops before its answer is easy to see. Each ranking also prints, and the report shows, its Gemini tokens and estimated cost (rupees at the rate saved in `data/stats/fx.json`), so `--model` runs can be compared on cost as well.
 
 ## How a job runs
 
@@ -199,7 +199,7 @@ The crop is then steadied (`render.steady_faces`). Inside each shot of the sourc
 
 Cuts in the source are never crossed, so a cut to another camera still switches immediately.
 
-A job's details in the app show its processing time and estimated Modal cost (`costs.py`: GPU, CPU and memory per container, using Modal's November 2026 prices when Modal's live rates can't be read). The Modal dashboard has the real bill.
+A job's details in the app show its processing time and estimated cost: Modal (`costs.py`: GPU, CPU and memory per container, using Modal's November 2026 prices when Modal's live rates can't be read) plus Gemini (`gemini_costs.py`, see [Stats page](#stats-page)). The Modal dashboard and AI Studio's Billing page have the real amounts.
 
 ### Fallbacks to the whole video
 
@@ -215,11 +215,12 @@ Besides status, progress and clip details (each with `complete` and `issue` from
 
 ## Stats page
 
-The chart icon in the header opens `/stats`, for this month or all time: Modal's bill for the month against the Starter plan's $30 credit, the average new video and re-rank (cost, time, cost per podcast hour), the average run by stage (time and cost), every run with its result and stage tooltip, and the Most replayed / SponsorBlock sentences. A time-per-video chart appears after 10 new runs. It refreshes every few seconds while a video is processing.
+The chart icon in the header opens `/stats`, for this month or all time: Modal's bill for the month against the Starter plan's $30 credit, the average new video and re-rank (cost with Gemini, time, cost per podcast hour), the estimated Gemini spend with its calls and tokens, the average run by stage (time and cost), every run with its result and stage tooltip, and the Most replayed / SponsorBlock sentences. A time-per-video chart appears after 10 new runs. It refreshes every few seconds while a video is processing.
 
 - **Modal's bill** comes from `modal billing summary` (works on the Starter plan). The runner saves it in `data/stats/modal-bill.json` after every run, and the page asks for a fresh one when it is older than 15 minutes. Modal's billing months are UTC calendar months.
-- **Run costs** are estimates: each container's running time (plus start-up and the idle time before Modal stops it) at Modal's live rates from `modal billing rates`, saved once a day in `data/stats/rates.json`. If Modal's rate names change and can't be read, the built-in prices in `costs.py` are used (`--check-rates` shows which). The Runs card shows how this month's runs compare with what Modal charged for the app.
-- **Stages:** Download (on the laptop: audio, the video download beyond what phase 1 hid, cutting, uploads and the Most replayed lookup; no Modal cost), Transcribe, Rank (Gemini; its cost is the job's own CPU container), Render (time = the slowest clip, cost = all clip GPUs), Save (laptop, no cost) and Overhead (total minus the stages, mostly containers starting).
+- **Run costs** are estimates: each container's running time (plus start-up and the idle time before Modal stops it) at Modal's live rates from `modal billing rates`, saved once a day in `data/stats/rates.json`. If Modal's rate names change and can't be read, the built-in prices in `costs.py` are used (`--check-rates` shows which). The Runs card shows how the Modal part of this month's runs compares with what Modal charged for the app.
+- **Gemini costs** are estimates too: every Gemini answer reports its tokens (input, cached input, output and thinking), `moments.py` keeps them per call in the ranking report (`ranking.usage` in `job.json`), and the runner prices them with the table in `gemini_costs.py` (Google's Standard paid-tier prices, with their dated changes such as 3.8 and 3.6 Flash doubling on 2027-01-01; thinking is billed as output, cached input at the caching price). A run stores the result as `cost.gemini` (`usd`, `calls`, `tokens`, per-model totals, the date the price table was checked); `cost.usd` stays Modal's alone. Runs before 2026-11-22 have no token counts and count as $0 Gemini (they ran on the free tier). Calls that failed before answering are not counted. When Google changes a price, edit `PRICES` and `PRICES_CHECKED` in `gemini_costs.py` (no redeploy); a model missing from the table is listed as "No price for …" on the Gemini tile and counts as $0.
+- **Stages:** Download (on the laptop: audio, the video download beyond what phase 1 hid, cutting, uploads and the Most replayed lookup; no Modal cost), Transcribe, Rank (Gemini; its cost is the Gemini API plus the job's own CPU container, split in the bar's popover), Render (time = the slowest clip, cost = all clip GPUs), Save (laptop, no cost) and Overhead (total minus the stages, mostly containers starting).
 - **Rupees:** with Settings > Currency on rupees, each run is converted at the USD to INR rate saved when it finished (`fx.py`, `data/stats/fx.json`: Frankfurter, then ExchangeRate-API's open endpoint; no API key). The month's bill uses today's rate.
 
 - **Run ledger.** When a run ends (first run, re-rank or failure), the runner appends one line to `data/stats/runs.jsonl` (`run_history.py`): the job's id, title and source, the mode, result, start and end time, step timings, cost and Parakeet's speed. The stats page reads only this file, so **deleting a video keeps its runs in the stats**; such videos are listed as "Deleted video", without a link. The same run also goes into the job's own `job.json` `runs`.

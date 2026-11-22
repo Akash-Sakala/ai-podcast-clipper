@@ -67,7 +67,7 @@ def run_on_modal(job: Job, volume, max_clips: int, mode: str, timings: dict, sav
         raise
     cost = result.get("cost") or {}
     log(f"Modal finished in {float(timings.get('gpu_total') or 0):.0f}s on {result.get('gpu') or '?'}"
-        + (f", about ${cost['usd']:.3f}" if cost.get("usd") is not None else ""))
+        + (f", about ${cost['usd']:.3f} on Modal" if cost.get("usd") is not None else ""))
     return result
 
 

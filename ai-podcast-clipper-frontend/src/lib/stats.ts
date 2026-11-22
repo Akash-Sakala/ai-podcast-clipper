@@ -13,14 +13,25 @@ import {
 } from "./job-types";
 import type { Currency } from "./settings-types";
 import { clipSourceStats } from "./clip-source-stats";
-import { addMoney, madeClips, mean, num, scaleMoney, sum } from "./stats-math";
+import {
+  addMoney,
+  geminiUsd,
+  madeClips,
+  mean,
+  num,
+  runTotalUsd,
+  scaleMoney,
+  sum,
+} from "./stats-math";
 import {
   COST_STAGES,
   RUNS_PAGE,
   TIME_STAGES,
   TREND_MIN_RUNS,
   type BillInput,
+  type GeminiStats,
   type Period,
+  type RankSplit,
   type RunRow,
   type StageBreakdown,
   type Stats,
@@ -67,6 +78,55 @@ function runMoney(usd: number, run: LedgerRun, today: UsdInr | null): Money {
   return { usd, inr: rate === null ? null : usd * rate };
 }
 
+/** USD per cost stage of a run: Modal's stages, with the Gemini calls added to Rank. */
+function stageUsd(run: LedgerRun): Record<CostStage, number> | null {
+  const stages = run.cost?.stages;
+  if (!stages) return null;
+  return {
+    transcribe: stages.transcribe ?? 0,
+    rank: (stages.rank ?? 0) + geminiUsd(run.cost),
+    render: stages.render ?? 0,
+  };
+}
+
+/** Rank's cost of these runs split into Gemini and Modal, scaled by `factor`
+ *  (null when none of them recorded Gemini tokens). */
+function rankSplit(
+  runs: LedgerRun[],
+  today: UsdInr | null,
+  factor = 1,
+): RankSplit | null {
+  if (!runs.some((r) => r.cost?.gemini)) return null;
+  const part = (usd: (r: LedgerRun) => number) =>
+    scaleMoney(addMoney(runs.map((r) => runMoney(usd(r), r, today))), factor)!;
+  return {
+    gemini: part((r) => geminiUsd(r.cost)),
+    modal: part((r) => r.cost?.stages?.rank ?? 0),
+  };
+}
+
+/** The period's Gemini calls (runs of any status that recorded token counts). */
+function geminiStats(
+  runs: LedgerRun[],
+  today: UsdInr | null,
+): GeminiStats | null {
+  const withTokens = runs.filter((r) => r.cost?.gemini);
+  if (!withTokens.length) return null;
+  const all = withTokens.map((r) => r.cost!.gemini!);
+  return {
+    spend: addMoney(
+      withTokens.map((r) => runMoney(geminiUsd(r.cost), r, today)),
+    ),
+    calls: sum(all.map((g) => g.calls ?? 0)),
+    tokensIn: sum(all.map((g) => g.tokens?.input ?? 0)),
+    tokensOut: sum(
+      all.map((g) => (g.tokens?.output ?? 0) + (g.tokens?.thinking ?? 0)),
+    ),
+    runs: withTokens.length,
+    unpriced: [...new Set(all.flatMap((g) => g.unpriced ?? []))].sort(),
+  };
+}
+
 function breakdown(
   runs: LedgerRun[],
   today: UsdInr | null,
@@ -83,9 +143,7 @@ function breakdown(
           k,
           scaleMoney(
             addMoney(
-              withStages.map((r) =>
-                runMoney(r.cost?.stages?.[k] ?? 0, r, today),
-              ),
+              withStages.map((r) => runMoney(stageUsd(r)![k], r, today)),
             ),
             1 / withStages.length,
           )!,
@@ -94,11 +152,14 @@ function breakdown(
     : null;
   const costs = runs
     .filter((r) => r.cost)
-    .map((r) => runMoney(r.cost!.usd, r, today));
+    .map((r) => runMoney(runTotalUsd(r.cost!), r, today));
   return {
     time,
     totalSeconds: sum(TIME_STAGES.map((k) => time[k])),
     cost,
+    rankSplit: withStages.length
+      ? rankSplit(withStages, today, 1 / withStages.length)
+      : null,
     totalCost: scaleMoney(addMoney(costs), costs.length ? 1 / costs.length : 0),
     runs: runs.length,
   };
@@ -150,7 +211,7 @@ export function computeStats(
   const avgCost = (list: LedgerRun[]) => {
     const costs = list
       .filter((r) => r.cost)
-      .map((r) => runMoney(r.cost!.usd, r, today));
+      .map((r) => runMoney(runTotalUsd(r.cost!), r, today));
     return scaleMoney(addMoney(costs), costs.length ? 1 / costs.length : 0);
   };
   const avgSeconds = (list: LedgerRun[]) =>
@@ -166,7 +227,9 @@ export function computeStats(
   );
   const perHour = podcastHours
     ? scaleMoney(
-        addMoney(perHourRuns.map((r) => runMoney(r.cost!.usd, r, today))),
+        addMoney(
+          perHourRuns.map((r) => runMoney(runTotalUsd(r.cost!), r, today)),
+        ),
         1 / podcastHours,
       )
     : null;
@@ -177,7 +240,7 @@ export function computeStats(
     .slice(0, runsLimit)
     .map((run) => {
       const job = jobsById.get(run.jobId);
-      const stagesUsd = run.cost?.stages;
+      const stagesUsd = stageUsd(run);
       return {
         key: `${run.jobId}-${run.startedAt}`,
         jobId: run.jobId,
@@ -193,13 +256,11 @@ export function computeStats(
         time: stageTimes(run),
         stageCost: stagesUsd
           ? (Object.fromEntries(
-              COST_STAGES.map((k) => [
-                k,
-                runMoney(stagesUsd[k] ?? 0, run, today),
-              ]),
+              COST_STAGES.map((k) => [k, runMoney(stagesUsd[k], run, today)]),
             ) as Record<CostStage, Money>)
           : null,
-        cost: run.cost ? runMoney(run.cost.usd, run, today) : null,
+        rankSplit: stagesUsd ? rankSplit([run], today) : null,
+        cost: run.cost ? runMoney(runTotalUsd(run.cost), run, today) : null,
       };
     });
 
@@ -242,6 +303,7 @@ export function computeStats(
           runs: newCount,
         }
       : null,
+    gemini: geminiStats(runs, today),
     rerankAvg: rerankDone.length
       ? {
           cost: avgCost(rerankDone),
@@ -256,6 +318,7 @@ export function computeStats(
     runs: rows,
     runsTotal: runs.length,
     runMaxSeconds: Math.max(0, ...runs.map((r) => num(r.timings.total) ?? 0)),
+    // Modal's part of the runs only (cost.usd), to compare with Modal's own charge.
     reconcile:
       period === "month" && appsUsd !== null && monthRuns.length
         ? {

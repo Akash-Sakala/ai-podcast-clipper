@@ -50,7 +50,7 @@ The two phases overlap the video download with transcription. On `main`, one rea
 
 ## How it's built
 
-- **Parallel GPU containers:** one A10 per clip, each clip encoded once on NVENC; every video shows its time and estimated cost.
+- **Parallel GPU containers:** one A10 per clip, each clip encoded once on NVENC; every video shows its time and estimated cost (Modal plus the Gemini tokens it used).
 - **Audio first, then only the footage you need:** the video is never uploaded whole unless it has to be (see [advanced.md](docs/advanced.md#fallbacks-to-the-whole-video)).
 - **Parakeet TDT 0.6B v2:** about 111x real time on an A10, English only; chosen over Whisper-family and Parakeet v3 on this project's own podcasts.
 - **Complete clips, ranked by value:** Gemini proposes moments and quotes the line where each one pays off; code checks the payoff is inside the cut, and one judge call re-reads every final clip, fixes boundaries and marks incomplete ones, which never outrank complete ones. For YouTube videos the score blends 60% Gemini with 40% how often viewers replay that part.
