@@ -91,11 +91,18 @@ The app's **Settings page** (gear icon) saves `data/settings.json`: currency, cl
 
 Frontend settings (`ai-podcast-clipper-frontend/.env`, all optional, read in `src/env.ts`): `DATA_DIR` and `RUNNER_PYTHON`. The cookie settings belong in the backend `.env`; an older frontend `.env` that still sets them keeps working and wins.
 
-To change the Modal secret (for example to set `GEMINI_MODEL`), re-create it with `--force`:
+To change the Modal secret (a new Gemini key, or `GEMINI_MODEL`), re-create it with `--force`. That replaces the whole secret, so repeat every key it should keep (`HF_TOKEN` too), then run `modal deploy main.py` so new containers read it. `Read-Host` keeps the values out of PowerShell's history:
 
 ```powershell
-modal secret create ai-podcast-clipper-secret GEMINI_API_KEY=<key> GEMINI_MODEL=<model id> --force
+$gemini = Read-Host "Gemini API key"; $hf = Read-Host "HF token"
+modal secret create ai-podcast-clipper-secret "GEMINI_API_KEY=$gemini" "HF_TOKEN=$hf" --force
+(Get-Content .env) -replace '^GEMINI_API_KEY=.*', "GEMINI_API_KEY=$gemini" | Set-Content .env   # the copy rank_moments.py reads
+Remove-Variable gemini, hf
+python rank_moments.py --list-models   # "Current chain" should show OK for every model
+modal deploy main.py
 ```
+
+Use a key from a project with billing on (AI Studio's paid tier). The free tier allows only a few requests a day for the Flash models, and a used-up quota (429) sends every call down the chain to the transcript fallback. The Gemini cost estimates assume paid-tier prices.
 
 ## When to redeploy
 
