@@ -46,4 +46,10 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-14 `feat/stats-ledger`: run ledger, stats page v2, settings page, rupee costs, laptop-only downloads
 - 2026-11-14 `feat/optimized-version`: runner and frontend split into modules, two-phase upload and fps-capped download, robustness fixes, pinned dependencies, tooling and CI
 - 2026-11-15 `feat/clip-quality-and-rerank`: complete clips up to 2 minutes with a payoff check and a judge call, kept videos for re-ranks, clip-by-clip comparison after a re-rank, video download during the audio upload, all clips saved at once and shown as they land
+- 2026-11-20 `feat/ui-foundation`: motion tokens, tooltips, touch-sized controls, contrast pass
+- 2026-11-21 `feat/ui-live-run`: live run view with a titled place per clip, running logo, progress in the tab title, optional done notification
+- 2026-11-21 `feat/ui-home`: link checked as it is typed, paste anywhere, full-page drop target, upload progress, video list at a glance
+- 2026-11-21 `feat/ui-stats-settings`: stats breakdown popovers and gliding values, per-control "Saved" feedback in settings
+- 2026-11-21 `feat/ui-clip-viewer`: full-screen clip viewer, poster cards with hover previews, neutral titles for fallback clips
+- 2026-11-21 `fix/gemini-failover`: a stalled request or a used-up quota goes straight to the next Gemini model; 75 s request timeout; default chain `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`
 - 2026-11-22 `feat/gemini-token-costs`: Gemini token counts per call and their estimated cost in each video's details, the stats page (a Gemini tile, Rank's cost split into Gemini and Modal) and `rank_moments.py`

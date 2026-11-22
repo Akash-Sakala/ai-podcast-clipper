@@ -61,7 +61,7 @@ The two phases overlap the video download with transcription. On `main`, one rea
 
 - Windows, macOS or Linux (no local GPU needed)
 - [Node.js](https://nodejs.org) 20+, [Python 3.12](https://www.python.org/downloads/) and Git
-- A [Modal](https://modal.com) account (the Starter plan includes $30/month of credits) and a [Gemini API key](https://aistudio.google.com/apikey)
+- A [Modal](https://modal.com) account (the Starter plan includes $30/month of credits) and a [Gemini API key](https://aistudio.google.com/apikey) from a project with billing on: the free tier runs out within a few videos a day. Ranking costs about $0.05-0.12 per video on Gemini 3.8 Flash (2026 prices; Google doubles them on 2027-01-01).
 - Optional: a [Hugging Face token](https://huggingface.co/settings/tokens), if the first deploy hits download rate limits
 
 ## One-time setup
