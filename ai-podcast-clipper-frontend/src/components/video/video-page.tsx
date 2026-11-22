@@ -20,11 +20,10 @@ import {
   failureSentence,
   fallbackCount,
 } from "~/lib/format";
+import { jobsChanged, useJob } from "~/lib/job-sync";
 import { isActive, type Job } from "~/lib/job-types";
 import { duration, ease } from "~/lib/motion";
-import { useRunReport } from "~/lib/run-signal";
 import type { Currency } from "~/lib/settings-types";
-import { usePolling } from "~/lib/use-polling";
 import { useStable } from "~/lib/use-stable";
 import { cn } from "~/lib/utils";
 import { ClipCard } from "../clip-card";
@@ -42,47 +41,23 @@ import { FailedRail, ProgressStrip } from "./progress-strip";
 import { readyText, RunFinished } from "./run-finished";
 import { useJobActions } from "./use-job-actions";
 
-const POLL_INTERVAL_MS = 3000;
-/** In a background tab, slowly, so the tab title and notification hear about the end. */
-const HIDDEN_POLL_INTERVAL_MS = 15_000;
-
 export function VideoPage({
   initialJob,
+  servedAt,
   currency = "usd",
   rate = null,
 }: {
   initialJob: Job;
+  /** Server time the job was read at (see lib/job-sync.ts). */
+  servedAt: number;
   currency?: Currency;
   rate?: number | null;
 }) {
-  const [job, setJob] = useState(initialJob);
+  // The tab's live copy of this job (lib/job-sync.ts): read again when the page opens
+  // (also with Back), every 3 s while it runs, and as soon as its row in the list
+  // changes; what this page reads also updates the home list.
+  const job = useJob(initialJob, servedAt);
   const active = isActive(job);
-
-  // Polls every 3 s while the job runs (every 15 s in a background tab). A 304 changes nothing.
-  const refresh = usePolling<Job>({
-    url: `/api/jobs/${job.id}`,
-    intervalMs: active ? POLL_INTERVAL_MS : null,
-    hiddenIntervalMs: active ? HIDDEN_POLL_INTERVAL_MS : null,
-    onData: setJob,
-  });
-
-  // The header logo, the tab title and the "done" notification follow this job.
-  const report = useMemo(
-    () => [
-      {
-        id: job.id,
-        title: job.title,
-        status: job.status,
-        progress: job.progress,
-        videoTransfer: job.videoTransfer,
-        source: job.source,
-        mode: job.mode,
-        clipCount: job.clips.length,
-      },
-    ],
-    [job],
-  );
-  useRunReport(report);
 
   // A first run that ends while the page is open: the strip turns into "5 clips ready
   // in 6 min 12 s", with a toast that says the same.
@@ -105,7 +80,7 @@ export function VideoPage({
     toast.success(readyText(job.clips.length), { id: `finished-${job.id}` });
   }, [active, job]);
 
-  const { busy, rerank, retry } = useJobActions(refresh);
+  const { busy, rerank, retry } = useJobActions();
   const isBusy = busy === job.id;
   // Parts that rarely change keep their identity between polls, so the clip cards
   // and the replay wave (memoised) don't re-render while only the progress moves.
@@ -332,7 +307,11 @@ export function VideoPage({
           )}
 
           {comparing ? (
-            <CompareView job={job} selection={selection} onStarted={refresh} />
+            <CompareView
+              job={job}
+              selection={selection}
+              onStarted={() => jobsChanged(job.id)}
+            />
           ) : rerankLive ? (
             <RerankProgressView job={job} />
           ) : live ? (

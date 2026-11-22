@@ -30,6 +30,30 @@ function newJobId() {
   return `${stamp}-${randomBytes(3).toString("hex")}`;
 }
 
+/**
+ * Errors Windows gives while another program has the file open: runner.py writing
+ * it, or OneDrive syncing the data folder. They pass within moments, so a read or a
+ * replace is tried again (runner.py's Job.save does the same).
+ */
+const BUSY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const ATTEMPTS = 20;
+const isBusy = (error: unknown) =>
+  BUSY_CODES.has((error as NodeJS.ErrnoException).code ?? "");
+const pause = (attempt: number) =>
+  new Promise((resolve) => setTimeout(resolve, Math.min(50 * attempt, 250)));
+
+async function replaceFile(tmp: string, file: string) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fsp.rename(tmp, file);
+      return;
+    } catch (error) {
+      if (!isBusy(error) || attempt >= ATTEMPTS) throw error;
+      await pause(attempt);
+    }
+  }
+}
+
 export async function writeJob(job: Job) {
   const file = path.join(jobDir(job.id), "job.json");
   // Unique per write: concurrent writers (two polls, or runner.py's job.json.tmp)
@@ -44,7 +68,8 @@ export async function writeJob(job: Job) {
   delete stored.clipVersions;
   try {
     await fsp.writeFile(tmp, JSON.stringify(stored, null, 2), "utf-8");
-    await fsp.rename(tmp, file);
+    await replaceFile(tmp, file);
+    lastGood.set(job.id, stored);
   } catch (error) {
     await fsp.rm(tmp, { force: true });
     throw error;
@@ -81,11 +106,32 @@ export async function updateJob(id: string, fields: Partial<Job>) {
   await writeJob({ ...job, ...fields, updatedAt: new Date().toISOString() });
 }
 
+/**
+ * The last job.json read or written per job. When the file can't be read for a
+ * moment (busy, or half-written by an older runner), this copy is answered instead,
+ * so the job never drops out of the list for one poll. Kept on globalThis so every
+ * route bundle (and dev hot reloads) share it.
+ */
+const lastGood = ((
+  globalThis as { __clipperJobs?: Map<string, Job> }
+).__clipperJobs ??= new Map<string, Job>());
+
+/** job.json of a job, or null when the job is gone (no folder or no job.json). */
 export async function readJob(id: string): Promise<Job | null> {
-  try {
-    const raw = await fsp.readFile(path.join(jobDir(id), "job.json"), "utf-8");
-    return JSON.parse(raw) as Job;
-  } catch {
-    return null;
+  const file = path.join(jobDir(id), "job.json");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const job = JSON.parse(await fsp.readFile(file, "utf-8")) as Job;
+      lastGood.set(id, job);
+      return job;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        lastGood.delete(id);
+        return null;
+      }
+      // Busy, or not whole JSON yet: try again shortly, then use the last good copy.
+      if (attempt < 3) await pause(attempt);
+    }
   }
+  return lastGood.get(id) ?? null;
 }

@@ -1,46 +1,37 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { displayTitle } from "~/lib/format";
 import { isActive, type JobSummary } from "~/lib/job-types";
-import { useRunReport } from "~/lib/run-signal";
-import { usePolling } from "~/lib/use-polling";
+import { jobsChanged, useJobs } from "~/lib/job-sync";
 import { NewJobBar } from "./new-job/new-job-bar";
 import { VideoList } from "./video-list";
 import { useJobActions } from "./video/use-job-actions";
 
-const POLL_INTERVAL_MS = 3000;
-const HIDDEN_POLL_INTERVAL_MS = 15_000;
-
 export function DashboardClient({
   initialJobs,
+  servedAt,
 }: {
   initialJobs: JobSummary[];
+  /** Server time the list was read at (see lib/job-sync.ts). */
+  servedAt: number;
 }) {
   const router = useRouter();
-  const [jobs, setJobs] = useState<JobSummary[]>(initialJobs);
+  // The tab's live list (lib/job-sync.ts): kept fresh on every page, so coming back
+  // here (also with Back) shows what is on disk now, not this page's first copy.
+  const jobs = useJobs(initialJobs, servedAt);
 
-  // Polls while a video is being processed (3 s); an idle page only refreshes when the
-  // tab is shown again. A 304 or a hidden tab costs nothing.
-  const anyActive = jobs.some(isActive);
-  const refreshJobs = usePolling<JobSummary[]>({
-    url: "/api/jobs",
-    intervalMs: anyActive ? POLL_INTERVAL_MS : null,
-    // A background tab still hears about a run ending (tab title, notification).
-    hiddenIntervalMs: anyActive ? HIDDEN_POLL_INTERVAL_MS : null,
-    onData: setJobs,
-  });
-  // The header logo, the tab title and the "done" notification follow these jobs.
-  useRunReport(jobs);
-
-  // Announce videos that finish while this page is open. The last known state of each
-  // job is kept in a ref, and the toast fires from an effect (never during render).
-  const wasActive = useRef(
-    new Map(initialJobs.map((job) => [job.id, isActive(job)])),
-  );
+  // Announce videos that finish while this page is open. The state each job had when
+  // the page first showed it is the starting point, so a video that finished while
+  // another page was open is not announced on arrival.
+  const wasActive = useRef<Map<string, boolean> | null>(null);
   useEffect(() => {
+    if (!wasActive.current) {
+      wasActive.current = new Map(jobs.map((job) => [job.id, isActive(job)]));
+      return;
+    }
     for (const job of jobs) {
       const before = wasActive.current.get(job.id);
       wasActive.current.set(job.id, isActive(job));
@@ -65,7 +56,7 @@ export function DashboardClient({
     }
   }, [jobs, router]);
 
-  const { busy, retry } = useJobActions(refreshJobs);
+  const { busy, retry } = useJobActions();
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-10 px-4 py-8 sm:px-6 sm:py-12">
@@ -73,7 +64,7 @@ export function DashboardClient({
         <h1 className="font-display text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
           Find the moments worth posting.
         </h1>
-        <NewJobBar onCreated={refreshJobs} />
+        <NewJobBar onCreated={jobsChanged} />
       </div>
 
       <section aria-labelledby="videos-heading" className="space-y-3">

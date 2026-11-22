@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { shortStage } from "./format";
 import { isActive, type StageJob } from "./job-types";
 
@@ -21,7 +21,7 @@ export type FinishedRun = {
 };
 
 export type RunSignal = {
-  /** Jobs running now, as the pages on screen report them. */
+  /** Jobs running now, from the tab's live list. */
   active: { id: string; title: string; stage: string }[];
   /** The last run this tab saw finish. */
   finished: FinishedRun | null;
@@ -81,16 +81,21 @@ function forget(ids: string[]) {
 }
 
 /**
- * A page tells the run signal about the jobs it polls (the home list, one video's page).
- * The reports last while the page is mounted, so a page that knows nothing about jobs
- * (stats, settings) never shows a stale "running".
+ * Tells the run signal about the jobs the tab knows (components/jobs-sync.tsx, with
+ * the live list of lib/job-sync.ts, on every page). A job that leaves the list is
+ * forgotten; the others keep what they were, so a run that ends in the same update
+ * that adds a video is still heard. Everything is forgotten on unmount.
  */
 export function useRunReport(jobs: RunReport[]) {
+  const [shown] = useState(() => ({ ids: [] as string[] }));
   useEffect(() => {
+    const ids = new Set(jobs.map((job) => job.id));
+    const gone = shown.ids.filter((id) => !ids.has(id));
+    shown.ids = [...ids];
+    if (gone.length) forget(gone);
     report(jobs);
-  }, [jobs]);
-  const ids = jobs.map((job) => job.id).join(",");
-  useEffect(() => () => forget(ids ? ids.split(",") : []), [ids]);
+  }, [jobs, shown]);
+  useEffect(() => () => forget(shown.ids), [shown]);
 }
 
 export function useRunSignal(): RunSignal {

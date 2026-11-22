@@ -2,6 +2,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { fingerprintFile } from "~/lib/fingerprint";
+import { jobsChanged } from "~/lib/job-sync";
 import { uploadVideo } from "~/lib/upload";
 import { parseYoutubeLink } from "~/lib/youtube";
 import type { Duplicate } from "./duplicate-notice";
@@ -116,8 +117,10 @@ export function useAddVideo(onCreated: () => Promise<void>) {
           ? "Reusing the transcript. The current clips stay until the new ones are ready."
           : "Clips will appear here when they're ready.",
       });
-      if (rerankJobId) router.push(`/videos/${rerankJobId}`);
-      else await onCreated();
+      if (rerankJobId) {
+        void jobsChanged(rerankJobId);
+        router.push(`/videos/${rerankJobId}`);
+      } else await onCreated();
     } catch (error) {
       toast.error(rerankJobId ? "Couldn't re-rank" : "Upload failed", {
         description: (error as Error).message,

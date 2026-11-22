@@ -6,13 +6,15 @@ import { listJobSummaries } from "~/lib/jobs";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
+  // Taken before the read: the browser keeps whichever copy of the list is newer.
+  const servedAt = Date.now();
   const jobs = await listJobSummaries();
 
   return (
     <div className="flex min-h-screen flex-col">
       <NavHeader />
       <main className="flex-1">
-        <DashboardClient initialJobs={jobs} />
+        <DashboardClient initialJobs={jobs} servedAt={servedAt} />
       </main>
       <Toaster />
     </div>

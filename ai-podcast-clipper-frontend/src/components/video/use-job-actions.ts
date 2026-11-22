@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { fingerprintFile } from "~/lib/fingerprint";
 import { displayTitle } from "~/lib/format";
+import { jobsChanged } from "~/lib/job-sync";
 import type { Job } from "~/lib/job-types";
 import { pickVideoFile, uploadVideo } from "~/lib/upload";
 
@@ -9,8 +10,8 @@ import { pickVideoFile, uploadVideo } from "~/lib/upload";
 type ActionJob = Pick<Job, "id" | "title"> &
   Partial<Pick<Job, "rerankNeedsFile" | "fingerprint">>;
 
-/** Re-rank and Try again, with toasts. `onStarted` refreshes the caller's data. */
-export function useJobActions(onStarted: () => Promise<void>) {
+/** Re-rank and Try again, with toasts. Afterwards every tab reads the job again (jobsChanged). */
+export function useJobActions() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const run = useCallback(
@@ -60,7 +61,7 @@ export function useJobActions(onStarted: () => Promise<void>) {
               ? "Reusing the transcript. The current clips stay until the new ones are ready."
               : displayTitle(job),
         });
-        await onStarted();
+        await jobsChanged(job.id);
       } catch (error) {
         toast.error(
           action === "rerank" ? "Couldn't re-rank" : "Couldn't try again",
@@ -70,7 +71,7 @@ export function useJobActions(onStarted: () => Promise<void>) {
         setBusy(null);
       }
     },
-    [onStarted],
+    [],
   );
 
   return {
