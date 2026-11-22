@@ -588,9 +588,14 @@ def sweep_remote(volume, data_dir: pathlib.Path, current_job: str | None = None,
     return removed
 
 
-def pending_record(mode: str, result: dict, timings: dict, elapsed: float) -> dict:
+def pending_record(mode: str, result: dict, timings: dict, elapsed: float,
+                   video_transfer: str | None = None) -> dict:
     """job.json "pendingSave": a run whose clips rendered but could not be saved. Its
     clips stay on the volume, and the next run of the same mode downloads them instead
-    of running the GPU pipeline again."""
-    return {"mode": mode, "savedAt": now_iso(), "elapsed": round(elapsed, 1), "timings": dict(timings),
-            "result": {k: v for k, v in result.items() if k != "data"}}
+    of running the GPU pipeline again. `video_transfer`: how that run sent the video
+    ("videoTransfer"), put back when the clips are picked up (every attempt clears it)."""
+    record = {"mode": mode, "savedAt": now_iso(), "elapsed": round(elapsed, 1), "timings": dict(timings),
+              "result": {k: v for k, v in result.items() if k != "data"}}
+    if video_transfer:
+        record["videoTransfer"] = video_transfer
+    return record

@@ -915,6 +915,33 @@ def test_a_pending_save_from_the_single_phase_version_still_resumes(tmp_path, mo
     assert world.spawns == [] and (job_dir / "clips" / "clip_0.mp4").read_bytes() == b"kept"
 
 
+def test_a_failed_save_remembers_how_the_video_was_sent(tmp_path, monkeypatch):
+    job = jobstore.Job(make_job(tmp_path, videoTransfer="audio-first"))
+
+    def offline(*args, **kwargs):
+        raise ConnectionError("getaddrinfo failed")
+
+    monkeypatch.setattr(pipeline, "download_outputs", offline)
+    with pytest.raises(ConnectionError):
+        pipeline.save_clips(job, None, {"clips": ["clip_0.mp4"]}, None, "full", {"audio": 40.0}, 0.0)
+    assert read(job.dir)["pendingSave"]["videoTransfer"] == "audio-first"
+
+
+def test_try_again_after_a_failed_save_keeps_how_the_video_was_sent(tmp_path, monkeypatch):
+    """Every attempt clears videoTransfer; one that only downloads the kept clips puts back
+    the value of the attempt that rendered them (the app names the steps from it)."""
+    result = {**phases.merge_results(phase_one(), phase_two()), "clips": ["clip_0.mp4"]}
+    pending = transfer.pending_record("full", result, {"audio": 40.0}, 300, "audio-first")
+    job_dir = make_job(tmp_path, status="failed", failedStage="saving", videoTransfer="audio-first",
+                       pendingSave=pending)
+    world = World(tmp_path, monkeypatch)
+    world.files[f"/{JOB_ID}/clips/clip_0.mp4"] = b"kept"
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    data = read(job_dir)
+    assert world.spawns == [] and data["status"] == "done" and data["videoTransfer"] == "audio-first"
+    assert data.get("pendingSave") is None and data.get("failedStage") is None
+
+
 def test_one_progress_bar_spans_several_files(tmp_path):
     job = jobstore.Job(make_job(tmp_path))
     total = transfer.UploadProgress(job, 300, every_s=0, stage="clips")
