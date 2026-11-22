@@ -315,8 +315,9 @@ def run_rerank(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_vi
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, status="queued", progress=None, videoTransfer=None, liveClips=None,
-               liveClipsSet=None, plannedClips=None, message="Re-rank & re-render: getting the video ready")
+    job.update(pid=os.getpid(), error=None, failedStage=None, status="queued", progress=None, videoTransfer=None,
+               liveClips=None, liveClipsSet=None, plannedClips=None,
+               message="Re-rank & re-render: getting the video ready")
     discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {"rerank": True}
@@ -410,8 +411,9 @@ def run_job(job_dir: pathlib.Path, max_clips: int, keep_remote: bool, keep_video
     import modal
 
     job = Job(job_dir)
-    job.update(pid=os.getpid(), error=None, progress=None, videoTransfer=None, liveClips=None, liveClipsSet=None,
-               plannedClips=None)
+    # failedStage: a new attempt starts clean (a failure sets it again, success leaves it unset).
+    job.update(pid=os.getpid(), error=None, failedStage=None, progress=None, videoTransfer=None, liveClips=None,
+               liveClipsSet=None, plannedClips=None)
     discard_comparison(job)
     volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
     timings: dict = {}

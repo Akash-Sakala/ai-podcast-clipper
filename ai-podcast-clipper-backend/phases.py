@@ -230,13 +230,17 @@ def save_transcript(job: Job, volume) -> bool:
         return False
 
 
-def phase_one_done(job: Job, volume, first: dict, mode: str, timings: dict, started: float) -> None:
+def phase_one_done(job: Job, volume, first: dict, mode: str, timings: dict, started: float,
+                   ended: float | None = None) -> None:
+    """`ended`: when the cloud call finished. The two-phase run gets here only once the video
+    download is done too; without it, "gpu_total" would also count that wait ("downloadWait")."""
+    ended = ended or time.time()
     if mode == "parakeet":
         save_transcript(job, volume)
         engine = job.data.get("engine") or {}
         job.update(engine={**engine, "parakeet": first.get("transcription") or None})
     timings.update({f"gpu_{k}": v for k, v in (first.get("timings") or {}).items()})
-    timings["gpu_total"] = round(time.time() - started, 1)
+    timings["gpu_total"] = round(ended - started, 1)
     log(f"Phase 1 done: {len(first.get('moments') or [])} moment(s) in {timings['gpu_total']:.0f}s")
 
 
@@ -373,7 +377,7 @@ def two_phase_run(job: Job, volume, functions: dict, max_clips: int, mode: str, 
     finally:
         board.end_cloud()
     finished(job)
-    phase_one_done(job, volume, first, mode, timings, started)
+    phase_one_done(job, volume, first, mode, timings, started, cloud.finished_at)
     if video_error is not None:
         set_progress(job, "downloading")
         raise video_error

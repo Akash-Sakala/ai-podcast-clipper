@@ -445,6 +445,47 @@ def test_the_video_download_starts_while_the_audio_uploads(tmp_path, monkeypatch
     assert {"audio", "download", "downloadWait"} <= set(data["timings"])
 
 
+def test_cloud_time_leaves_out_the_wait_for_the_video_download(tmp_path, monkeypatch):
+    """Phase 1 returns while the video is still downloading: that wait is "downloadWait",
+    and must not be counted again in "gpu_total" (the Modal calls' own wall time)."""
+    job_dir = make_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+    inner = world.video_download()
+    held = threading.Event()                               # a real wait: World turns time.sleep off
+
+    def late_download(job, on_progress=None, audio_format=None, update_status=True):
+        for _ in range(100_000):
+            if "transcribe_and_rank returned" in world.events:
+                break
+            held.wait(0.001)
+        held.wait(0.5)                                     # the download ends half a second later
+        return inner(job, on_progress=on_progress, audio_format=audio_format, update_status=update_status)
+
+    monkeypatch.setattr(phases, "download_youtube", late_download)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    timings = read(job_dir)["timings"]
+    assert timings["downloadWait"] >= 0.4
+    assert timings["gpu_total"] < timings["downloadWait"]
+
+
+def test_a_run_that_succeeds_after_a_failure_clears_where_it_failed(tmp_path, monkeypatch):
+    job_dir = make_job(tmp_path, status="failed", failedStage="rendering", error="boom")
+    World(tmp_path, monkeypatch)
+    assert pipeline.run_job(job_dir, 5, keep_remote=False) == 0
+    data = read(job_dir)
+    assert data["status"] == "done" and data.get("failedStage") is None and data.get("error") is None
+
+
+def test_phase_one_time_ends_when_the_cloud_call_ended(tmp_path, monkeypatch):
+    job = jobstore.Job(make_job(tmp_path))
+    monkeypatch.setattr(phases.time, "time", lambda: 200.0)
+    timings = {}
+    phases.phase_one_done(job, None, {"timings": {"select": 20.0}}, "reuse", timings, 100.0, 130.0)
+    assert timings == {"gpu_select": 20.0, "gpu_total": 30.0}
+    phases.phase_one_done(job, None, {}, "reuse", timings, 100.0)          # no end given: now
+    assert timings["gpu_total"] == 100.0
+
+
 def test_an_upload_has_no_video_download_to_start(tmp_path, monkeypatch):
     job_dir = make_job(tmp_path, source="upload", youtubeUrl=None, title="talk.mp4")
     (job_dir / "input.mp4").write_bytes(b"x" * 4096)
