@@ -9,7 +9,7 @@ import { Segmented } from "../ui/segmented";
 import { ClipSourcesCard } from "./clip-sources-card";
 import { RunsCard } from "./runs-card";
 import { StageCard } from "./stage-card";
-import { BillTile, MoneyValue, Tile, TimeValue } from "./tiles";
+import { BillTile, GeminiTile, MoneyValue, Tile, TimeValue } from "./tiles";
 import { TrendCard } from "./trend-card";
 
 const ACTIVE_POLL_MS = 5000;
@@ -41,7 +41,7 @@ export function StatsPage({ initialStats }: { initialStats: Stats }) {
             Stats
           </h1>
           <p className="text-muted-foreground text-sm">
-            What each video cost on Modal and how long it took.
+            What each video cost on Modal and Gemini, and how long it took.
           </p>
         </div>
         <Segmented
@@ -58,7 +58,7 @@ export function StatsPage({ initialStats }: { initialStats: Stats }) {
         />
       </div>
 
-      <div className="grid gap-3 sm:gap-4 lg:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
         <BillTile stats={stats} />
         <Tile
           label="New video, average"
@@ -103,6 +103,7 @@ export function StatsPage({ initialStats }: { initialStats: Stats }) {
               : "No re-ranks yet"
           }
         />
+        <GeminiTile stats={stats} />
       </div>
 
       {stats.summary.runs === 0 ? (

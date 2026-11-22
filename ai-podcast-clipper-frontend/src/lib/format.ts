@@ -49,6 +49,17 @@ export function plural(n: number, word: string) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/** A token count, short: "950", "34k", "1.2M". */
+export function tokenCount(n: number) {
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k < 10 ? k.toFixed(1).replace(/\.0$/, "") : Math.round(k)}k`;
+  }
+  const m = n / 1_000_000;
+  return `${m < 10 ? m.toFixed(1).replace(/\.0$/, "") : Math.round(m)}M`;
+}
+
 /** An amount kept in both currencies: INR at the rate of the day it was spent. */
 export type Money = { usd: number; inr: number | null };
 

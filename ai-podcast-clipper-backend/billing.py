@@ -1,4 +1,5 @@
-"""Laptop-side Modal billing: the `modal` CLI, live rates, this month's bill, the cost of a run."""
+"""Laptop-side billing: the `modal` CLI, live rates, this month's bill, the cost of a run
+(Modal containers, plus the Gemini calls priced by gemini_costs.py)."""
 
 import datetime as dt
 import json
@@ -9,6 +10,7 @@ import sys
 import time
 
 import costs
+import gemini_costs
 from jobstore import BACKEND_DIR, log
 from media import no_window
 
@@ -87,9 +89,22 @@ def refresh_modal_bill(data_dir: pathlib.Path, fetch=None) -> dict | None:
     return bill
 
 
-def job_cost(result: dict, data_dir: pathlib.Path | None = None) -> dict | None:
-    """The estimated Modal cost of this run, as stored in job.json and the stats ledger:
-    the containers' running time priced with Modal's live rates, split by stage."""
+def gemini_cost(result: dict, when=None) -> dict | None:
+    """The run's Gemini calls (ranking report "usage") priced with gemini_costs.PRICES
+    on the day of the run; None for a run (or an older deployment) without token counts."""
+    try:
+        return gemini_costs.estimate((result.get("ranking") or {}).get("usage"), when)
+    except Exception as exc:  # noqa: BLE001 - the cost is best effort
+        log(f"Could not price the Gemini calls: {exc}")
+        return None
+
+
+def job_cost(result: dict, data_dir: pathlib.Path | None = None, when=None) -> dict | None:
+    """The estimated cost of this run, as stored in job.json and the stats ledger: the
+    Modal containers' running time priced with Modal's live rates, split by stage
+    ("usd", "stages"), and the Gemini calls' tokens ("gemini", see gemini_costs.estimate).
+    "usd" stays Modal's alone, so it can be checked against Modal's bill; the run's total
+    is usd + gemini.usd."""
     cost = result.get("cost")
     if result.get("usages") and data_dir is not None:
         try:
@@ -99,6 +114,11 @@ def job_cost(result: dict, data_dir: pathlib.Path | None = None) -> dict | None:
             log(f"Could not price the run with Modal's live rates: {exc}")
     if not cost or cost.get("usd") is None:
         return None
-    return {"usd": cost["usd"], "gpuSeconds": cost.get("gpuSeconds"), "gpu": result.get("gpu"),
-            "containers": cost.get("containers"), "stages": cost.get("stages"),
-            "rates": cost.get("rates", "built-in")}
+    out = {"usd": cost["usd"], "gpuSeconds": cost.get("gpuSeconds"), "gpu": result.get("gpu"),
+           "containers": cost.get("containers"), "stages": cost.get("stages"),
+           "rates": cost.get("rates", "built-in")}
+    gemini = gemini_cost(result, when)
+    if gemini:
+        out["gemini"] = gemini
+        log(gemini_costs.describe(gemini))
+    return out

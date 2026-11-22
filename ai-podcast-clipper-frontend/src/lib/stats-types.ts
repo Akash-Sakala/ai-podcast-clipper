@@ -34,10 +34,30 @@ export type StageBreakdown = {
   /** Average seconds per stage; they add up to the end-to-end time. */
   time: Record<TimeStage, number>;
   totalSeconds: number;
-  /** Average cost per stage (null when no run reported its stages). */
+  /** Average cost per stage (null when no run reported its stages); Rank includes Gemini. */
   cost: Record<CostStage, Money> | null;
+  /** Rank's average cost split into the Gemini API and Modal's CPU container
+   *  (null when none of the runs recorded Gemini tokens). */
+  rankSplit: RankSplit | null;
   totalCost: Money | null;
   runs: number;
+};
+
+export type RankSplit = { gemini: Money; modal: Money };
+
+/** The Gemini API calls of the period's runs, from their token counts. */
+export type GeminiStats = {
+  /** Estimated spend (USD at Google's list prices, rupees at each run's rate). */
+  spend: Money | null;
+  calls: number;
+  /** Prompt tokens (cached ones included). */
+  tokensIn: number;
+  /** Answer tokens, thinking included (both billed as output). */
+  tokensOut: number;
+  /** Runs that recorded token counts. */
+  runs: number;
+  /** Models without a price in the backend's table (their calls count as $0). */
+  unpriced: string[];
 };
 
 export type RunRow = {
@@ -53,7 +73,10 @@ export type RunRow = {
   clips: number | null;
   seconds: number | null;
   time: Record<TimeStage, number>;
+  /** Per stage; Rank includes Gemini. */
   stageCost: Record<CostStage, Money> | null;
+  rankSplit: RankSplit | null;
+  /** Modal plus Gemini. */
   cost: Money | null;
 };
 
@@ -95,6 +118,8 @@ export type Stats = {
     runs: number;
   } | null;
   rerankAvg: { cost: Money | null; seconds: number; runs: number } | null;
+  /** Null when no run of the period recorded Gemini token counts. */
+  gemini: GeminiStats | null;
   stages: { new: StageBreakdown | null; rerank: StageBreakdown | null };
   /** The newest runs, as many as were asked for (see computeStats `runsLimit`). */
   runs: RunRow[];

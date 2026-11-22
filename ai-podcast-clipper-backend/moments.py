@@ -28,6 +28,8 @@ Pipeline
        after RANKING_TIME_LIMIT_SECONDS. If Gemini still delivers fewer than MIN_CLIPS
        moments, the rest are picked from the transcript (source="fallback"), so a
        job never ends with zero clips; the reason is recorded in `report`.
+    8. Every answer's token counts (input, cached, output, thinking) are kept per call
+       in report["usage"]; the laptop prices them (gemini_costs.py).
 
 Only `google-genai`/`pydantic` are needed, imported lazily, so the pure helpers
 are unit-testable without network access.
@@ -684,6 +686,37 @@ class RankingTimeout(Exception):
 class ResponseFormatError(Exception):
     """Gemini answered, but not with a parseable JSON list."""
 
+    usage: dict | None = None    # the answer was billed all the same
+
+
+class Answer(list):
+    """What _call_gemini returns: the parsed items, plus the call's token counts
+    (`usage`, see token_usage) when the answer reported them."""
+
+    usage: dict | None = None
+
+
+def token_usage(metadata, served: str | None = None) -> dict | None:
+    """Gemini's usage_metadata as {"input", "cached", "output", "thinking", "served"}
+    (output excludes thinking; both are billed at the output price). None without metadata."""
+    if metadata is None:
+        return None
+
+    def count(name: str) -> int:
+        value = getattr(metadata, name, None)
+        if value is None and isinstance(metadata, dict):
+            value = metadata.get(name)
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    usage = {"input": count("prompt_token_count"), "cached": count("cached_content_token_count"),
+             "output": count("candidates_token_count"), "thinking": count("thoughts_token_count")}
+    if not any(usage.values()):
+        return None
+    return {**usage, "served": served} if served else usage
+
 
 def classify_error(exc: Exception) -> str:
     """What a failed request means for the next step:
@@ -732,21 +765,40 @@ def _call_gemini(client, model: str, system: str, user: str, schema, timeout_s: 
         config["temperature"] = GEMINI_TEMPERATURE
     if thinking:
         config["thinking_config"] = types.ThinkingConfig(thinking_level=types.ThinkingLevel[thinking.upper()])
-    parts = []
+    parts, metadata, served = [], None, None
     for chunk in client.models.generate_content_stream(model=model, contents=user,
                                                        config=types.GenerateContentConfig(**config)):
         if chunk.text:
             parts.append(chunk.text)
+        # The counts come with the last chunk (earlier ones may carry partial counts).
+        metadata = getattr(chunk, "usage_metadata", None) or metadata
+        served = getattr(chunk, "model_version", None) or served
         if deadline is not None and time.monotonic() > deadline:
             raise RankingTimeout(f"ranking time limit reached while {model} was answering")
     raw = "".join(parts)
+    usage = token_usage(metadata, served)
     items = parse_json_list(raw)
     if not items and raw.strip() and raw.strip() not in ("[]", "{}"):
-        raise ResponseFormatError(f"{model} returned text that is not a JSON list: {raw[:120]!r}")
-    return items
+        error = ResponseFormatError(f"{model} returned text that is not a JSON list: {raw[:120]!r}")
+        error.usage = usage
+        raise error
+    answer = Answer(items)
+    answer.usage = usage
+    return answer
 
 
 _CALLS_LOCK = threading.Lock()
+
+
+def record_usage(report: dict, model: str, answer, ok: bool) -> None:
+    """report["usage"]: one entry per answered call with its token counts, for the cost
+    estimate (gemini_costs.py). `answer` is the Answer or the exception; calls that
+    reported no counts (stalls, errors before an answer) are left out."""
+    usage = getattr(answer, "usage", None)
+    if not isinstance(usage, dict):
+        return
+    with _CALLS_LOCK:
+        report.setdefault("usage", []).append({"model": model, **usage, "ok": ok})
 
 
 def count_call(report: dict) -> None:
@@ -790,6 +842,7 @@ def _generate_json(client, model: str, system: str, user: str, schema, report: d
                                      timeout_s, thinking, deadline)
             except Exception as exc:  # noqa: BLE001
                 took = time.monotonic() - started
+                record_usage(report, m, exc, ok=False)
                 kind = classify_error(exc)
                 if kind == "timeout":
                     report["timedOut"] = True
@@ -812,6 +865,7 @@ def _generate_json(client, model: str, system: str, user: str, schema, report: d
                     continue
                 break                                        # next model
             took = round(time.monotonic() - started, 1)
+            record_usage(report, m, items, ok=bool(items))
             log(f"Gemini {m} answered in {took}s with {len(items)} item(s)")
             report.setdefault("callLog", []).append({"model": m, "mode": mode, "items": len(items), "seconds": took})
             if items:
@@ -1082,7 +1136,7 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
 
     judge_report = {"ran": False, "complete": 0, "incomplete": 0, "adjusted": 0, "droppedTooLong": 0}
     report.update({"model": model, "models": model_chain(model), "errors": [], "returned": 0, "valid": 0,
-                   "fallback": 0, "timedOut": False, "calls": 0, "tooLong": 0, "profile": SCORE_PROFILE,
+                   "fallback": 0, "timedOut": False, "calls": 0, "usage": [], "tooLong": 0, "profile": SCORE_PROFILE,
                    "judge": judge_report,
                    "_deadline": time.monotonic() + RANKING_TIME_LIMIT_S if RANKING_TIME_LIMIT_S else None})
     ranking_started = time.monotonic()

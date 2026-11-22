@@ -1,5 +1,6 @@
-import { duration, formatMoney } from "~/lib/format";
+import { duration, formatMoney, plural } from "~/lib/format";
 import { isActive, type Job } from "~/lib/job-types";
+import { runTotalUsd } from "~/lib/stats-math";
 import type { Currency } from "~/lib/settings-types";
 
 export function DetailsPanel({
@@ -70,20 +71,24 @@ export function DetailsPanel({
   const total = job.timings?.total;
   if (typeof total === "number" && !isActive(job))
     rows.push({ label: "Processing time", value: duration(total) });
-  if (job.cost && !isActive(job))
+  if (job.cost && !isActive(job)) {
+    const runRate = job.runs?.at(-1)?.usdInr?.rate ?? rate;
+    const money = (usd: number) =>
+      formatMoney(
+        { usd, inr: runRate !== null ? usd * runRate : null },
+        currency,
+      );
+    const gemini = job.cost.gemini;
     rows.push({
       label: "Estimated cost",
-      value: `${formatMoney(
-        {
-          usd: job.cost.usd,
-          inr:
-            (job.runs?.at(-1)?.usdInr?.rate ?? rate) !== null
-              ? job.cost.usd * (job.runs?.at(-1)?.usdInr?.rate ?? rate ?? 0)
-              : null,
-        },
-        currency,
-      )}${job.cost.gpu ? ` on ${job.cost.gpu}` : ""}`,
+      value: `${money(runTotalUsd(job.cost))}${job.cost.gpu ? ` on ${job.cost.gpu}` : ""}`,
     });
+    if (gemini)
+      rows.push({
+        label: "Gemini",
+        value: `${money(gemini.usd)} of it, ${plural(gemini.calls, "call")}`,
+      });
+  }
   if (job.reranks)
     rows.push({
       label: "Re-ranked",

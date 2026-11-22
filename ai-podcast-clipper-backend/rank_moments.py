@@ -18,7 +18,8 @@ time is spent. Each job costs its windows + 1 Gemini calls (2 for a video up to 
     python rank_moments.py --compare "..\\data\\jobs\\<id>"            # ranks, writes <job>\\eval\\
     python rank_moments.py --compare "..\\data\\jobs\\<id>" --reuse    # report again, no calls
 
-The HTML report goes to <data dir>\\eval\\clip-comparison.html (or --out).
+The HTML report goes to <data dir>\\eval\\clip-comparison.html (or --out). Each ranking
+prints its Gemini tokens and estimated cost (gemini_costs.py), and the report shows them.
 """
 
 import argparse
@@ -31,6 +32,8 @@ import sys
 import settings  # loads .env before moments reads its settings
 
 # isort: split
+import fx
+import gemini_costs
 import moments
 import replay
 
@@ -89,6 +92,14 @@ def plan(words: list[dict]) -> dict:
             "calls": windows + 1 if windows else 0}
 
 
+def usd_inr(data_dir: pathlib.Path) -> float | None:
+    """The saved USD->INR rate (data/stats/fx.json), without a network call."""
+    try:
+        return (fx.usd_inr(data_dir, sources=(), log=lambda *_: None) or {}).get("rate")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def load_old(job_dir: pathlib.Path) -> list[dict]:
     path = job_dir / "moments.json"
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
@@ -124,14 +135,20 @@ def compare_jobs(job_dirs: list[pathlib.Path], out: pathlib.Path | None, reuse: 
             eval_dir.mkdir(exist_ok=True)
             (eval_dir / "moments.new.json").write_text(json.dumps(new, indent=2), encoding="utf-8")
             (eval_dir / "ranking.new.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+            log(gemini_costs.describe(gemini_costs.estimate(report.get("usage")), usd_inr(job_dir.parent.parent)))
         entries.append({"id": job_dir.name, "title": context.get("title") or job_dir.name, "plan": info,
                         "lines": moments.build_lines(words), "old": old, "new": new, "report": report})
     if dry_run:
         log(f"Total: {sum(plan(job_inputs(d)[0])['calls'] for d in job_dirs)} Gemini call(s)")
         return 0
+    run_costs = [gemini_costs.estimate(e["report"].get("usage")) for e in entries]
+    if len([c for c in run_costs if c]) > 1:
+        rate = usd_inr(job_dirs[0].parent.parent)
+        total = sum(c["usd"] for c in run_costs if c)
+        log(f"Gemini for all {len(entries)} videos: about ${total:.4f}" + (f" (₹{total * rate:.2f})" if rate else ""))
     out = out or job_dirs[0].parent.parent / "eval" / "clip-comparison.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_report(entries), encoding="utf-8")
+    out.write_text(render_report(entries, usd_inr(job_dirs[0].parent.parent)), encoding="utf-8")
     log(f"Report: {out}")
     return 0
 
@@ -256,7 +273,20 @@ def _lengths(picks: list[dict]) -> str:
     return f"{', '.join(f'{x:.0f}' for x in d)} s (average {sum(d) / len(d):.0f} s)"
 
 
-def render_report(entries: list[dict]) -> str:
+def _gemini_rows(report: dict, rate: float | None) -> str:
+    """Report rows: the run's Gemini tokens and estimated cost (none for older eval files)."""
+    cost = gemini_costs.estimate(report.get("usage"))
+    if not cost:
+        return "<dt>Gemini tokens</dt><dd>not recorded</dd>"
+    t = cost["tokens"]
+    cached = f", {t['cached']:,} cached" if t["cached"] else ""
+    money = f"${cost['usd']:.4f}" + (f" (about ₹{cost['usd'] * rate:.2f})" if rate else "")
+    return (f"<dt>Gemini tokens</dt><dd>{t['input']:,} in{cached}, {t['output']:,} out, "
+            f"{t['thinking']:,} thinking</dd>"
+            f"<dt>Gemini cost</dt><dd>{_esc(money)}, prices of {_esc(cost['prices'])}</dd>")
+
+
+def render_report(entries: list[dict], rate: float | None = None) -> str:
     sections = []
     for e in entries:
         lines, old, new, report = e["lines"], e["old"], e["new"], e["report"]
@@ -269,6 +299,7 @@ def render_report(entries: list[dict]) -> str:
             f"<dt>Video</dt><dd>{e['plan']['seconds'] / 60:.1f} min, {e['plan']['windows']} window(s)</dd>"
             f"<dt>Gemini calls</dt><dd>{_esc(calls if isinstance(calls, int) else 'not recorded')}"
             f" (planned {e['plan']['calls']})</dd>"
+            f"{_gemini_rows(report, rate)}"
             f"<dt>Old clip lengths</dt><dd>{_lengths(old)}</dd>"
             f"<dt>New clip lengths</dt><dd>{_lengths(new)}</dd>"
             f"<dt>Old picks that look unfinished</dt><dd>{unfinished} of {len(old)}</dd>"
@@ -383,6 +414,7 @@ def main() -> int:
     chosen = moments.select_moments(words, args.max_clips or 5, client, args.model, context, report=report)
     (job_dir / "moments.preview.json").write_text(json.dumps(chosen, indent=2), encoding="utf-8")
     print("\nReport:", json.dumps(report, indent=2))
+    print("\n" + gemini_costs.describe(gemini_costs.estimate(report.get("usage")), usd_inr(job_dir.parent.parent)))
     print(f"\n{len(chosen)} moment(s) written to {job_dir / 'moments.preview.json'}")
     return 0
 

@@ -1,4 +1,5 @@
-import type { TimeStage } from "~/lib/stats-types";
+import type { Money } from "~/lib/format";
+import type { RankSplit, TimeStage } from "~/lib/stats-types";
 import { cn } from "~/lib/utils";
 
 export const STAGE_LABELS: Record<TimeStage, string> = {
@@ -36,4 +37,9 @@ export function Swatch({ stage }: { stage: TimeStage }) {
       className={cn("inline-block size-2.5 rounded-[3px]", STAGE_COLORS[stage])}
     />
   );
+}
+
+/** "Gemini ₹4.90, Modal ₹0.20": Rank's cost in its two parts. */
+export function rankNote(split: RankSplit, m: (v: Money | null) => string) {
+  return `Gemini ${m(split.gemini)}, Modal ${m(split.modal)}`;
 }

@@ -1,5 +1,5 @@
 import type { Money } from "./format";
-import type { LedgerRun } from "./job-types";
+import type { JobCost, LedgerRun } from "./job-types";
 
 export const num = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -27,3 +27,10 @@ export function scaleMoney(value: Money | null, factor: number): Money | null {
 
 export const madeClips = (run: LedgerRun) =>
   run.status === "done" && (run.clips ?? 0) > 0;
+
+/** USD of a run's Gemini calls (0 when none were recorded). */
+export const geminiUsd = (cost: JobCost | null | undefined) =>
+  num(cost?.gemini?.usd) ?? 0;
+
+/** USD of a whole run: Modal plus Gemini. */
+export const runTotalUsd = (cost: JobCost) => cost.usd + geminiUsd(cost);
