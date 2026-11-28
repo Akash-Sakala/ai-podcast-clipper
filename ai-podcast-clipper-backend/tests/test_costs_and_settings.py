@@ -153,12 +153,14 @@ def test_frankfurter_and_open_er_parsing():
 # --------------------------------------------------------------------------- #
 
 def test_user_settings_override_and_clamp(tmp_path, monkeypatch):
-    for name in ("MOST_REPLAYED", "SPONSORBLOCK", "REPLAY_WEIGHT", "MAX_CLIPS"):
+    for name in ("MOST_REPLAYED", "SPONSORBLOCK", "REPLAY_WEIGHT", "MAX_CLIPS", "END_CARD"):
         monkeypatch.setattr(settings, name, getattr(settings, name))
     (tmp_path / "settings.json").write_text(json.dumps(
-        {"maxClips": 12, "mostReplayed": False, "sponsorBlock": False, "replayWeight": 0.9, "currency": "inr"}))
+        {"maxClips": 12, "mostReplayed": False, "sponsorBlock": False, "replayWeight": 0.9, "currency": "inr",
+         "endCard": True}))
     applied = settings.apply_user_settings(tmp_path)
-    assert applied == {"maxClips": 8, "mostReplayed": False, "sponsorBlock": False, "replayWeight": 0.6}
+    assert applied == {"maxClips": 8, "mostReplayed": False, "sponsorBlock": False, "replayWeight": 0.6,
+                       "endCard": True}
     (tmp_path / "settings.json").write_text(json.dumps({"maxClips": "7", "mostReplayed": "no"}))
     assert settings.apply_user_settings(tmp_path)["maxClips"] == 8             # bad values keep the last ones
 

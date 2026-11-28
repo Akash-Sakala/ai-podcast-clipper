@@ -328,13 +328,14 @@ class RenderWorker:
                 report_progress(key, round(fraction, 3))
 
         try:
+            card = JOBS_PATH / job_id / "cards" / f"clip_{index}.png"     # endcard.py, uploaded by the laptop
             result = render.render_clip(self.models, JOBS_PATH / job_id / source, float(moment["start"]),
                                         float(moment["end"]), words, out_path, work_dir, self.encoder, progress,
-                                        target_us=target_us)
+                                        target_us=target_us, card=card if card.is_file() else None)
             print(f"Clip {index}: {result['timings']} ({result['frames']} frames, {result['tracks']} face "
                   f"tracks, {result['encoder']}, crop switches {result['switches']})")
             out = {"index": index, "name": name, "timings": result["timings"], "encoder": result["encoder"],
-                   "switches": result["switches"]}
+                   "switches": result["switches"], "endCard": result.get("endCard")}
             if output == "bytes":
                 out["data"] = out_path.read_bytes()
             elif output == "volume":
@@ -386,6 +387,7 @@ def clip_timing(result: dict) -> dict:
     else:
         entry["steps"] = result.get("timings")
         entry["encoder"] = result.get("encoder")
+        entry["endCard"] = result.get("endCard")
     return entry
 
 

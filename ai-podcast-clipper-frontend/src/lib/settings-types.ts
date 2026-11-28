@@ -16,6 +16,8 @@ export type AppSettings = {
   replayWeight: number;
   /** A browser notification when a run ends while the app's tab is in the background. */
   notifyWhenDone: boolean;
+  /** A credit card over the last seconds of every clip from a YouTube video (backend endcard.py). */
+  endCard: boolean;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sponsorBlock: true,
   replayWeight: 0.4,
   notifyWhenDone: false,
+  endCard: true,
 };
 
 export const MAX_CLIPS_RANGE = [3, 8] as const;
@@ -61,5 +64,6 @@ export function sanitizeSettings(
       ) / 100;
   if (typeof value.notifyWhenDone === "boolean")
     out.notifyWhenDone = value.notifyWhenDone;
+  if (typeof value.endCard === "boolean") out.endCard = value.endCard;
   return out;
 }

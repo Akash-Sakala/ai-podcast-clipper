@@ -36,6 +36,7 @@ const NAMES: Record<Key, string> = {
   mostReplayed: "Most replayed",
   replayWeight: "Audience weight",
   sponsorBlock: "SponsorBlock",
+  endCard: "Credit card",
 };
 
 /** "Clips per video, 6" or "Most replayed, on": what a screen reader hears after a save. */
@@ -285,6 +286,20 @@ export function SettingsPage({
             label="SponsorBlock"
             checked={settings.sponsorBlock}
             onChange={(on) => update({ sponsorBlock: on })}
+          />
+        </Row>
+      </Group>
+
+      <Group title="Clip look">
+        <Row
+          title="Credit card at the end"
+          description="The last 4.5 seconds of every clip from a YouTube video show the episode's thumbnail, channel and title, and where in the episode the clip starts."
+          status={statusFor("endCard")}
+        >
+          <Toggle
+            label="Credit card at the end"
+            checked={settings.endCard}
+            onChange={(on) => update({ endCard: on })}
           />
         </Row>
       </Group>

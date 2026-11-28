@@ -117,6 +117,8 @@ def video_cache_dir() -> str:
 
 MOST_REPLAYED = get_switch("MOST_REPLAYED", True)
 SPONSORBLOCK = get_switch("SPONSORBLOCK", True)
+# The credit card over the last seconds of every clip from a YouTube video (endcard.py).
+END_CARD = get_switch("END_CARD", True)
 REPLAY_WEIGHT = min(max(get_float("REPLAY_WEIGHT", 0.4), 0.0), 1.0)
 MAX_CLIPS = 5
 
@@ -129,12 +131,12 @@ REPLAY_WEIGHT_MAX = 0.6
 def apply_user_settings(data_dir) -> dict:
     """Read <data>/settings.json (written by the web app) and apply it to this module:
     {"maxClips": 5, "mostReplayed": true, "sponsorBlock": true, "replayWeight": 0.4,
-     "currency": "usd" | "inr"}. Missing or invalid values keep the .env / default ones.
+     "endCard": true, "currency": "usd" | "inr"}. Missing or invalid values keep the .env / default ones.
     Returns the settings that were applied."""
     import json
     import pathlib
 
-    global MOST_REPLAYED, SPONSORBLOCK, REPLAY_WEIGHT, MAX_CLIPS
+    global MOST_REPLAYED, SPONSORBLOCK, REPLAY_WEIGHT, MAX_CLIPS, END_CARD
     try:
         raw = json.loads((pathlib.Path(data_dir) / USER_SETTINGS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -144,12 +146,14 @@ def apply_user_settings(data_dir) -> dict:
         MOST_REPLAYED = raw["mostReplayed"]
     if isinstance(raw.get("sponsorBlock"), bool):
         SPONSORBLOCK = raw["sponsorBlock"]
+    if isinstance(raw.get("endCard"), bool):
+        END_CARD = raw["endCard"]
     if isinstance(raw.get("replayWeight"), (int, float)) and not isinstance(raw["replayWeight"], bool):
         REPLAY_WEIGHT = min(max(float(raw["replayWeight"]), 0.0), REPLAY_WEIGHT_MAX)
     if isinstance(raw.get("maxClips"), int) and not isinstance(raw["maxClips"], bool):
         MAX_CLIPS = min(max(raw["maxClips"], MAX_CLIPS_RANGE[0]), MAX_CLIPS_RANGE[1])
     return {"maxClips": MAX_CLIPS, "mostReplayed": MOST_REPLAYED, "sponsorBlock": SPONSORBLOCK,
-            "replayWeight": REPLAY_WEIGHT}
+            "replayWeight": REPLAY_WEIGHT, "endCard": END_CARD}
 
 
 # Moment-selection, rendering and naming settings, read inside the containers (moments.py,

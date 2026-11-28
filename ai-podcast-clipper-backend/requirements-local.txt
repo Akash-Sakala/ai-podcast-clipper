@@ -5,6 +5,8 @@
 modal>=1.6.4,<1.7
 yt-dlp[default]
 imageio-ffmpeg
+# Draws each clip's end-credit card (endcard.py).
+pillow
 # Only for rank_moments.py (preview Gemini ranking on a finished job locally).
 google-genai
 pydantic
