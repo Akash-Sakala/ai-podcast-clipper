@@ -2,11 +2,13 @@
 
 import {
   ArrowLeft,
-  ListRestart,
   Download,
   Info,
+  ListRestart,
   RotateCcw,
+  Trash2,
   Upload,
+  X,
   Youtube,
 } from "lucide-react";
 import { AnimatePresence, m } from "motion/react";
@@ -30,6 +32,8 @@ import { ClipCard } from "../clip-card";
 import { Popover } from "../popover";
 import { RelativeTime } from "../relative-time";
 import { ReplayWave } from "../replay-wave";
+import { IconButton } from "../ui/icon-button";
+import { InlineConfirm } from "../ui/inline-confirm";
 import { ActionButton } from "./action-button";
 import { useComparisonSelection } from "./compare-selection";
 import { ClipViewerProvider, type ViewerClip } from "./clip-viewer";
@@ -80,8 +84,14 @@ export function VideoPage({
     toast.success(readyText(job.clips.length), { id: `finished-${job.id}` });
   }, [active, job]);
 
-  const { busy, rerank, retry } = useJobActions();
+  const { busy, rerank, retry, cancel, remove } = useJobActions();
   const isBusy = busy === job.id;
+  // Cancel and Delete each ask once, in place, before they act.
+  const [asking, setAsking] = useState<"cancel" | "delete" | null>(null);
+  useEffect(() => {
+    if (!active && asking === "cancel") setAsking(null);
+  }, [active, asking]);
+  const saving = job.progress?.stage === "saving";
   // Parts that rarely change keep their identity between polls, so the clip cards
   // and the replay wave (memoised) don't re-render while only the progress moves.
   const clipDetails = useStable(job.clipDetails);
@@ -222,10 +232,34 @@ export function VideoPage({
             >
               {() => <DetailsPanel job={job} currency={currency} rate={rate} />}
             </Popover>
+            {!active && (
+              <IconButton
+                label="Delete video"
+                onClick={() => setAsking("delete")}
+                active={asking === "delete"}
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </IconButton>
+            )}
           </div>
         </header>
 
         <div className="space-y-6">
+          {asking === "delete" && !active && (
+            <InlineConfirm
+              question="Delete this video and its clips from this laptop? Its stats stay."
+              confirmLabel="Delete"
+              keepLabel="Keep it"
+              busy={isBusy}
+              onConfirm={() =>
+                void remove(job).then((ok) => {
+                  if (!ok) setAsking(null);
+                })
+              }
+              onKeep={() => setAsking(null)}
+              className="bg-destructive/10 rounded-lg px-3.5 py-2.5"
+            />
+          )}
           <AnimatePresence initial={false} mode="wait">
             {active ? (
               <m.div
@@ -236,7 +270,31 @@ export function VideoPage({
                 }}
                 className="bg-card rounded-xl border p-4 sm:p-5"
               >
-                <ProgressStrip job={job} />
+                <ProgressStrip
+                  job={job}
+                  action={
+                    saving ? null : asking === "cancel" ? (
+                      <InlineConfirm
+                        question="Stop this run?"
+                        confirmLabel="Cancel run"
+                        keepLabel="Keep going"
+                        busy={isBusy}
+                        onConfirm={() =>
+                          void cancel(job).then(() => setAsking(null))
+                        }
+                        onKeep={() => setAsking(null)}
+                      />
+                    ) : (
+                      <ActionButton
+                        icon={<X className="size-4" aria-hidden />}
+                        onClick={() => setAsking("cancel")}
+                        compact
+                      >
+                        Cancel
+                      </ActionButton>
+                    )
+                  }
+                />
               </m.div>
             ) : finishedRun ? (
               <RunFinished
@@ -256,6 +314,7 @@ export function VideoPage({
 
           {job.status === "failed" &&
             !comparing &&
+            !job.cancelledAt &&
             failedStepIndex(job) >= 0 && (
               <div className="bg-card rounded-xl border p-4 sm:p-5">
                 <FailedRail job={job} />
@@ -264,7 +323,7 @@ export function VideoPage({
 
           {job.status === "failed" && !comparing && (
             <Notice
-              tone="error"
+              tone={job.cancelledAt ? "neutral" : "error"}
               action={
                 <>
                   {job.mode !== "rerank" && (

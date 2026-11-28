@@ -22,10 +22,11 @@ import { MiniRail } from "./video/progress-strip";
 /** With more videos than this, a search box appears above the list. */
 const SEARCH_FROM = 10;
 
-/** "Failed at Send clips" when the step is known, else "Failed". */
+/** "Failed at Send clips" (or "Cancelled at ...") when the step is known, else "Failed". */
 function failedLabel(job: JobSummary) {
   const step = stepsFor(job).find((s) => s.stage === job.failedStage);
-  return step ? `Failed at ${step.label}` : "Failed";
+  const what = job.cancelled ? "Cancelled" : "Failed";
+  return step ? `${what} at ${step.label}` : what;
 }
 
 function RowStatus({
@@ -51,7 +52,12 @@ function RowStatus({
     return (
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex flex-wrap items-center gap-x-1">
-          <span className="text-destructive text-sm font-medium whitespace-nowrap">
+          <span
+            className={cn(
+              "text-sm font-medium whitespace-nowrap",
+              job.cancelled ? "text-muted-foreground" : "text-destructive",
+            )}
+          >
             {failedLabel(job)}
           </span>
           {job.mode !== "rerank" && (

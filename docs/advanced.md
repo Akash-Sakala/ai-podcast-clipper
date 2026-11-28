@@ -17,14 +17,14 @@ Everything beyond setup and everyday use. Backend commands run from `ai-podcast-
 - [Choose a GPU](#choose-a-gpu)
 - [Test deployment](#test-deployment)
 - [Logs](#logs)
-- [Cancel a running job](#cancel-a-running-job)
+- [Cancel or delete a video](#cancel-or-delete-a-video)
 - [Tests and CI](#tests-and-ci)
 - [YouTube cookies](#youtube-cookies)
 - [Troubleshooting](#troubleshooting)
 
 ## Where files are
 
-Each video is a job folder in `data/jobs/<job id>/` (or under `DATA_DIR` if you set it):
+Each video is a job folder in `%LOCALAPPDATA%\ai-podcast-clipper\data\jobs\<job id>\` (outside OneDrive; `DATA_DIR` in the frontend `.env` overrides it). Versions before 2026-11-28 kept it in the repo's `data\` folder, which the app keeps using until you move it once with `scripts\move-data.ps1`. The launcher's log is `%LOCALAPPDATA%\ai-podcast-clipper\app.log`.
 
 | File | Contents |
 |---|---|
@@ -280,23 +280,13 @@ Put the winner in `CLIPPER_GPU`, then `modal deploy main.py`.
 - GPU: `modal app logs ai-podcast-clipper`, or modal.com → Apps → ai-podcast-clipper
 - Laptop: `data/jobs/<job id>/runner.log`
 
-## Cancel a running job
+## Cancel or delete a video
 
-Stopping `npm run dev` does not stop a job. To cancel one, stop its runner (step 1). The next run of any video, or Try again on this one, then cancels its Modal call and clip renders and removes its files from the volume by itself; steps 2 and 3 do the same by hand, without starting another run:
+**Cancel** (on a running video's page, beside the timer) runs `runner.py --job-dir <job> --cancel`: it stops the runner and everything it started on this laptop, cancels the job's Modal call and the clip renders it spawned, removes the job's folder from the volume and marks the video "Cancelled at <step>". A re-rank that is cancelled keeps the previous clips. **Try again** then resumes like after any stopped run: a partial download, the saved transcript and clips kept on Modal are reused. Cancel is not offered while the clips are being saved (the run is all but done, and stopping a re-rank's file swap halfway would leave its clip folders mixed). A Modal call that could not be cancelled (offline) stays in `job.json`, and the next run's sweep cancels it.
 
-```powershell
-# 1. stop the runner(s) on this laptop
-Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*.exe' -and $_.CommandLine -like '*runner.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+**Delete** (the bin icon on a finished or failed video's page) removes its job folder, the copy kept for re-ranks and any download left in the temp folder. Its runs stay on the stats page. A running video must be cancelled first. If a clip is open in a player, Windows refuses and nothing is deleted.
 
-# 2. stop the job's containers: transcribe_and_rank or render_clips, then any Transcriber or Renderer ones
-#    (an empty list = nothing running, nothing billed)
-modal container list
-modal container stop <container-id>          # never `modal app stop`: that undeploys the app
-
-# 3. remove the job's files from the Modal volume, then locally
-modal volume rm ai-podcast-clipper-jobs /<job-id> -r
-Remove-Item -Recurse -Force ..\data\jobs\<job-id>
-```
+From PowerShell, without the app: `python runner.py --job-dir "<data folder>\jobs\<job id>" --cancel`. Never run `modal app stop`: that undeploys the app.
 
 ## Test deployment
 

@@ -92,21 +92,24 @@ The first deploy builds the CUDA image with the Parakeet weights (about 2.5 GB) 
 
 ## Running
 
-Daily use (production build, listens on 127.0.0.1 only):
+Make a **Podcast Clipper** shortcut once (desktop and Start menu; `-StartAtSignIn` also starts the server when you sign in, so it opens instantly):
 
 ```powershell
-cd ai-podcast-clipper-frontend
-npm run build
-npm run start
+powershell -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1 -StartAtSignIn
 ```
 
-`npm run preview` does both in one go. For development with hot reload use `npm run dev`. Open http://127.0.0.1:3000.
+The shortcut starts the app if it isn't running, rebuilds it first when the code changed, and opens it in its own window (Chrome's or Edge's app mode). Closing the window leaves the server running; `scripts\clipper.ps1 -Stop` stops it. You can also install it from the browser (the install icon in the address bar) for a taskbar icon.
+
+By hand: `cd ai-podcast-clipper-frontend; npm run build; npm run start` (or `npm run preview`), then open http://127.0.0.1:3000. For development with hot reload use `npm run dev`. The app answers only on this computer and refuses requests from other sites.
+
+**Upgrading from a version that kept its data in the repo:** run `powershell -ExecutionPolicy Bypass -File scripts\move-data.ps1` once. It moves `data\` to `%LOCALAPPDATA%\ai-podcast-clipper\data`, out of OneDrive; until then the app keeps using `data\`.
 
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with live status.
+- **Running video:** **Cancel** stops it (the run on Modal too); **Try again** later picks up where it stopped.
 - **Clips page:** clips best first (a poster each; a mouse resting on one plays a muted preview), a full-screen viewer to watch them one after another (arrow keys or a swipe; the address links to the clip), score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing or downloading, then shows the new clips beside the previous ones so you keep the ones you want, clip by clip; **Try again** restarts a failed video.
 - **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock, and the kept videos with a button to remove them).
 
-Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line, cancelling a job and troubleshooting: [docs/advanced.md](docs/advanced.md).
+The bin icon on a video's page deletes it (clips, transcript and kept video; its stats stay). Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line and troubleshooting: [docs/advanced.md](docs/advanced.md).
 
 ## Limitations
 

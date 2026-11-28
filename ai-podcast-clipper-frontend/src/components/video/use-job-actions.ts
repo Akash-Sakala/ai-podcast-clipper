@@ -1,3 +1,4 @@
+import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { fingerprintFile } from "~/lib/fingerprint";
@@ -10,9 +11,23 @@ import { pickVideoFile, uploadVideo } from "~/lib/upload";
 type ActionJob = Pick<Job, "id" | "title"> &
   Partial<Pick<Job, "rerankNeedsFile" | "fingerprint">>;
 
-/** Re-rank and Try again, with toasts. Afterwards every tab reads the job again (jobsChanged). */
+async function request(url: string, method: "POST" | "DELETE") {
+  const response = await fetch(url, { method });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error ?? `Request failed (${response.status})`);
+  }
+}
+
+/**
+ * Re-rank, Try again, Cancel and Delete, with toasts. Afterwards every tab reads the
+ * job again (jobsChanged).
+ */
 export function useJobActions() {
   const [busy, setBusy] = useState<string | null>(null);
+  const router = useRouter();
 
   const run = useCallback(
     async (job: ActionJob, action: "rerank" | "retry") => {
@@ -42,17 +57,7 @@ export function useJobActions() {
             }),
           );
         } else {
-          const response = await fetch(`/api/jobs/${job.id}/${action}`, {
-            method: "POST",
-          });
-          if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as {
-              error?: string;
-            };
-            throw new Error(
-              body.error ?? `Request failed (${response.status})`,
-            );
-          }
+          await request(`/api/jobs/${job.id}/${action}`, "POST");
         }
         toast.success(action === "rerank" ? "Re-ranking" : "Trying again", {
           id: toastId,
@@ -74,9 +79,53 @@ export function useJobActions() {
     [],
   );
 
+  /** Stops a running video; resolves once it is stopped (true) or could not be (false). */
+  const cancel = useCallback(async (job: ActionJob) => {
+    setBusy(job.id);
+    try {
+      await request(`/api/jobs/${job.id}/cancel`, "POST");
+      toast.success("Cancelled", {
+        description: "Try again picks up where it stopped.",
+      });
+      await jobsChanged(job.id);
+      return true;
+    } catch (error) {
+      toast.error("Couldn't cancel", {
+        description: (error as Error).message,
+      });
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  /** Deletes a video and goes back to the list; resolves false when it couldn't. */
+  const remove = useCallback(
+    async (job: ActionJob) => {
+      setBusy(job.id);
+      try {
+        await request(`/api/jobs/${job.id}`, "DELETE");
+        toast.success("Video deleted", { description: displayTitle(job) });
+        router.push("/");
+        await jobsChanged();
+        return true;
+      } catch (error) {
+        toast.error("Couldn't delete it", {
+          description: (error as Error).message,
+        });
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [router],
+  );
+
   return {
     busy,
     rerank: (job: ActionJob) => void run(job, "rerank"),
     retry: (job: ActionJob) => void run(job, "retry"),
+    cancel,
+    remove,
   };
 }
