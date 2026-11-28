@@ -11,6 +11,8 @@ Everything beyond setup and everyday use. Backend commands run from `ai-podcast-
 - [Where the video goes](#where-the-video-goes)
 - [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock)
 - [Re-rank](#re-rank)
+- [End-credit card](#end-credit-card)
+- [Post text](#post-text)
 - [Preview ranking locally](#preview-ranking-locally)
 - [Stats page](#stats-page)
 - [Interface: motion and touch](#interface-motion-and-touch)
@@ -67,6 +69,7 @@ The app's **Settings page** (gear icon) saves `data/settings.json`: currency, cl
 | `YOUTUBE_IPV4` | `on` | runner | Download YouTube videos over IPv4, which avoids repeated timeouts to one YouTube server on a broken IPv6 route. `off` lets the system choose |
 | `MOST_REPLAYED` | `on` | runner | Use YouTube's Most replayed graph: replay hotspots become clip candidates and each clip gets an audience score. See [Most replayed and SponsorBlock](#most-replayed-and-sponsorblock) |
 | `SPONSORBLOCK` | `on` | runner | Keep SponsorBlock-marked sponsor reads, self-promotion, subscribe reminders, intros, outros and previews out of clips |
+| `END_CARD` | `on` | runner | The credit card over the last 4.5 seconds of every clip from a YouTube video (see [End-credit card](#end-credit-card)). The Settings page's switch wins over it |
 | `REPLAY_WEIGHT` | `0.4` | runner | Share of the final score from the audience, 0-1. `0.4` = 60% Gemini, 40% viewers; `0` = Gemini only |
 | `CLIP_DOWNLOADS_AT_ONCE` | `8` | runner | Clips saved from Modal at the same time (1-16). The old fixed value was 2; on a 50 Mbps line, 8 at once measured 44 Mbps against about 20 |
 | `VIDEO_KEEP_DAYS` | `7` | runner | Days a video is kept on the laptop after its last use, for re-ranks. `0` = delete it after every successful run (the old behaviour) |
@@ -167,6 +170,17 @@ SponsorBlock data is licensed under [CC BY-NC-SA 4.0](https://creativecommons.or
 **Re-rank** (in the app, or `--rerank` above) reuses the saved transcript: no transcription, only Gemini and rendering run again. The kept video is reused; only when it is gone (after 7 days, the size cap or **Remove kept videos**) is a YouTube video downloaded again (while Gemini ranks), and an uploaded MP4 asked for again (or drop it on the home page and choose Re-rank; it must match the original's fingerprint). The new clips appear as they are saved, into `clips_new/`, and the current clips stay live.
 
 When the re-rank is done, the clips page shows **Choose the clips to keep**: the new clips above the previous ones, each with a Keep checkbox. All new clips start ticked and no previous one; a badge marks the same moment in both sets (time ranges overlapping by at least half of the shorter clip). **Keep the new set** and **Keep the previous set** set the ticks; **Keep N clips** keeps the ticked clips, ranked together by score, and deletes the rest (`clipsets.apply_comparison`, run as `runner.py --keep-clips`). If that fails the previous clips and the choice stay as they were. Starting another re-rank or run discards a choice you never made. A video with no previous clips takes the new ones directly. Use it after a Gemini outage left fallback clips, or after editing `prompts/viral_moments.md` (deploy first: the prompts are part of the image).
+
+## End-credit card
+
+Every clip from a YouTube video ends with a credit card over its last 4.5 seconds (`render.END_CARD_SECONDS`), while the speaker keeps talking: the episode's own YouTube thumbnail, the channel, the episode title and a bar showing where in the episode the clip starts ("this clip starts at 34:12 of 1:42:05"). No seconds are added and nothing fades to black, so the clip still loops like a Short should.
+
+- **Drawn on the laptop** (`endcard.py`, Pillow, the app's Geist font in `ai-podcast-clipper-backend/fonts`, SIL Open Font License): one transparent 1080x1920 PNG per clip, the card inside the side margins and above the 450 px a long Reels/Shorts title can cover. The thumbnail is YouTube's largest cover (`maxresdefault`, else `sddefault` or `hqdefault` with its bars cropped, else the job's `thumbnail.jpg`); title, channel and length come from job.json `meta`. Design changes need no redeploy.
+- **Sent with the footage**: `phases.render_on_modal` uploads `/<job>/cards/clip_N.png` before rendering (timings `endCards`). A problem there is logged and the clips render without cards.
+- **Laid over in the one encode** (`render.encode_pass`, needs `modal deploy`): the card is a looped still (input 2) that fades in over 0.5 s and rises 240 px into place over 0.8 s, decelerating (cubic ease-out), from `end_card_start` (4.5 s before the end, never in the clip's first half); it is readable for about 3.7 s, inside the 3-6 s broadcast lower thirds use. A 0.35 s pop felt rushed and a 2.5 s rise from the bottom edge spent its start under the platforms' own text and could not be read while moving. The captions keep running, lifted to sit just above the card (`write_subtitles(lift_at=...)`, bottom at `END_CARD_CAPTION_Y` 1012), so the payoff line stays captioned. If that encode fails, `encode_with_fallbacks` encodes the clip again without the card, then with libx264 (`clipTimings[].endCard` says whether it was used).
+- **Only YouTube videos**, with the Settings page's **Credit card at the end** switch on (`settings.json` `endCard`, else `.env` `END_CARD`). Uploads get none.
+
+Credit is not permission: YouTube's own help says that crediting the owner does not give you the right to use their content, and the thumbnail is theirs too. Post clips only from channels whose permission you have recorded (see `docs/daily-posting-plan.md`), and include the thumbnail in what you ask for.
 
 ## Post text
 

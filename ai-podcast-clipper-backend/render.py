@@ -62,7 +62,19 @@ SUBTITLE_SENTENCE_END = (".", "?", "!")                       # a word ending in
 SUBTITLE_PHRASE_END = (",", ";", ":", "\u2014")                 # a caption prefers to break after one of these
 # The word being spoken: amber (#F5A524, the app's accent; ASS colours are &HBBGGRR&) with a short pop.
 SUBTITLE_ACTIVE = r"{\c&H24A5F5&\fscx112\fscy112\t(0,120,\fscx100\fscy100)}"
-LOUDNESS_I, LOUDNESS_TP, LOUDNESS_LRA = -14.0, -1.5, 11.0   # LUFS / dBTP / LU: the level the platforms play at
+LOUDNESS_I, LOUDNESS_TP, LOUDNESS_LRA = -14.0, -1.5, 11.0
+# End-credit card (drawn on the laptop by endcard.py, a transparent 1080x1920 PNG): shown over
+# the clip's last END_CARD_SECONDS while the speaker keeps talking. It rises END_CARD_RISE_PX
+# into place over END_CARD_IN_S, decelerating (cubic ease-out), and fades in over END_CARD_FADE_S;
+# readable for about 3.7 s (lower thirds stay 3-6 s). Chosen over a 0.35 s pop and a 2.5 s rise from
+# the bottom edge (which spends its start under the platforms' own text). The captions keep
+# running, lifted to sit just above the card (bottom at END_CARD_CAPTION_Y; the card's top is 1030).
+END_CARD_SECONDS = 4.5
+END_CARD_IN_S = 0.8
+END_CARD_FADE_S = 0.5
+END_CARD_RISE_PX = 240
+END_CARD_EASE_POWER = 3
+END_CARD_CAPTION_Y = 1012   # LUFS / dBTP / LU: the level the platforms play at
 
 # Video encoder settings. The segment is an intermediate, so it is near-lossless;
 # the final clip is one encode at about the quality the old three encodes ended with.
@@ -643,11 +655,13 @@ def _ass_text(word: str) -> str:
 
 
 def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathlib.Path,
-                    max_words: int = SUBTITLE_MAX_WORDS) -> int:
+                    max_words: int = SUBTITLE_MAX_WORDS, lift_at: float | None = None) -> int:
     """Word-timed ASS captions: one line of up to five words (about 20 characters), white Anton
     100 px with a black outline, 25% up from the bottom, the word being spoken in amber with a short
     pop. One event per word, each showing its whole caption, back to back; a caption stays up at
-    least SUBTITLE_MIN_S unless the next one starts sooner. Returns the number of captions."""
+    least SUBTITLE_MIN_S unless the next one starts sooner. From `lift_at` (clip time, the end
+    card's start) the captions sit just above the card (bottom at END_CARD_CAPTION_Y); an event
+    running across that moment is split there. Returns the number of captions."""
     import pysubs2
 
     groups = caption_groups(words, clip_start, clip_end, max_words)
@@ -681,8 +695,16 @@ def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathl
             line = " ".join(marked[:first_line_words])
             if len(lines) > 1:
                 line += "\\N" + " ".join(marked[first_line_words:])
-            subs.events.append(pysubs2.SSAEvent(start=pysubs2.make_time(s=start), end=pysubs2.make_time(s=end),
-                                                text=line, style="Default"))
+            lifted = rf"{{\an2\pos({TARGET_W // 2},{END_CARD_CAPTION_Y})}}" + line
+            if lift_at is None or end <= lift_at:
+                spans = [(start, end, line)]
+            elif start >= lift_at:
+                spans = [(start, end, lifted)]
+            else:
+                spans = [(start, lift_at, line), (lift_at, end, lifted)]
+            for a, b, text in spans:
+                subs.events.append(pysubs2.SSAEvent(start=pysubs2.make_time(s=a), end=pysubs2.make_time(s=b),
+                                                    text=text, style="Default"))
     subs.save(str(path))
     return len(groups)
 
@@ -782,15 +804,39 @@ def crop_pass(segment: pathlib.Path, width: int, height: int, tracks: list[dict]
     return out
 
 
+def end_card_start(duration: float) -> float:
+    """When the end card appears (clip time): END_CARD_SECONDS before the end, never in the
+    clip's first half."""
+    return round(max(duration - END_CARD_SECONDS, duration / 2), 2)
+
+
+def end_card_filter(subtitles_name: str, card_start: float) -> str:
+    """The filter graph with the end card: captions on the frames, then the card (input 2) faded
+    in and risen into place over them from card_start (cubic ease-out), shown to the end."""
+    t0, rise, rise_s = f"{card_start:.2f}", END_CARD_RISE_PX, END_CARD_IN_S
+    y = f"if(lt(t,{t0}+{rise_s}),{rise}*pow(1-(t-{t0})/{rise_s},{END_CARD_EASE_POWER}),0)"
+    return (f"[0:v]ass={subtitles_name}[base];"
+            f"[2:v]format=rgba,fade=t=in:st={t0}:d={END_CARD_FADE_S}:alpha=1[card];"
+            f"[base][card]overlay=x=0:y='{y}':enable='gte(t,{t0})':eof_action=pass:shortest=1[v]")
+
+
 def encode_pass(segment: pathlib.Path, width: int, height: int, chosen: list, subtitles: pathlib.Path,
                 duration: float, out: pathlib.Path, encoder: str, tick, replace: dict[int, int] | None = None,
-                audio_chain: str | None = None) -> None:
+                audio_chain: str | None = None, card: pathlib.Path | None = None,
+                card_start: float | None = None) -> None:
     # FFmpeg runs in the subtitles' folder and gets only the file name: a full path in a
     # filter would need escaping ("C:\\..." on Windows breaks the ass filter's option parsing).
+    # The end card is an input (a path there needs no escaping), looped as a still.
+    if card is not None:
+        start = end_card_start(duration) if card_start is None else card_start
+        video = ["-loop", "1", "-framerate", str(FPS), "-t", f"{duration + 1:.2f}", "-i", str(card.resolve()),
+                 "-filter_complex", end_card_filter(subtitles.name, start), "-map", "[v]"]
+    else:
+        video = ["-map", "0:v:0", "-vf", f"ass={subtitles.name}"]
     cmd = [FFMPEG, "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{TARGET_W}x{TARGET_H}", "-r", str(FPS), "-i", "-",
-           "-i", str(segment.resolve()), "-map", "0:v:0", "-map", "1:a:0?",
-           "-vf", f"ass={subtitles.name}", "-af", audio_chain or audio_fade(duration),
+           "-i", str(segment.resolve()), *video, "-map", "1:a:0?",
+           "-af", audio_chain or audio_fade(duration),
            *ENCODERS[encoder]["final"], "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out.resolve())]
     log_path = out.with_suffix(".ffmpeg.log")
     with open(log_path, "w") as log:
@@ -827,10 +873,12 @@ def encode_pass(segment: pathlib.Path, width: int, height: int, chosen: list, su
 
 def render_clip(models, source: pathlib.Path, start: float, end: float, words: list, out_path: pathlib.Path,
                 work_dir: pathlib.Path, encoder: str = "nvenc", progress=None, conf_th: float = fast_asd.CONF_TH,
-                debug_dir: pathlib.Path | None = None, target_us: int | None = None) -> dict:
+                debug_dir: pathlib.Path | None = None, target_us: int | None = None,
+                card: pathlib.Path | None = None) -> dict:
     """Render source[start:end] as a 1080x1920 clip with subtitles at out_path.
     source is the whole video, or the clip's footage with target_us (see segments.py);
-    start and end are times in the whole video either way.
+    start and end are times in the whole video either way. `card`: the clip's end card
+    (endcard.py), laid over its last seconds; dropped (never the clip) if that encode fails.
     `progress(fraction)` is called as the work advances. Returns timings and counts."""
     work_dir.mkdir(parents=True, exist_ok=True)
     duration = end - start
@@ -897,12 +945,20 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
     t = time.time()
     subtitles = work_dir / "subtitles.ass"
     write_subtitles(words, start, end, subtitles)
+    card_start = end_card_start(duration) if card is not None else None
+    if card is not None:
+        write_subtitles(words, start, end, work_dir / "subtitles_card.ass", lift_at=card_start)
     tmp_out = work_dir / "clip.mp4"
     tick = lambda i: report("render", i / max(1, n_frames))  # noqa: E731
-    encoder, loudness = encode_with_fallbacks(
-        lambda enc, chain: encode_pass(segment, width, height, chosen, subtitles, duration, tmp_out, enc, tick,
-                                       flashes, chain),
-        encoder, duration, loudness)
+    used = {"card": False}
+
+    def encode(enc: str, chain: str, use_card: bool = False) -> None:
+        used["card"] = use_card
+        subs = work_dir / "subtitles_card.ass" if use_card else subtitles
+        encode_pass(segment, width, height, chosen, subs, duration, tmp_out, enc, tick, flashes, chain,
+                    card if use_card else None, card_start)
+
+    encoder, loudness = encode_with_fallbacks(encode, encoder, duration, loudness, card=card is not None)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(tmp_out), str(out_path))
     timings["render"] = time.time() - t
@@ -910,34 +966,45 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
 
     followed = sum(1 for face in chosen if face)
     return {"timings": {k: round(v, 2) for k, v in timings.items()}, "frames": n_frames, "tracks": len(vid_tracks),
-            "speakerFrames": followed, "encoder": encoder,
+            "speakerFrames": followed, "encoder": encoder, "endCard": used["card"],
             "loudness": round(loudness["input_i"], 1) if loudness else None, "chosen": chosen, "rawChosen": raw_chosen,
             "switches": {"before": count_switches(raw_chosen), "after": count_switches(chosen),
                          "sourceCuts": max(0, len(scene_ranges(scenes, n_frames)) - 1), **steady,
                          "flashFrames": len(flashes)}}
 
 
-def encode_with_fallbacks(encode, encoder: str, duration: float, loudness: dict | None) -> tuple[str, dict | None]:
+def encode_with_fallbacks(encode, encoder: str, duration: float, loudness: dict | None,
+                          card: bool = False) -> tuple[str, dict | None]:
     """Encode the clip, falling back so an optional step never costs the clip: first as planned;
     if that fails with the loudness step, the same encoder with the plain audio fades (the clip
-    keeps its own level); if NVENC still fails, libx264. A DecodeError (the source itself) is
-    not retried. Returns the encoder used and the loudness actually applied (None if dropped)."""
+    keeps its own level); then without the end card (`card`); if NVENC still fails, libx264.
+    A DecodeError (the source itself) is not retried. Returns the encoder used and the loudness
+    actually applied (None if dropped). With `card`, encode(encoder, chain, use_card) is called,
+    else encode(encoder, chain)."""
     plain = audio_fade(duration)
     planned = audio_filter(duration, loudness)
-    attempts = [(encoder, planned, loudness)]
+    attempts = [(encoder, planned, loudness, card)]
     if planned != plain:
-        attempts.append((encoder, plain, None))
+        attempts.append((encoder, plain, None, card))
+    if card:
+        attempts.append((encoder, plain, None, False))
     if encoder == "nvenc":
-        attempts.append(("x264", plain, None))
-    for number, (enc, chain, applied) in enumerate(attempts):
+        attempts.append(("x264", plain, None, False))
+    for number, (enc, chain, applied, use_card) in enumerate(attempts):
         try:
-            encode(enc, chain)
+            if card:
+                encode(enc, chain, use_card)
+            else:
+                encode(enc, chain)
             return enc, applied
         except RenderError as exc:
             if isinstance(exc, DecodeError) or number == len(attempts) - 1:
                 raise
             following = attempts[number + 1]
-            what = "without the loudness step" if following[2] is None and applied is not None else ""
+            dropped = [name for name, before, after in (("the loudness step", applied, following[2]),
+                                                        ("the end card", use_card, following[3]))
+                       if before and not after]
+            what = f"without {' and '.join(dropped)}" if dropped else ""
             print(f"{enc} encode failed ({str(exc)[-200:].strip()}); retrying with {following[0]} {what}".rstrip())
     raise AssertionError("unreachable")
 

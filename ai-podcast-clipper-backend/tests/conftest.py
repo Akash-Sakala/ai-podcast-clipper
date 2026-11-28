@@ -19,7 +19,14 @@ os.environ.update({"CLIP_MIN_SECONDS": "30", "CLIP_MAX_SECONDS": "120", "CLIP_GR
                    "GEMINI_TIMEOUT_SECONDS": "75", "RANKING_TIME_LIMIT_SECONDS": "240"})
 
 import replay  # noqa: E402
+import settings  # noqa: E402
 import youtube  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_end_cards(monkeypatch):
+    """Runs in tests make no end cards (endcard.py) unless a test turns them on."""
+    monkeypatch.setattr(settings, "END_CARD", False)
 
 
 @pytest.fixture(autouse=True)

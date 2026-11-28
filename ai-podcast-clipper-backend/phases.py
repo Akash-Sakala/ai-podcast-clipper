@@ -30,6 +30,7 @@ import time
 
 import costs
 import cutter
+import endcard
 import segments
 import videostore
 from clipper_names import RENDER_FUNCTION, TRANSCRIBE_FUNCTION
@@ -277,8 +278,15 @@ def footage_on_modal(job: Job, volume, video, moments: list, timings: dict) -> l
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def render_on_modal(job: Job, functions: dict, first: dict, footage: list | None, timings: dict, saver) -> dict:
-    """Phase 2 on Modal: render every moment, downloading each clip as it is ready."""
+def render_on_modal(job: Job, functions: dict, first: dict, footage: list | None, timings: dict, saver,
+                    volume=None) -> dict:
+    """Phase 2 on Modal: render every moment, downloading each clip as it is ready. With the
+    volume, each clip's end card (endcard.py) goes up first; a clip without one renders as before."""
+    if volume is not None:
+        started = time.time()
+        if endcard.cards_on_modal(job, volume, first["moments"], download_folder(job) / "cards",
+                                  lambda j, v, files: upload_files(j, v, files, "clips", "the end cards")):
+            timings["endCards"] = round(time.time() - started, 1)
     job.update(status="processing", message="Rendering on the GPU")
     set_progress(job, "rendering")
     started = time.time()
@@ -331,7 +339,7 @@ def whole_video_run(job: Job, volume, functions: dict, max_clips: int, mode: str
     phase_one_done(job, volume, first, mode, timings, started)
     if not first.get("moments"):
         return merge_results(first, None)
-    return merge_results(first, render_on_modal(job, functions, first, None, timings, saver))
+    return merge_results(first, render_on_modal(job, functions, first, None, timings, saver, volume))
 
 
 def get_video(job: Job, cloud: BackgroundCall, board: Board, audio_format: str | None, timings: dict,
@@ -391,7 +399,7 @@ def two_phase_run(job: Job, volume, functions: dict, max_clips: int, mode: str, 
         raise RuntimeError("The video download stopped before the clips could be cut")
     timings["downloadWait"] = round(max(0.0, video_ready - (cloud.finished_at or video_ready)), 1)
     footage = footage_on_modal(job, volume, video, first["moments"], timings)
-    return merge_results(first, render_on_modal(job, functions, first, footage, timings, saver))
+    return merge_results(first, render_on_modal(job, functions, first, footage, timings, saver, volume))
 
 
 def process_on_modal(job: Job, max_clips: int, mode: str, timings: dict, saver=None, *, volume, context: dict,
@@ -455,7 +463,7 @@ def render_again_on_modal(job: Job, volume, moments: list, timings: dict, saver=
         saver.describe(moments)
     footage = footage_on_modal(job, volume, video, moments, timings)
     first = {"moments": moments}
-    return merge_results(first, render_on_modal(job, functions, first, footage, timings, saver))
+    return merge_results(first, render_on_modal(job, functions, first, footage, timings, saver, volume))
 
 
 def forget_download(job: Job, keep_video: bool) -> None:

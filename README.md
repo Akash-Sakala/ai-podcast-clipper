@@ -43,7 +43,7 @@ flowchart LR
 
 1. **Add a video.** The Next.js app creates a job folder and starts `runner.py` in the background. The runner reads the Most replayed graph and SponsorBlock segments (a few seconds, no download).
 2. **Phase 1.** The audio goes to Modal first. Parakeet transcribes it and Gemini ranks the moments (no GPU is billed while it ranks). The laptop starts downloading the YouTube video while the audio is still uploading.
-3. **Phase 2.** For each chosen clip the laptop cuts that clip's footage out of the video (no re-encode) and uploads only that. Every clip then renders at once in its own GPU container: LR-ASD finds the speaker, and the clip is cropped to 9:16 and encoded once with captions and its audio at -14 LUFS.
+3. **Phase 2.** For each chosen clip the laptop cuts that clip's footage out of the video (no re-encode) and uploads only that. Every clip then renders at once in its own GPU container: LR-ASD finds the speaker, and the clip is cropped to 9:16 and encoded once with captions, its audio at -14 LUFS and, for YouTube videos, a credit card over its last 4.5 seconds (the episode's thumbnail, channel and title, and where in the episode the clip starts).
 4. **Save.** The runner downloads all clips at once, each as soon as it is ready, and the app shows each clip the moment it is saved. Then it deletes the audio and the footage everywhere and keeps the video only on your machine, for re-ranks.
 
 The two phases overlap the video download with transcription. On `main`, one real 30-minute 1080p60 video took 13 minutes, 468 s of it uploading the whole video. With the two-phase flow, a video of about 40 minutes took 6.8 minutes and one of about 100 minutes took 7.4 minutes (first real runs, on a 4-8 Mbps uplink).
@@ -107,7 +107,7 @@ By hand: `cd ai-podcast-clipper-frontend; npm run build; npm run start` (or `npm
 - **Home:** paste a YouTube link, click **Upload MP4**, or drop a file (up to 4 GB). Each video shows up under **Your videos** with live status.
 - **Running video:** **Cancel** stops it (the run on Modal too); **Try again** later picks up where it stopped.
 - **Clips page:** clips best first (a poster each; a mouse resting on one plays a muted preview), a full-screen viewer to watch them one after another (arrow keys or a swipe; the address links to the clip), post text for each clip (a Shorts title, a caption and hashtags written by Gemini, plus a credit line; edit it, copy one field or all of it, and mark where you posted the clip), score breakdowns, the Most replayed graph, one-click download or a ZIP. **Re-rank** asks Gemini again without re-transcribing or downloading, then shows the new clips beside the previous ones so you keep the ones you want, clip by clip; **Try again** restarts a failed video; **Render again** renders the same moments once more when every clip failed to render (no Gemini call).
-- **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock, and the kept videos with a button to remove them).
+- **Stats** (chart icon) and **Settings** (gear icon: currency, clips per video, Most replayed, audience weight, SponsorBlock, the end credit card, and the kept videos with a button to remove them).
 
 The bin icon on a video's page deletes it (clips, transcript and kept video; its stats stay). Stopping the app does not stop a running video; it carries on and the app catches up when you start it again. Settings, command line and troubleshooting: [docs/advanced.md](docs/advanced.md).
 
