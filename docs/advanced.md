@@ -19,6 +19,8 @@ Everything beyond setup and everyday use. Backend commands run from `ai-podcast-
 - [Choose a GPU](#choose-a-gpu)
 - [Test deployment](#test-deployment)
 - [Logs](#logs)
+- [Launcher and app window](#launcher-and-app-window)
+- [Only this computer](#only-this-computer)
 - [Cancel or delete a video](#cancel-or-delete-a-video)
 - [Tests and CI](#tests-and-ci)
 - [YouTube cookies](#youtube-cookies)
@@ -301,6 +303,25 @@ Put the winner in `CLIPPER_GPU`, then `modal deploy main.py`.
 
 - GPU: `modal app logs ai-podcast-clipper`, or modal.com → Apps → ai-podcast-clipper
 - Laptop: `data/jobs/<job id>/runner.log`
+
+## Launcher and app window
+
+`scripts\clipper.ps1` is what the **Podcast Clipper** shortcut runs: if the app already answers on http://127.0.0.1:3000 it only opens a window; otherwise it builds the frontend when its code changed since the last build (or when the running build is older than the code, after a pull or merge: it stops it first), starts `next start` in the background without a console window (output in `%LOCALAPPDATA%\ai-podcast-clipper\app.log`) and opens Chrome's or Edge's app mode (no tabs or address bar). Closing the window leaves the server running, so the next open is instant; a video being processed carries on either way.
+
+| Command | What it does |
+|---|---|
+| `scripts\clipper.ps1` | Start if needed, then open the window |
+| `scripts\clipper.ps1 -NoOpen` | Start the server only (the sign-in shortcut uses this) |
+| `scripts\clipper.ps1 -Rebuild` | Build again even if nothing changed |
+| `scripts\clipper.ps1 -Stop` | Stop the server (a running video carries on) |
+| `scripts\install-shortcut.ps1 [-StartAtSignIn]` | Add the desktop and Start-menu shortcuts (and start the server at sign-in) |
+| `scripts\install-shortcut.ps1 -Remove` | Remove the shortcuts it made |
+
+Run them with `powershell -ExecutionPolicy Bypass -File ...`. The app also has a web manifest and icons (`src/app/manifest.ts`), so the browser's install icon makes it a taskbar app.
+
+## Only this computer
+
+The server listens on 127.0.0.1 only, and `src/middleware.ts` refuses everything else a browser could send it: a request whose Host is not `127.0.0.1`, `localhost` or `[::1]` (a site that points its own name at this computer, DNS rebinding) gets 403, and any request that changes something (anything but GET, HEAD, OPTIONS) must come from the app's own pages (`Sec-Fetch-Site` same-origin and a matching `Origin`), so a web page you visit can't start a paid run or delete a video.
 
 ## Cancel or delete a video
 

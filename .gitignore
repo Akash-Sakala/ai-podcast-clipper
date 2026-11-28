@@ -66,3 +66,6 @@ AGENTS.md
 # Demo video: source assets and /brag output (local only)
 demo-assets/
 brag-output*/
+
+# Images and videos Claude sends to the chat (the linked desktop app saves copies here)
+Claude outputs/

@@ -46,7 +46,7 @@ flowchart LR
 3. **Phase 2.** For each chosen clip the laptop cuts that clip's footage out of the video (no re-encode) and uploads only that. Every clip then renders at once in its own GPU container: LR-ASD finds the speaker, and the clip is cropped to 9:16 and encoded once with captions, its audio at -14 LUFS and, for YouTube videos, a credit card over its last 4.5 seconds (the episode's thumbnail, channel and title, and where in the episode the clip starts).
 4. **Save.** The runner downloads all clips at once, each as soon as it is ready, and the app shows each clip the moment it is saved. Then it deletes the audio and the footage everywhere and keeps the video only on your machine, for re-ranks.
 
-The two phases overlap the video download with transcription. On `main`, one real 30-minute 1080p60 video took 13 minutes, 468 s of it uploading the whole video. With the two-phase flow, a video of about 40 minutes took 6.8 minutes and one of about 100 minutes took 7.4 minutes (first real runs, on a 4-8 Mbps uplink).
+The two phases overlap the video download with transcription. On `main`, one real 30-minute 1080p60 video took 13 minutes, 468 s of it uploading the whole video. With the two-phase flow, a video of about 40 minutes took 6.8 minutes and one of about 100 minutes took 7.4 minutes (first real runs, on a 4-8 Mbps uplink). On 2026-11-28, seven videos of 35 to 141 minutes took 3.6 to 5.9 minutes each (4.7 on average) for about $0.26 a video, Gemini included, with clips of up to 2 minutes.
 
 ## How it's built
 
@@ -117,7 +117,7 @@ The bin icon on a video's page deletes it (clips, transcript and kept video; its
 - YouTube sometimes asks to confirm you're not a bot: set up [cookies](docs/advanced.md#youtube-cookies).
 - Videos that are not H.264 MP4/MOV with one AAC track upload whole in phase 2 (slower, same result).
 - SponsorBlock data is non-commercial (CC BY-NC-SA 4.0); turn it off for commercial use.
-- First real runs passed on Modal and Windows; an uploaded MP4 and the recovery paths have only been tested offline.
+- Real runs pass on Modal and Windows for YouTube videos, uploaded MP4s, re-ranks and the recovery paths (Try again after a failed save, the whole-video fallback).
 
 ## Development
 

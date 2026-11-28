@@ -74,3 +74,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-28 `feat/caption-style`: one-line captions of 3-5 words, 25% up, the spoken word in amber; clip audio at -14 LUFS with a fallback; Render again
 - 2026-11-28 `feat/post-copy`: post text for each clip (title, caption, hashtags) written by Gemini after ranking; edit, copy and mark as posted in the clip viewer
 - 2026-11-28 `feat/end-card`: end-credit card over the last 4.5 seconds of clips from YouTube videos (thumbnail, channel, title, where the clip sits in the episode), with a Settings switch
+- 2026-11-28 `chore/docs-sync-1128`: the launcher, the app window and the localhost guard documented in advanced.md; README limits brought up to date; `Claude outputs/` ignored
