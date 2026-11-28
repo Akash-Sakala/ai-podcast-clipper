@@ -25,48 +25,89 @@ function runnerInterpreter() {
     : RUNNER_PYTHON;
 }
 
+/**
+ * Starts `runner.py <args>` detached (it outlives this server), its output appended to
+ * `log`. onEnd(ok) runs once when it exits (ok: code 0), unless this server stops first.
+ */
+function spawnRunner(
+  args: string[],
+  log: string,
+  onEnd?: (ok: boolean, error?: Error) => void,
+) {
+  const logFd = fs.openSync(log, "a");
+  let ended = false;
+  const end = (ok: boolean, error?: Error) => {
+    if (ended) return;
+    ended = true;
+    onEnd?.(ok, error);
+  };
+  try {
+    const child = spawn(
+      runnerInterpreter(),
+      [path.join(BACKEND_DIR, "runner.py"), ...args],
+      {
+        cwd: BACKEND_DIR,
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", logFd, logFd],
+        env: {
+          ...process.env,
+          DATA_DIR,
+          PYTHONUTF8: "1",
+          PYTHONUNBUFFERED: "1",
+        },
+      },
+    );
+    child.on("error", (error) => end(false, error));
+    child.on("exit", (code) => end(code === 0));
+    child.unref();
+  } finally {
+    fs.closeSync(logFd);
+  }
+}
+
+const missingPython = `Python not found at ${RUNNER_PYTHON}. Create the backend venv or set RUNNER_PYTHON in .env`;
+
 /** Starts runner.py for a job in the background and returns immediately. */
 export async function startRunner(id: string, extraArgs: string[] = []) {
   const dir = jobDir(id);
-  const runnerScript = path.join(BACKEND_DIR, "runner.py");
-
   if (!fs.existsSync(RUNNER_PYTHON)) {
     await updateJob(id, {
       status: "failed",
       message: "Failed",
-      error: `Python not found at ${RUNNER_PYTHON}. Create the backend venv or set RUNNER_PYTHON in .env`,
+      error: missingPython,
     });
     return;
   }
-
-  const logFd = fs.openSync(path.join(dir, "runner.log"), "a");
-  const child = spawn(
-    runnerInterpreter(),
-    [runnerScript, "--job-dir", dir, ...extraArgs],
-    {
-      cwd: BACKEND_DIR,
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", logFd, logFd],
-      env: {
-        ...process.env,
-        DATA_DIR,
-        PYTHONUTF8: "1",
-        PYTHONUNBUFFERED: "1",
-      },
+  spawnRunner(
+    ["--job-dir", dir, ...extraArgs],
+    path.join(dir, "runner.log"),
+    (_ok, error) => {
+      if (!error) return;
+      void updateJob(id, {
+        status: "failed",
+        message: "Failed",
+        error: `Could not start the runner: ${error.message}`,
+      });
     },
   );
+}
 
-  child.on("error", (error) => {
-    void updateJob(id, {
-      status: "failed",
-      message: "Failed",
-      error: `Could not start the runner: ${error.message}`,
-    });
-  });
-
-  child.unref();
-  fs.closeSync(logFd);
+/**
+ * Cancels a running job (runner.py --cancel: stops its runner, cancels its Modal calls,
+ * cleans the volume and writes job.json). Resolves when that is done, with whether it
+ * worked; the job's runner.log says why not.
+ */
+export function cancelRunner(id: string): Promise<boolean> {
+  if (!fs.existsSync(RUNNER_PYTHON)) return Promise.resolve(false);
+  const dir = jobDir(id);
+  return new Promise((resolve) =>
+    spawnRunner(
+      ["--job-dir", dir, "--cancel"],
+      path.join(dir, "runner.log"),
+      (ok) => resolve(ok),
+    ),
+  );
 }
 
 /**
@@ -82,27 +123,10 @@ export function startRunnerTask(
 ) {
   if (!fs.existsSync(RUNNER_PYTHON)) return false;
   fs.mkdirSync(STATS_DIR, { recursive: true });
-  const logFd = fs.openSync(path.join(STATS_DIR, logName), "a");
-  const child = spawn(
-    runnerInterpreter(),
-    [path.join(BACKEND_DIR, "runner.py"), "--data-dir", DATA_DIR, ...args],
-    {
-      cwd: BACKEND_DIR,
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", logFd, logFd],
-      env: { ...process.env, DATA_DIR, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" },
-    },
+  spawnRunner(
+    ["--data-dir", DATA_DIR, ...args],
+    path.join(STATS_DIR, logName),
+    (ok) => onEnd?.(ok),
   );
-  let ended = false;
-  const end = (ok: boolean) => {
-    if (ended) return;
-    ended = true;
-    onEnd?.(ok);
-  };
-  child.on("error", () => end(false));
-  child.on("exit", (code) => end(code === 0));
-  child.unref();
-  fs.closeSync(logFd);
   return true;
 }

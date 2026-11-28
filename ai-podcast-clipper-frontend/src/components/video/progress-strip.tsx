@@ -162,7 +162,14 @@ function DownloadLane({ share }: { share: number }) {
   );
 }
 
-export function ProgressStrip({ job }: { job: Job }) {
+export function ProgressStrip({
+  job,
+  action,
+}: {
+  job: Job;
+  /** A control at the end of the status line (the video page's Cancel). */
+  action?: React.ReactNode;
+}) {
   // The live timer lives here, so only this strip re-renders every second.
   const now = useNow(true);
   const steps = stepsFor(job);
@@ -182,18 +189,21 @@ export function ProgressStrip({ job }: { job: Job }) {
     <div className="space-y-3.5">
       <StepRail job={job} current={index} share={share} />
       {download != null && <DownloadLane share={download} />}
-      <div className="flex items-baseline justify-between gap-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-sm">
         <p aria-live="polite" className="font-medium">
           {stageSentence(job, { withDownload: false })}
         </p>
-        <p
-          className="text-muted-foreground tabular shrink-0"
-          suppressHydrationWarning // a live clock: server and browser are a second apart
-        >
-          {eta != null && eta > 0
-            ? `About ${duration(eta)} left`
-            : timecode(since)}
-        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <p
+            className="text-muted-foreground tabular"
+            suppressHydrationWarning // a live clock: server and browser are a second apart
+          >
+            {eta != null && eta > 0
+              ? `About ${duration(eta)} left`
+              : timecode(since)}
+          </p>
+          {action}
+        </div>
       </div>
     </div>
   );

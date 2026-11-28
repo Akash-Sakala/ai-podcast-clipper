@@ -11,7 +11,34 @@ import time
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parent
 
-DEFAULT_DATA_DIR = BACKEND_DIR.parent / "data"
+LEGACY_DATA_DIR = BACKEND_DIR.parent / "data"     # inside the repo (and so inside OneDrive on the laptop)
+
+
+def app_data_root() -> pathlib.Path:
+    """Where the app keeps its own files outside the repo: %LOCALAPPDATA%\\ai-podcast-clipper on
+    Windows (outside OneDrive), else $XDG_DATA_HOME (or ~/.local/share)/ai-podcast-clipper."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(pathlib.Path.home() / "AppData" / "Local")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or str(pathlib.Path.home() / ".local" / "share")
+    return pathlib.Path(base) / "ai-podcast-clipper"
+
+
+def _holds_data(folder: pathlib.Path) -> bool:
+    return (folder / "jobs").is_dir() or (folder / "stats").is_dir() or (folder / "settings.json").is_file()
+
+
+def default_data_dir() -> pathlib.Path:
+    """The data folder when DATA_DIR is not set, chosen like the web app's lib/paths.ts:
+    <app data root>/data, except while only the repo's data folder holds jobs (an older
+    version's, not moved yet: scripts/move-data.ps1)."""
+    local = app_data_root() / "data"
+    if not _holds_data(local) and _holds_data(LEGACY_DATA_DIR):
+        return LEGACY_DATA_DIR
+    return local
+
+
+DEFAULT_DATA_DIR = default_data_dir()
 
 # job.json is written from more than one thread (the upload stall watcher and Modal's
 # progress callback, the clip downloads): one writer at a time, and data changes under

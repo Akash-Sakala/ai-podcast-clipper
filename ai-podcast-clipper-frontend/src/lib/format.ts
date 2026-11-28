@@ -299,6 +299,8 @@ export function failedStepIndex(job: Job) {
 
 /** Plain-language reason for a failed job. */
 export function failureSentence(job: Job) {
+  if (job.cancelledAt)
+    return "You cancelled this video. Try again to pick up where it stopped.";
   const error = (job.error ?? "").toLowerCase();
   if (error.includes("sign in") || error.includes("bot"))
     return "YouTube asked to confirm you're not a bot. Set YTDLP_COOKIES_FILE (or YTDLP_COOKIES_FROM_BROWSER=firefox) in .env and try again.";

@@ -16,6 +16,22 @@ export function markUploading(id: string) {
   return () => void uploading.delete(id);
 }
 
+/**
+ * Jobs being cancelled (runner.py --cancel): their runner is stopped first and job.json
+ * is written a few seconds later, so meanwhile a dead runner is expected, not a crash.
+ */
+const cancelling = ((
+  globalThis as { __clipperCancelling?: Set<string> }
+).__clipperCancelling ??= new Set<string>());
+
+/** Marks a job as being cancelled; call the returned function when the cancel is over. */
+export function markCancelling(id: string) {
+  cancelling.add(id);
+  return () => void cancelling.delete(id);
+}
+
+export const isCancelling = (id: string) => cancelling.has(id);
+
 function isProcessAlive(pid: number) {
   try {
     process.kill(pid, 0);
@@ -27,6 +43,7 @@ function isProcessAlive(pid: number) {
 
 /** True when nothing is running this job any more (as far as can be told from `job`). */
 function runnerGone(job: Job) {
+  if (cancelling.has(job.id)) return false;
   if (job.pid) return !isProcessAlive(job.pid);
   // No pid yet: an upload still arriving is fine; otherwise allow a grace period from
   // the last update, so a re-queued (re-rank) job isn't flagged early.

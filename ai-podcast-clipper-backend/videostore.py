@@ -19,7 +19,7 @@ import shutil
 import time
 
 import settings
-from jobstore import Job, log, now_iso, pid_alive, replace_file
+from jobstore import Job, app_data_root, log, now_iso, pid_alive, replace_file
 
 VIDEO = "input.mp4"
 META = "video.json"
@@ -35,11 +35,7 @@ def videos_dir() -> pathlib.Path:
     custom = settings.video_cache_dir()
     if custom:
         return pathlib.Path(custom).expanduser()
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(pathlib.Path.home() / "AppData" / "Local")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or str(pathlib.Path.home() / ".local" / "share")
-    return pathlib.Path(base) / "ai-podcast-clipper" / "videos"
+    return app_data_root() / "videos"
 
 
 def _data_dir(job: Job) -> pathlib.Path:

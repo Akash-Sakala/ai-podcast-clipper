@@ -8,6 +8,7 @@ it directly from the terminal:
     python runner.py --youtube "https://www.youtube.com/watch?v=..."
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
+    python runner.py --job-dir "..\\data\\jobs\\<job id>" --cancel   (stop a running video, as the app's Cancel)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --keep-clips @choice.json
                                                                (after a re-rank: the clips to keep)
     python runner.py --thumbnails                              (covers and clip posters for older videos)
@@ -52,6 +53,7 @@ import sys
 
 import settings  # loads ai-podcast-clipper-backend/.env
 from billing import live_rates, refresh_modal_bill
+from cancel import cancel_job
 from clipsets import apply_comparison, read_selection
 from jobstore import DEFAULT_DATA_DIR, Job, log
 from maintenance import backfill_replay, backfill_thumbnails, prune_videos
@@ -99,7 +101,8 @@ def main() -> int:
                         help="Read the Most replayed graph and SponsorBlock segments for older YouTube videos "
                              "in --data-dir, report how their clips line up with it, then exit")
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR)),
-                        help="Where job folders are stored (default: ../data)")
+                        help="Where job folders are stored (default: %%LOCALAPPDATA%%\\ai-podcast-clipper\\data, "
+                             "or ../data while it holds the jobs of an older version)")
     parser.add_argument("--max-clips", type=int, default=None,
                         help="Clips per video (default: the app's Settings, else 5)")
     parser.add_argument("--keep-remote", action="store_true",
@@ -112,6 +115,8 @@ def main() -> int:
                         help="With --prune-videos: only list what would be deleted")
     parser.add_argument("--force", action="store_true",
                         help="With --backfill-replay: also redo videos that already have it")
+    parser.add_argument("--cancel", action="store_true",
+                        help="With --job-dir: stop the video's runner, cancel its Modal calls and clean up")
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
     parser.add_argument("--keep-clips", metavar="JSON",
@@ -119,6 +124,10 @@ def main() -> int:
                              '[{"set": "new"|"previous", "clip": "clip_0.mp4"}, ...] or @<file> holding it '
                              "(the file is deleted after reading)")
     args = parser.parse_args()
+    if args.cancel:
+        if not args.job_dir:
+            parser.error("--cancel needs --job-dir")
+        return cancel_job(pathlib.Path(args.job_dir).resolve())
     stop_on_signals()
     data_dir = (pathlib.Path(args.job_dir).resolve().parent.parent if args.job_dir
                 else pathlib.Path(args.data_dir).resolve())

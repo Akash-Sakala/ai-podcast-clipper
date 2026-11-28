@@ -268,6 +268,8 @@ export type Job = {
   pid?: number;
   progress?: JobProgress | null;
   failedStage?: string;
+  /** Set when the owner cancelled the run (runner.py --cancel); cleared by the next run. */
+  cancelledAt?: string | null;
   engine?: {
     transcriber?: string;
     gpu?: string | null;
@@ -358,6 +360,8 @@ export type JobSummary = StageJob & {
   /** Where a failed run stopped, and why, in words (failureSentence). */
   failedStage?: string | null;
   failure?: string | null;
+  /** The failed run was cancelled by the owner, not broken. */
+  cancelled?: boolean;
 };
 
 export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
@@ -377,7 +381,10 @@ export function toJobSummary(job: Job, hasThumbnail: boolean): JobSummary {
     choosing: !!job.comparison,
     ...bestClip(job),
     failedStage: job.status === "failed" ? (job.failedStage ?? null) : null,
-    failure: job.status === "failed" ? failureSentence(job) : null,
+    // A cancelled run needs no reason under "Cancelled at <step>".
+    failure:
+      job.status === "failed" && !job.cancelledAt ? failureSentence(job) : null,
+    cancelled: job.status === "failed" && !!job.cancelledAt,
   };
 }
 

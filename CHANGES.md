@@ -26,6 +26,12 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Per-clip error isolation, `max_clips` as a parameter, `torch` and `torchvision` pinned to a set that resolves together, LR-ASD vendored with a NumPy 2 fix.
 - Nothing stays on Modal after a run. The video is kept on the laptop (`videostore.py`, `%LOCALAPPDATA%\ai-podcast-clipper\videos`, outside OneDrive) for 7 days after its last use with a 10 GB cap, so a re-rank needs no new download.
 
+**Daily use**
+- `scripts/clipper.ps1` starts the app (rebuilding it when the code changed) and opens it in its own window; `scripts/install-shortcut.ps1` adds desktop and Start-menu shortcuts, optionally starting the server at sign-in. The app is installable from the browser (web manifest and icons).
+- Cancel a running video from its page (`runner.py --cancel`: stops the runner, cancels its Modal calls and clip renders, cleans the volume) and delete a finished one (job folder, kept video, temp download; its stats stay).
+- The app refuses requests whose Host is not this computer and changes that come from other sites (`src/middleware.ts`).
+- Job data lives in `%LOCALAPPDATA%\ai-podcast-clipper\data`, outside OneDrive; `scripts/move-data.ps1` moves an older `data\` folder once.
+
 **Robustness**
 - Modal calls are cancelled on failure or interrupt, and every run sweeps leftover volume folders. Rendered clips stay on Modal when saving fails (`pendingSave`). Keeping chosen clips swaps them in file by file. Downloads resume; the video download starts while the audio uploads; all clips are saved at once and appear in the app as each lands; uploads use 4 pieces at once with a per-piece time limit; waiting for Modal rides out connection drops.
 
@@ -57,3 +63,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-22 `fix/run-timings`: the Modal time of a run no longer counts the wait for the video download; a run that succeeds after a failure no longer keeps "failed at"
 - 2026-11-22 `fix/resume-video-transfer`: Try again after a failed save keeps how the video was sent (audio first or whole), so the app names the right steps
 - 2026-11-22 `fix/cancel-clip-renders`: a killed or failed run also cancels the clip renders it started on Modal (they kept running and wrote their clips back after the clean-up)
+- 2026-11-28 `feat/daily-use-quick-wins`: one-click launcher and desktop shortcut, installable app window, Cancel and Delete in the app, requests from other sites refused, data moved out of OneDrive to `%LOCALAPPDATA%`

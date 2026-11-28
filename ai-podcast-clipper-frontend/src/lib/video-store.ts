@@ -138,3 +138,18 @@ export async function removeKeptVideos(): Promise<{
   }
   return { removed, bytes };
 }
+
+/** Remove one job's kept video (its folder in the store), e.g. when the video is deleted. */
+export async function removeKeptVideo(jobId: string): Promise<boolean> {
+  if (!isValidJobId(jobId)) return false;
+  const status = await readStatus();
+  if (!status) return false;
+  const folder = path.join(status.dir, jobId);
+  try {
+    await fsp.rm(path.join(folder, VIDEO), { force: true });
+    await fsp.rm(folder, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
