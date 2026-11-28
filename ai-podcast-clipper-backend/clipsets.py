@@ -152,7 +152,7 @@ def merged_set(job: Job, picks: list[tuple[str, str]]) -> list[dict]:
             moment = moments[which][index] if index < len(moments[which]) else None
             if not isinstance(moment, dict):
                 moment = {k: detail.get(k) for k in ("rank", "score", "title", "hook", "reason", "start", "end",
-                                                       "scores", "source", "gemini", "audience", "peak")
+                                                       "scores", "source", "gemini", "audience", "peak", "post")
                           if detail.get(k) is not None}
             items.append({"set": which, "name": name, "moment": dict(moment), "detail": detail})
 

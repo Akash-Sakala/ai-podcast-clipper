@@ -1,10 +1,8 @@
 "use client";
 
 import {
-  Check,
   ChevronDown,
   ChevronUp,
-  Copy,
   Download,
   Info,
   Pause,
@@ -24,7 +22,6 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { toast } from "sonner";
 import { clipLength, timecode } from "~/lib/format";
 import type { ClipDetail } from "~/lib/job-types";
 import { duration, ease } from "~/lib/motion";
@@ -36,11 +33,19 @@ import {
   PeakBadge,
   ScoreDetails,
 } from "../clip-details";
+import { PostPanel, usePostDraft } from "./post-panel";
 
 /** "main": the clips on the page (or the previous set in a comparison); "new": a re-rank's new set. */
 export type ViewerList = "main" | "new";
 
 export type ViewerClip = { name: string; detail?: ClipDetail; version: string };
+
+/** Post text in the viewer: the video's default credit line and whether the text can be changed. */
+export type ViewerPost = {
+  credit: string;
+  /** The lists whose clips can be edited and marked as posted (not a running video's). */
+  editable: ViewerList[];
+};
 
 type Open = {
   list: ViewerList;
@@ -95,11 +100,13 @@ export function ClipViewerProvider({
   jobId,
   lists,
   replayWeight,
+  post,
   children,
 }: {
   jobId: string;
   lists: Record<ViewerList, ViewerClip[]>;
   replayWeight?: number;
+  post?: ViewerPost;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState<Open | null>(null);
@@ -186,6 +193,8 @@ export function ClipViewerProvider({
                 origin={open.origin}
                 startMuted={open.fromLink}
                 replayWeight={replayWeight ?? 0.4}
+                credit={post?.credit ?? ""}
+                editable={post?.editable.includes(open.list) ?? false}
                 onGo={(i) => {
                   const next = clips[i];
                   if (next) go(next.name);
@@ -201,13 +210,21 @@ export function ClipViewerProvider({
 }
 
 const FOCUSABLE =
-  'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Typing in a text field: the viewer's single-key shortcuts stay out of the way. */
+function isTyping(target: EventTarget | null) {
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (target instanceof HTMLInputElement) return target.type !== "range";
+  return target instanceof HTMLElement && target.isContentEditable;
+}
 
 /**
- * One clip at full height, with its score and actions beside it (below it on a phone,
- * in a sheet you open). Up and Down (or J and K, or a vertical swipe on a phone) move
- * through the set; Space plays and pauses, M mutes, Escape closes. Focus stays inside
- * until it closes, then goes back to the card.
+ * One clip at full height, with its score, post text and actions beside it (below it
+ * on a phone, in a sheet you open). Up and Down (or J and K, or a vertical swipe on a
+ * phone) move through the set; Space plays and pauses, M mutes, Escape closes (none of
+ * them while typing in a text field, except Escape). Focus stays inside until it
+ * closes, then goes back to the card.
  */
 function ClipViewer({
   jobId,
@@ -217,6 +234,8 @@ function ClipViewer({
   origin,
   startMuted,
   replayWeight,
+  credit,
+  editable,
   onGo,
   onClose,
 }: {
@@ -227,6 +246,8 @@ function ClipViewer({
   origin: DOMRect | null;
   startMuted: boolean;
   replayWeight: number;
+  credit: string;
+  editable: boolean;
   onGo: (index: number) => void;
   onClose: () => void;
 }) {
@@ -255,7 +276,14 @@ function ClipViewer({
   const [time, setTime] = useState(0);
   const [total, setTotal] = useState(0);
   const [sheet, setSheet] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const post = usePostDraft({
+    jobId,
+    clip: clip.name,
+    detail,
+    fallbackTitle: title,
+    credit,
+    editable,
+  });
   const hasNext = index < clips.length - 1;
   const hasPrevious = index > 0;
 
@@ -341,6 +369,8 @@ function ClipViewer({
       const k = latest.current;
       const target = event.target as HTMLElement;
       const inRange = target instanceof HTMLInputElement;
+      if (event.key !== "Escape" && event.key !== "Tab" && isTyping(target))
+        return;
       if (event.key === "Escape") {
         event.preventDefault();
         k.onClose();
@@ -386,16 +416,6 @@ function ClipViewer({
   // A phone: swipe up for the next clip, down for the previous one; a tap plays or pauses.
   const touch = useRef<{ y: number; x: number } | null>(null);
 
-  const copyTitle = async () => {
-    try {
-      await navigator.clipboard.writeText(title);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast.error("Couldn't copy the title");
-    }
-  };
-
   const round =
     "press inline-flex size-11 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 disabled:pointer-events-none disabled:opacity-30";
 
@@ -433,18 +453,6 @@ function ClipViewer({
         </div>
       </div>
       <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => void copyTitle()}
-          className="bg-muted hover:bg-accent press inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium pointer-coarse:h-11"
-        >
-          {copied ? (
-            <Check className="pop-in size-4" aria-hidden />
-          ) : (
-            <Copy className="size-4" aria-hidden />
-          )}
-          {copied ? "Title copied" : "Copy title"}
-        </button>
         <a
           href={download}
           download={`${String(rank).padStart(2, "0")} ${title}.mp4`}
@@ -453,6 +461,18 @@ function ClipViewer({
           <Download className="size-4" aria-hidden />
           Download
         </a>
+      </div>
+      <div className="border-t pt-4">
+        <PostPanel
+          api={post}
+          editable={editable}
+          hasPost={Boolean(detail?.post)}
+          readOnlyNote={
+            list === "new"
+              ? "Keep this set to edit the text and mark clips as posted."
+              : "You can edit the text once the video is done."
+          }
+        />
       </div>
       {detail && (
         <div className="border-t pt-4">

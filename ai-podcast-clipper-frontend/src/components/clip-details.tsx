@@ -1,6 +1,7 @@
-import { Repeat } from "lucide-react";
+import { CheckCheck, Repeat } from "lucide-react";
 import { timecode } from "~/lib/format";
 import type { ClipDetail } from "~/lib/job-types";
+import { PLATFORMS, postedOn } from "~/lib/post-text";
 import { cn } from "~/lib/utils";
 
 // What the clip card's score panel and the clip viewer both show about a clip.
@@ -137,6 +138,19 @@ export function FallbackTag({ detail }: { detail?: ClipDetail }) {
   return (
     <span className="bg-muted text-muted-foreground mt-1.5 mr-1.5 inline-flex h-5 items-center rounded-md px-1.5 text-xs font-medium">
       Picked without Gemini
+    </span>
+  );
+}
+
+/** Where a clip has been marked as posted (the clips page's Post panel). */
+export function PostedTag({ detail }: { detail?: ClipDetail }) {
+  const on = postedOn(detail?.post);
+  if (!on.length) return null;
+  const names = PLATFORMS.filter((p) => on.includes(p.id)).map((p) => p.label);
+  return (
+    <span className="text-muted-foreground mt-1.5 mr-1.5 inline-flex h-5 items-center gap-1 text-xs font-medium">
+      <CheckCheck className="text-foreground size-3.5" aria-hidden />
+      Posted on {names.join(" and ")}
     </span>
   );
 }

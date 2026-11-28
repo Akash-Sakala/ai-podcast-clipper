@@ -32,6 +32,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Every clip's audio is brought to -14 LUFS (`CLIP_LOUDNORM`), so clips from different podcasts play at the same level.
 
 **Daily use**
+- Post text for every clip: after ranking, one more Gemini call (`prompts/post_text.md`) writes a Shorts title, a caption (the Reel caption and the Short's description) and 3-5 hashtags, checked in code; the clip viewer shows them with a credit line made from the channel and the video link, saves edits as you type, copies one field or all of them, and marks a clip as posted on Shorts and Reels with the date (the clip card shows where it went).
 - `scripts/clipper.ps1` starts the app (rebuilding it when the code changed) and opens it in its own window; `scripts/install-shortcut.ps1` adds desktop and Start-menu shortcuts, optionally starting the server at sign-in. The app is installable from the browser (web manifest and icons).
 - Cancel a running video from its page (`runner.py --cancel`: stops the runner, cancels its Modal calls and clip renders, cleans the volume) and delete a finished one (job folder, kept video, temp download; its stats stay).
 - The app refuses requests whose Host is not this computer and changes that come from other sites (`src/middleware.ts`).
@@ -70,3 +71,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-22 `fix/cancel-clip-renders`: a killed or failed run also cancels the clip renders it started on Modal (they kept running and wrote their clips back after the clean-up)
 - 2026-11-28 `feat/daily-use-quick-wins`: one-click launcher and desktop shortcut, installable app window, Cancel and Delete in the app, requests from other sites refused, data moved out of OneDrive to `%LOCALAPPDATA%`
 - 2026-11-28 `feat/caption-style`: one-line captions of 3-5 words, 25% up, the spoken word in amber; clip audio at -14 LUFS with a fallback; Render again
+- 2026-11-28 `feat/post-copy`: post text for each clip (title, caption, hashtags) written by Gemini after ranking; edit, copy and mark as posted in the clip viewer

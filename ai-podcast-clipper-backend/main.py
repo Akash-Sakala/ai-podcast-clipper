@@ -6,6 +6,7 @@ Deploy once with `modal deploy main.py`. The local runner (runner.py) works in t
     transcribe_and_rank (CPU)   phase 1, as soon as the audio is on the volume:
         Transcriber.transcribe (GPU)     Parakeet TDT 0.6B v2, the whole audio
         moments.select_moments           Gemini ranks the moments (no GPU waiting)
+        moments.write_post_text          one more Gemini call: title, caption, hashtags per clip
     render_clips (CPU)          phase 2, once the laptop has uploaded each chosen clip's footage:
         Renderer.render x N (GPU)        one container per clip, all at once:
                                          LR-ASD speaker crop, subtitles, one encode
@@ -529,6 +530,7 @@ def transcribe_and_rank(job_id: str, max_clips: int = DEFAULT_MAX_CLIPS, context
     client = moment_selection.make_client(os.environ["GEMINI_API_KEY"])
     model = os.environ.get("GEMINI_MODEL") or moment_selection.GEMINI_MODELS[0]
     clip_moments = moment_selection.select_moments(words, max_clips, client, model, context, report=ranking)
+    moment_selection.write_post_text(clip_moments, words, client, model, context, report=ranking)
     (job_dir / "moments.json").write_text(json.dumps(clip_moments, indent=2))
     jobs_volume.commit()
     timings["select"] = round(time.time() - started, 1)

@@ -26,6 +26,7 @@ import {
 import { jobsChanged, useJob } from "~/lib/job-sync";
 import { isActive, type Job } from "~/lib/job-types";
 import { duration, ease } from "~/lib/motion";
+import { defaultCredit } from "~/lib/post-text";
 import type { Currency } from "~/lib/settings-types";
 import { useStable } from "~/lib/use-stable";
 import { cn } from "~/lib/utils";
@@ -37,7 +38,11 @@ import { IconButton } from "../ui/icon-button";
 import { InlineConfirm } from "../ui/inline-confirm";
 import { ActionButton } from "./action-button";
 import { useComparisonSelection } from "./compare-selection";
-import { ClipViewerProvider, type ViewerClip } from "./clip-viewer";
+import {
+  ClipViewerProvider,
+  type ViewerClip,
+  type ViewerList,
+} from "./clip-viewer";
 import { clipVersionOf, CompareView, RerankProgressView } from "./compare-view";
 import { DetailsPanel } from "./details-panel";
 import { LiveClips } from "./live-clips";
@@ -181,12 +186,21 @@ export function VideoPage({
         : [];
     return { main, new: newSet };
   }, [live, liveClips, clipNames, details, comparison, rerankLive, job]);
+  // Post text can be changed on the saved clips of a video that is not running.
+  const viewerPost = useMemo(
+    () => ({
+      credit: defaultCredit(job),
+      editable: active ? [] : (["main"] satisfies ViewerList[]),
+    }),
+    [job, active],
+  );
 
   return (
     <ClipViewerProvider
       jobId={job.id}
       lists={viewerLists}
       replayWeight={job.ranking?.replay?.weight}
+      post={viewerPost}
     >
       <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
         <Link

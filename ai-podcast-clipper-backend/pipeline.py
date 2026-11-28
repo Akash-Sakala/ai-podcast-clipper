@@ -156,6 +156,7 @@ def clip_details(clips: list[str], clip_moments: list[dict]) -> list[dict]:
             "peak": moment.get("peak"),
             "complete": moment.get("complete"),
             "issue": moment.get("issue"),
+            "post": moment.get("post"),
         })
     return details
 

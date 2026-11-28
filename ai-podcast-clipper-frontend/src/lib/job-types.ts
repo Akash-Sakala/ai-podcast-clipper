@@ -181,6 +181,26 @@ export type ClipDetail = {
   peak?: ClipPeak | null;
   /** After a comparison: the set the kept clip came from. */
   from?: ClipSet;
+  /** Text to post the clip with: written by Gemini after ranking, edited on the clips page. */
+  post?: ClipPost | null;
+};
+
+/** Where a clip can be marked as posted. */
+export type Platform = "shorts" | "reels";
+
+export type ClipPost = {
+  /** The Shorts title (at most 100 characters). */
+  title?: string;
+  /** The Reel caption, also the Short's description. */
+  caption?: string;
+  /** With the # sign. */
+  hashtags?: string[];
+  /** The credit line; absent until edited (the page then shows the video's default). */
+  credit?: string;
+  /** When the clip was marked as posted on each platform (ISO time); null = not posted. */
+  posted?: Partial<Record<Platform, string | null>>;
+  /** Changed on the clips page since Gemini wrote it. */
+  edited?: boolean;
 };
 
 /** "new": the clips a re-rank left in clips_new/; "previous": the live set in clips/. */
