@@ -247,7 +247,12 @@ export function computeStats(
         title: job?.title ?? run.title ?? "Deleted video",
         deleted: !job,
         startedAt: run.startedAt,
-        mode: run.mode === "rerank" ? "rerank" : "new",
+        mode:
+          run.mode === "rerank"
+            ? "rerank"
+            : run.mode === "render"
+              ? "render"
+              : "new",
         videoSeconds: num(run.videoSeconds),
         status: run.status,
         failedStage: run.failedStage ?? null,

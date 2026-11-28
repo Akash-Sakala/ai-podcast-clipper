@@ -30,7 +30,7 @@ export function useJobActions() {
   const router = useRouter();
 
   const run = useCallback(
-    async (job: ActionJob, action: "rerank" | "retry") => {
+    async (job: ActionJob, action: "rerank" | "retry" | "render") => {
       // An upload whose video is no longer kept: re-rank asks for the file again.
       let file: File | null = null;
       if (action === "rerank" && job.rerankNeedsFile) {
@@ -59,17 +59,30 @@ export function useJobActions() {
         } else {
           await request(`/api/jobs/${job.id}/${action}`, "POST");
         }
-        toast.success(action === "rerank" ? "Re-ranking" : "Trying again", {
-          id: toastId,
-          description:
-            action === "rerank"
-              ? "Reusing the transcript. The current clips stay until the new ones are ready."
-              : displayTitle(job),
-        });
+        toast.success(
+          action === "rerank"
+            ? "Re-ranking"
+            : action === "render"
+              ? "Rendering again"
+              : "Trying again",
+          {
+            id: toastId,
+            description:
+              action === "rerank"
+                ? "Reusing the transcript. The current clips stay until the new ones are ready."
+                : action === "render"
+                  ? "The same moments, without asking Gemini again."
+                  : displayTitle(job),
+          },
+        );
         await jobsChanged(job.id);
       } catch (error) {
         toast.error(
-          action === "rerank" ? "Couldn't re-rank" : "Couldn't try again",
+          action === "rerank"
+            ? "Couldn't re-rank"
+            : action === "render"
+              ? "Couldn't render again"
+              : "Couldn't try again",
           { id: toastId, description: (error as Error).message },
         );
       } finally {
@@ -125,6 +138,7 @@ export function useJobActions() {
     busy,
     rerank: (job: ActionJob) => void run(job, "rerank"),
     retry: (job: ActionJob) => void run(job, "retry"),
+    renderAgain: (job: ActionJob) => void run(job, "render"),
     cancel,
     remove,
   };

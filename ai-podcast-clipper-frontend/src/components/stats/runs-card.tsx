@@ -34,6 +34,12 @@ function result(run: RunRow) {
   return plural(run.clips, "clip");
 }
 
+const RUN_MODE_LABEL = {
+  new: "New",
+  rerank: "Re-rank",
+  render: "Render again",
+} as const;
+
 export function RunsCard({
   stats,
   m,
@@ -94,7 +100,7 @@ export function RunsCard({
               </td>
               <td className="max-w-0 py-2.5 pr-3">{title(run)}</td>
               <td className="text-muted-foreground py-2.5 pr-3">
-                {run.mode === "new" ? "New" : "Re-rank"}
+                {RUN_MODE_LABEL[run.mode]}
               </td>
               <td className="tabular hidden py-2.5 pr-3 text-right md:table-cell">
                 {run.videoSeconds ? timecode(run.videoSeconds) : "—"}
@@ -130,7 +136,7 @@ export function RunsCard({
               <time dateTime={run.startedAt} suppressHydrationWarning>
                 {shortDate(run.startedAt)}
               </time>
-              <span>{run.mode === "new" ? "New" : "Re-rank"}</span>
+              <span>{RUN_MODE_LABEL[run.mode]}</span>
               <span
                 className={cn(run.status === "failed" && "text-destructive")}
               >

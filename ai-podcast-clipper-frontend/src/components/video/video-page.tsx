@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  Clapperboard,
   Download,
   Info,
   ListRestart,
@@ -84,7 +85,7 @@ export function VideoPage({
     toast.success(readyText(job.clips.length), { id: `finished-${job.id}` });
   }, [active, job]);
 
-  const { busy, rerank, retry, cancel, remove } = useJobActions();
+  const { busy, rerank, retry, renderAgain, cancel, remove } = useJobActions();
   const isBusy = busy === job.id;
   // Cancel and Delete each ask once, in place, before they act.
   const [asking, setAsking] = useState<"cancel" | "delete" | null>(null);
@@ -346,9 +347,27 @@ export function VideoPage({
           )}
 
           {done && !comparing && job.clips.length === 0 && (
-            <Notice action={rerankButton}>
-              No clips came out of this video. Re-rank to ask Gemini again
-              without transcribing a second time.
+            <Notice
+              tone={job.clipErrors?.length ? "error" : "neutral"}
+              action={
+                <>
+                  {job.canRenderAgain && !!job.clipErrors?.length && (
+                    <ActionButton
+                      primary
+                      icon={<Clapperboard className="size-4" aria-hidden />}
+                      onClick={() => renderAgain(job)}
+                      busy={isBusy}
+                    >
+                      Render again
+                    </ActionButton>
+                  )}
+                  {rerankButton}
+                </>
+              }
+            >
+              {job.clipErrors?.length
+                ? `Gemini found the moments, but ${job.clipErrors.length === 1 ? "the clip" : `all ${job.clipErrors.length} clips`} failed to render, so nothing was saved. Render again uses the same moments without asking Gemini; Re-rank asks for new ones.`
+                : "No clips came out of this video. Re-rank to ask Gemini again without transcribing a second time."}
             </Notice>
           )}
 

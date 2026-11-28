@@ -295,9 +295,9 @@ def test_subtitles_and_fade(tmp_path):
     pytest.importorskip("pysubs2")
     words = [{"start": 9.5 + 0.4 * i, "end": 9.8 + 0.4 * i, "word": f"w{i}"} for i in range(12)]
     path = tmp_path / "s.ass"
-    assert render.write_subtitles(words, 10.0, 13.0, path) == 2      # 7 words in range -> 5 + 2
+    assert render.write_subtitles(words, 10.0, 13.0, path) == 2      # 7 words in range -> 4 + 3
     text = path.read_text()
-    assert "Anton" in text and "w1 w2 w3 w4 w5" in text and "PlayResY: 1920" in text
+    assert "Anton" in text and "PlayResY: 1920" in text and "\\N" not in text   # one line each
     assert render.audio_fade(40.0) == "afade=t=in:st=0:d=0.12,afade=t=out:st=39.65:d=0.35"
 
 

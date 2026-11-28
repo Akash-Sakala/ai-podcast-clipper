@@ -142,7 +142,8 @@ export function stepsFor(job: StageJob): Step[] {
     ).map(step);
     return steps.filter((step) => {
       if (step.stage === "audio" || step.stage === "transcribing")
-        return job.mode !== "rerank";
+        return job.mode !== "rerank" && job.mode !== "render";
+      if (step.stage === "ranking") return job.mode !== "render";
       if (step.stage === "downloading") return job.source === "youtube";
       return true;
     });

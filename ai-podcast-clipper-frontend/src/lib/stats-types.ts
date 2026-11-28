@@ -66,7 +66,7 @@ export type RunRow = {
   title: string;
   deleted: boolean;
   startedAt: string;
-  mode: "new" | "rerank";
+  mode: "new" | "rerank" | "render";
   videoSeconds: number | null;
   status: "done" | "no-clips" | "failed";
   failedStage: string | null;

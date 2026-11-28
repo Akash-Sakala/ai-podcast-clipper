@@ -1,6 +1,7 @@
 """Run and re-rank orchestration: get the job through Modal (phases.py), save the outputs,
 record the run, clean up."""
 
+import json
 import os
 import pathlib
 import re
@@ -24,7 +25,7 @@ from clipsets import (  # noqa: F401 - swap_in_new_clips and apply_comparison ar
 from cloud import cancel_remote_call, cancel_stale_call
 from jobstore import Job, log, now_iso
 from media import discard_local_video, file_fingerprint, save_thumbnail
-from phases import forget_download, process_on_modal
+from phases import forget_download, process_on_modal, render_again_on_modal
 from run_history import record_run
 from transfer import (
     ClipSaver,
@@ -403,6 +404,77 @@ def finish_full_run(job: Job, result: dict, clips: list[str], timings: dict, job
     settle_video(job, keep_video)
     refresh_modal_bill(job.dir.parent.parent)   # for the stats page; best effort
     return 0
+
+
+def saved_moments(job: Job) -> list:
+    """The moments the last run picked (moments.json), for Render again. FileNotFoundError when
+    there are none to render."""
+    try:
+        moments = json.loads((job.dir / "moments.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise FileNotFoundError("moments.json is missing from the job folder: re-rank this video instead") from None
+    if not isinstance(moments, list) or not moments:
+        raise FileNotFoundError("moments.json holds no moments: re-rank this video instead")
+    if not (job.dir / "transcript.json").exists():
+        raise FileNotFoundError("transcript.json is missing from the job folder: make the clips again")
+    return moments
+
+
+def run_render_again(job_dir: pathlib.Path, keep_remote: bool, keep_video: bool = False) -> int:
+    """Render again: the moments the last run picked, rendered once more (after every clip failed
+    to render, say), without transcribing or asking Gemini again. The job's ranking stays."""
+    import modal
+
+    job = Job(job_dir)
+    job.update(pid=os.getpid(), error=None, failedStage=None, cancelledAt=None, status="queued", progress=None,
+               videoTransfer=None, liveClips=None, liveClipsSet=None, plannedClips=None,
+               message="Rendering the same moments again")
+    discard_comparison(job)
+    volume = modal.Volume.from_name(JOBS_VOLUME, create_if_missing=True)
+    timings: dict = {"renderAgain": True}
+    job_start = time.time()
+    failed_stage = "starting"
+    try:
+        moments = saved_moments(job)
+        start_run(job, volume, keep_remote)
+        failed_stage = "processing"
+        saver = live_clip_saver(job, volume, job.dir / "clips")
+        result = render_again_on_modal(job, volume, moments, timings, saver)
+        failed_stage = "saving"
+        clips = save_clips(job, volume, result, saver, "full", timings, job_start)
+        discard_extras(job)                    # the same transcript and moments: nothing new to keep
+        timings["total"] = round(time.time() - job_start, 1)
+        errors = result.get("errors") or []
+        details = clip_details(clips, moments)
+        cost = job_cost(result, job.dir.parent.parent)
+        extra = run_diagnostics(result)
+        message = ranking_message(clips, errors, {})
+        runs = record_run(job, mode="render", status="done" if clips else "no-clips", started=job_start,
+                          timings=timings, cost=cost, clips=clips, details=details, extra=extra)
+        job.update(status="done", message=message, clips=clips, clipErrors=errors, clipDetails=details,
+                   timings=timings, progress=None, cost=cost, runs=runs, pendingSave=None, liveClips=None,
+                   liveClipsSet=None, plannedClips=None, **extra)
+        log(f"Rendered again: {message}. Timings: {timings}")
+        settle_video(job, keep_video)
+        refresh_modal_bill(job.dir.parent.parent)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        cancel_remote_call(job)
+        timings["total"] = round(time.time() - job_start, 1)
+        stage = (job.data.get("progress") or {}).get("stage") or failed_stage
+        runs = record_run(job, mode="render", status="failed", started=job_start, timings=timings,
+                          failed_stage=stage)
+        job.update(status="failed", message="Failed", error=f"{type(exc).__name__}: {exc}", timings=timings,
+                   failedStage=stage, progress=None, runs=runs, liveClips=None, liveClipsSet=None,
+                   plannedClips=None)
+        discard_extras(job)
+        return 1
+    except BaseException:   # a stop signal or Ctrl+C
+        stopped(job, failed_stage, keep_clips=False)
+        raise
+    finally:
+        finish_cleanup(job, volume, keep_remote)
 
 
 def transcript_mode(job: Job) -> str:

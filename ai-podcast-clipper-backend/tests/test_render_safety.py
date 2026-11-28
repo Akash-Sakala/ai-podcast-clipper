@@ -135,7 +135,7 @@ def test_subtitle_alignment_enum_writes_the_same_file(tmp_path, monkeypatch):
         warnings.simplefilter("ignore")
         render.write_subtitles(words, 1.0, 6.0, tmp_path / "old.ass")
     assert (tmp_path / "new.ass").read_bytes() == (tmp_path / "old.ass").read_bytes()
-    assert "Default,Anton,140" in (tmp_path / "new.ass").read_text()
+    assert "Default,Anton,100" in (tmp_path / "new.ass").read_text()
 
 
 # --------------------------------------------------------------------------- #

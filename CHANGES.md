@@ -26,6 +26,11 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - Per-clip error isolation, `max_clips` as a parameter, `torch` and `torchvision` pinned to a set that resolves together, LR-ASD vendored with a NumPy 2 fix.
 - Nothing stays on Modal after a run. The video is kept on the laptop (`videostore.py`, `%LOCALAPPDATA%\ai-podcast-clipper\videos`, outside OneDrive) for 7 days after its last use with a 10 GB cap, so a re-rank needs no new download.
 
+**Captions and sound**
+- Captions on one line of up to five words (about 20 characters, mostly 3-4 words) that never run across a sentence (phrases split at commas are kept together; a long one is split into the fewest, most even captions; no one-word caption where a neighbour can spare a word), 25% up from the bottom, above the area a long Reels/Shorts title can cover and clear of the buttons on the right; each stays on screen at least 0.8 s when the next one starts later. The word being spoken turns amber (`#F5A524`) with a short pop. Anton 100 px with a heavier outline. Chosen from real Shorts, the platforms' safe zones and subtitle reading-speed guidance.
+- An encode that fails with the loudness step is retried without it (the clip keeps the video's own level), so an optional step never costs a clip. **Render again** renders the last run's moments once more (no transcription, no Gemini) when every clip failed to render.
+- Every clip's audio is brought to -14 LUFS (`CLIP_LOUDNORM`), so clips from different podcasts play at the same level.
+
 **Daily use**
 - `scripts/clipper.ps1` starts the app (rebuilding it when the code changed) and opens it in its own window; `scripts/install-shortcut.ps1` adds desktop and Start-menu shortcuts, optionally starting the server at sign-in. The app is installable from the browser (web manifest and icons).
 - Cancel a running video from its page (`runner.py --cancel`: stops the runner, cancels its Modal calls and clip renders, cleans the volume) and delete a finished one (job folder, kept video, temp download; its stats stay).
@@ -38,7 +43,7 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 **Frontend**
 - Loading, error and not-found screens; one live copy of the jobs shared by every page and tab (the newest read wins, so Back never shows an old list), a slim job list with ETag/304, job files written and read safely while Windows or OneDrive holds them open; accessibility fixes; `src/env.ts` instead of zod and t3-env; components split into `components/{stats,new-job,video}/` and `lib/` modules.
 
-**Unchanged from upstream:** the LR-ASD model and speaker-selection rules, and the subtitle style.
+**Unchanged from upstream:** the LR-ASD model and speaker-selection rules.
 
 ## History
 
@@ -64,3 +69,4 @@ Forked from [Andreaswt/ai-podcast-clipper-saas](https://github.com/Andreaswt/ai-
 - 2026-11-22 `fix/resume-video-transfer`: Try again after a failed save keeps how the video was sent (audio first or whole), so the app names the right steps
 - 2026-11-22 `fix/cancel-clip-renders`: a killed or failed run also cancels the clip renders it started on Modal (they kept running and wrote their clips back after the clean-up)
 - 2026-11-28 `feat/daily-use-quick-wins`: one-click launcher and desktop shortcut, installable app window, Cancel and Delete in the app, requests from other sites refused, data moved out of OneDrive to `%LOCALAPPDATA%`
+- 2026-11-28 `feat/caption-style`: one-line captions of 3-5 words, 25% up, the spoken word in amber; clip audio at -14 LUFS with a fallback; Render again

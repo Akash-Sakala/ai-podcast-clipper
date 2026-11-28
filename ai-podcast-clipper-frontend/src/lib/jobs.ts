@@ -125,6 +125,7 @@ function withDerived(job: Job): Job {
   return {
     ...job,
     canRerank: canRerank(job),
+    canRenderAgain: canRenderAgain(job),
     rerankNeedsFile: rerankNeedsFile(job),
     hasThumbnail: hasThumbnail(job),
     clipsVersion: clipsVersion(job),
@@ -143,6 +144,21 @@ export function canRerank(job: Job) {
   if (ACTIVE_STATUSES.includes(job.status)) return false;
   if (job.status !== "done" && !job.clips?.length) return false;
   return fs.existsSync(path.join(jobDir(job.id), "transcript.json"));
+}
+
+/**
+ * Render again: a finished job without clips (every clip failed to render, say) whose last
+ * run's moments and transcript are on disk, so the same moments can be rendered once more.
+ */
+export function canRenderAgain(job: Job) {
+  if (ACTIVE_STATUSES.includes(job.status) || job.status !== "done")
+    return false;
+  if (job.clips?.length || job.comparison) return false;
+  const dir = jobDir(job.id);
+  return (
+    fs.existsSync(path.join(dir, "moments.json")) &&
+    fs.existsSync(path.join(dir, "transcript.json"))
+  );
 }
 
 /** An uploaded video that is neither in the job folder nor kept: re-rank needs the file again. */

@@ -1073,3 +1073,41 @@ def test_a_progress_callback_can_stop_the_real_download(web, tmp_path, monkeypat
     with pytest.raises(phases.StopVideoDownload):
         downloader.download_audio(f"{base}/watch", tmp_path / "a", ipv4=False, on_progress=stop)
     shutil.rmtree(tmp_path / "a", ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# Render again: the same moments, no transcription, no Gemini
+# --------------------------------------------------------------------------- #
+
+def failed_render_job(tmp_path, **fields):
+    fields = {"status": "done", "clips": [], "clipErrors": ["clip_0: encoding failed", "clip_1: encoding failed"],
+              "engine": {"transcriber": "parakeet"}, "ranking": {"model": "gemini-3.8-flash", "valid": 2}, **fields}
+    job_dir = make_job(tmp_path, **fields)
+    (job_dir / "transcript.json").write_text('[{"word": "hi"}]')
+    (job_dir / "moments.json").write_text(json.dumps(MOMENTS))
+    return job_dir
+
+
+def test_render_again_renders_the_saved_moments_without_gemini(tmp_path, monkeypatch):
+    job_dir = failed_render_job(tmp_path)
+    world = World(tmp_path, monkeypatch)
+    assert pipeline.run_render_again(job_dir, keep_remote=False) == 0
+    assert [name for name, _ in world.spawns] == ["render_clips"]              # no transcribe_and_rank
+    assert world.spawns[0][1][1] == MOMENTS
+    assert ("transcript.json", f"/{JOB_ID}/transcript.json") in world.uploads
+    data = read(job_dir)
+    assert data["status"] == "done" and data["clips"] == ["clip_0.mp4", "clip_1.mp4"] and data["clipErrors"] == []
+    assert data["ranking"] == {"model": "gemini-3.8-flash", "valid": 2}       # the ranking stays
+    assert data["runs"][-1]["mode"] == "render" and not (data.get("cost") or {}).get("gemini")
+    assert json.loads((job_dir / "moments.json").read_text()) == MOMENTS
+    assert (job_dir / "clips" / "clip_1.mp4").read_bytes() == b"clip 1"
+
+
+def test_render_again_without_saved_moments_fails_before_anything_runs(tmp_path, monkeypatch):
+    job_dir = failed_render_job(tmp_path)
+    (job_dir / "moments.json").unlink()
+    world = World(tmp_path, monkeypatch)
+    assert pipeline.run_render_again(job_dir, keep_remote=False) == 1
+    data = read(job_dir)
+    assert data["status"] == "failed" and "re-rank this video" in data["error"]
+    assert world.spawns == [] and world.uploads == []

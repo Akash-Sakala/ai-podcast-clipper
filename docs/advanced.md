@@ -76,6 +76,7 @@ The app's **Settings page** (gear icon) saves `data/settings.json`: currency, cl
 | `RENDER_MAX_CONTAINERS` | `8` | deploy | Most clip render containers running at once (Modal Starter allows 10 GPUs) |
 | `RENDER_CPU` | `4` | deploy | CPU cores reserved per render container (decoding and framing run on the CPU) |
 | `FLASH_FRAMES_MAX` | `3` | deploy | A run of up to this many frames of another shot between two cuts in the video itself shows the frame before it instead. Remote-podcast edits often flash a frame of the side-by-side layout or a zoomed-out view, which reads as a jump. `0` = off |
+| `CLIP_LOUDNORM` | `on` | deploy | Bring each clip's audio to -14 LUFS (measured, then one even gain, peaks under -1.5 dBTP), so every clip plays at the level the platforms use. If that step fails to encode, the clip is encoded again without it (at the video's own level) rather than lost. `off` keeps the video's own level |
 | `SPEAKER_MIN_HOLD_SECONDS` | `0.5` | deploy | Shortest time the crop stays on one speaker, or on the whole frame, before it may switch. Removes split-second jumps; cuts in the video itself still switch at once. `0` = off |
 | `MIN_CLIPS` | `3` | deploy | A job never ends with fewer clips: missing ones are picked from the transcript and marked "fallback" |
 | `CLIP_MIN_SECONDS` / `CLIP_MAX_SECONDS` | `30` / `120` | deploy | Clip length limits. Within them the conversation decides the length; a proposal over the maximum is dropped, never cut short |
@@ -196,7 +197,7 @@ Two Modal functions (CPU) do the work, called by `runner.py` (`pipeline.py` and 
 
 The YouTube video starts downloading as soon as the audio stream is on the laptop, so it runs during the audio upload and phase 1 (the audio's progress shows "downloading the video meanwhile"). The progress strip shows Send audio, Transcribe, Find moments, Download (the percentage appears next to the cloud stage while both run), Send clips, Render and Save.
 
-**Phase 2, `render_clips`**, once the laptop has cut and uploaded each chosen clip's footage (`cutter.py`, `segments.py`): one stream-copied piece per clip, checked packet by packet, uploaded as `footage/clip_N.mp4`. Then one GPU container (`Renderer`) per clip, all at the same time. Each one seeks into its footage (the arithmetic in `segments.py` makes the result identical to rendering from the whole video), finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder, with subtitles and the audio fade, then writes it straight to the volume. The runner downloads each clip as it appears in the progress `ready` list, up to `CLIP_DOWNLOADS_AT_ONCE` at a time, and publishes it to `job.json` `liveClips` so the app shows it at once. A container that starts without a working GPU or NVENC (on a GPU type that has it) fails at start-up instead of rendering slowly on the CPU.
+**Phase 2, `render_clips`**, once the laptop has cut and uploaded each chosen clip's footage (`cutter.py`, `segments.py`): one stream-copied piece per clip, checked packet by packet, uploaded as `footage/clip_N.mp4`. Then one GPU container (`Renderer`) per clip, all at the same time. Each one seeks into its footage (the arithmetic in `segments.py` makes the result identical to rendering from the whole video), finds the speaker with LR-ASD, and encodes the clip once on the GPU's NVENC encoder, with the captions (one line of 3-5 words, about 20 characters, 25% up from the bottom, each up at least 0.8 s, the spoken word in amber; the `SUBTITLE_*` constants in `render.py`) and its audio measured and brought to -14 LUFS with a short fade, then writes it straight to the volume. The runner downloads each clip as it appears in the progress `ready` list, up to `CLIP_DOWNLOADS_AT_ONCE` at a time, and publishes it to `job.json` `liveClips` so the app shows it at once. A container that starts without a working GPU or NVENC (on a GPU type that has it) fails at start-up instead of rendering slowly on the CPU.
 
 Flash frames are removed first (`render.flash_frames`): 1-3 frames of another shot between two hard cuts, found on tiny thumbnails of every frame. Every pass (face detection, speaker scoring, encoding) sees the frame before the flash instead, so face tracks run straight through it and the clip shows a 40-120 ms freeze instead of a jump. A camera change right after a flash stays a hard cut.
 
@@ -286,7 +287,9 @@ Put the winner in `CLIPPER_GPU`, then `modal deploy main.py`.
 
 **Delete** (the bin icon on a finished or failed video's page) removes its job folder, the copy kept for re-ranks and any download left in the temp folder. Its runs stay on the stats page. A running video must be cancelled first. If a clip is open in a player, Windows refuses and nothing is deleted.
 
-From PowerShell, without the app: `python runner.py --job-dir "<data folder>\jobs\<job id>" --cancel`. Never run `modal app stop`: that undeploys the app.
+From PowerShell, without the app: `python runner.py --job-dir "<data folder>\jobs\<job id>" --cancel`.
+
+**Render again** (on a finished video whose clips all failed to render) runs `runner.py --job-dir <job> --render-again`: the moments in `moments.json` are rendered once more from the kept video (downloaded again if it is gone), with the saved transcript for the captions. No transcription and no Gemini call, so it costs only the render; the job's ranking stays as it was. Its runs show as "Render again" on the stats page. Never run `modal app stop`: that undeploys the app.
 
 ## Test deployment
 

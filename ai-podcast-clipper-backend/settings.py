@@ -155,7 +155,7 @@ def apply_user_settings(data_dir) -> dict:
 # Moment-selection, rendering and naming settings, read inside the containers (moments.py,
 # render.py, clipper_names.py). main.py forwards them as a Modal secret because the
 # containers have no .env file.
-RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX", "DETECT_BATCH",
+RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX", "DETECT_BATCH", "CLIP_LOUDNORM",
                 "MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
                 "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS",

@@ -22,6 +22,7 @@ when it has one, and keeps the original audio (it used to be 16 kHz mono).
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import pathlib
@@ -48,7 +49,20 @@ FPS = fast_asd.FPS
 DETECT_BATCH = int(os.environ.get("DETECT_BATCH", "16"))
 SMOOTH_FRAMES = 30            # the crop follows the speaker averaged over +-30 frames
 BLUR_KERNEL = 121             # background blur when no face is found
-SUBTITLE_MAX_WORDS = 5
+SUBTITLE_MAX_WORDS = 5        # words on screen at once, on one line: mostly 3-4, five when they are short
+SUBTITLE_LINE_CHARS = 20      # one line of Anton at 100 px (with the 112% pop) fits about 20 characters in 840 px
+SUBTITLE_MAX_LINES = 1
+SUBTITLE_FONT_SIZE = 100
+SUBTITLE_PAUSE_S = 0.4        # a pause at least this long starts a new caption
+SUBTITLE_HOLD_S = 0.3         # a caption stays up this much after its last word, unless the next one starts sooner
+SUBTITLE_MIN_S = 0.8          # and at least this long in all (Netflix: 5/6 s), unless the next one starts sooner
+SUBTITLE_MARGIN_V = 480       # 25% up from the bottom: above the 450 px a long Reels/Shorts title can cover
+SUBTITLE_MARGIN_H = 100       # left and right: the line stays clear of the like/comment/share buttons
+SUBTITLE_SENTENCE_END = (".", "?", "!")                       # a word ending in one of these ends its caption
+SUBTITLE_PHRASE_END = (",", ";", ":", "\u2014")                 # a caption prefers to break after one of these
+# The word being spoken: amber (#F5A524, the app's accent; ASS colours are &HBBGGRR&) with a short pop.
+SUBTITLE_ACTIVE = r"{\c&H24A5F5&\fscx112\fscy112\t(0,120,\fscx100\fscy100)}"
+LOUDNESS_I, LOUDNESS_TP, LOUDNESS_LRA = -14.0, -1.5, 11.0   # LUFS / dBTP / LU: the level the platforms play at
 
 # Video encoder settings. The segment is an intermediate, so it is near-lossless;
 # the final clip is one encode at about the quality the old three encodes ended with.
@@ -500,12 +514,110 @@ def vertical_frame(img: np.ndarray, face: dict | None) -> np.ndarray:
 # Subtitles
 # --------------------------------------------------------------------------- #
 
-def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathlib.Path,
-                    max_words: int = SUBTITLE_MAX_WORDS) -> int:
-    """Word-timed ASS subtitles, max 5 words per line, Anton 140 px (unchanged style)."""
-    import pysubs2
+def _text(words: list[tuple]) -> str:
+    return " ".join(w for _, _, w in words)
 
-    lines, current, line_start, line_end = [], [], None, None
+
+def _fits(words: list[tuple], max_words: int, line_chars: int) -> bool:
+    """Whether these words fit one caption: at most max_words, and SUBTITLE_MAX_LINES lines of
+    at most line_chars characters (a single word longer than a line still gets a caption)."""
+    if len(words) > max_words:
+        return False
+    if len(words) == 1:
+        return True
+    return len(two_lines([w for _, _, w in words], line_chars)) <= SUBTITLE_MAX_LINES and \
+        all(len(line) <= line_chars for line in two_lines([w for _, _, w in words], line_chars))
+
+
+def two_lines(words: list[str], line_chars: int = SUBTITLE_LINE_CHARS) -> list[str]:
+    """A caption's words as one line when they fit, else as two lines split where the longer line
+    is shortest (and, among equal splits, after a comma), so the two lines look balanced."""
+    one = " ".join(words)
+    if len(one) <= line_chars or len(words) < 2:
+        return [one]
+    best = None
+    for k in range(1, len(words)):
+        first, second = " ".join(words[:k]), " ".join(words[k:])
+        key = (max(len(first), len(second)), 0 if words[k - 1].endswith(SUBTITLE_PHRASE_END) else 1)
+        if best is None or key < best[0]:
+            best = (key, [first, second])
+    return best[1]
+
+
+def _split_evenly(phrase: list[tuple], max_words: int, line_chars: int) -> list[list[tuple]]:
+    """A phrase as the fewest captions that fit, with the longest one as short as possible, so
+    they look even ("And that was the / moment I realized / everything changed.", not 3 + 2 + 2 + 2)."""
+    n = len(phrase)
+    best: list[tuple | None] = [None] * (n + 1)     # best[i]: (captions, longest, cut points) for phrase[:i]
+    best[0] = (0, 0, [])
+    for i in range(1, n + 1):
+        for j in range(i):
+            chunk = phrase[j:i]
+            if best[j] is None or not _fits(chunk, max_words, line_chars):
+                continue
+            count, longest, cuts = best[j]
+            candidate = (count + 1, max(longest, len(_text(chunk))), cuts + [j])
+            if best[i] is None or candidate[:2] < best[i][:2]:
+                best[i] = candidate
+    cuts = best[n][2] + [n]
+    return [phrase[a:b] for a, b in zip(cuts, cuts[1:])]
+
+
+def _pack(sentence: list[tuple], max_words: int, line_chars: int) -> list[list[tuple]]:
+    """One sentence as captions: whole phrases (split at commas) packed together while they fit;
+    a phrase too long for one caption is split into as few, evenly sized captions as fit (7
+    words: 4 + 3, not 5 + 2)."""
+    phrases: list[list[tuple]] = []
+    current: list[tuple] = []
+    for word in sentence:
+        current.append(word)
+        if word[2].endswith(SUBTITLE_PHRASE_END):
+            phrases.append(current)
+            current = []
+    if current:
+        phrases.append(current)
+    pieces: list[list[tuple]] = []
+    for phrase in phrases:
+        pieces.extend(_split_evenly(phrase, max_words, line_chars))
+    captions: list[list[tuple]] = []
+    for piece in pieces:
+        if captions and _fits(captions[-1] + piece, max_words, line_chars):
+            captions[-1] = captions[-1] + piece
+        else:
+            captions.append(list(piece))
+    return _no_lone_words(captions, max_words, line_chars)
+
+
+def _no_lone_words(captions: list[list[tuple]], max_words: int, line_chars: int) -> list[list[tuple]]:
+    """A one-word caption borrows a word from a neighbour of three or more words in the same
+    sentence (4 + 1 becomes 3 + 2), when both still fit. A one-word sentence and a word that is a
+    phrase of its own ("Honestly,") stay as they are."""
+    for i in range(len(captions)):
+        if len(captions[i]) != 1 or captions[i][0][2].endswith(SUBTITLE_PHRASE_END):
+            continue
+        for j in (i - 1, i + 1):
+            if not 0 <= j < len(captions) or len(captions[j]) < 3:
+                continue
+            if j < i:
+                neighbour, lone = captions[j][:-1], captions[j][-1:] + captions[i]
+            else:
+                neighbour, lone = captions[j][1:], captions[i] + captions[j][:1]
+            if _fits(neighbour, max_words, line_chars) and _fits(lone, max_words, line_chars):
+                captions[j], captions[i] = neighbour, lone
+                break
+    return captions
+
+
+def caption_groups(words: list, clip_start: float, clip_end: float, max_words: int = SUBTITLE_MAX_WORDS,
+                   line_chars: int = SUBTITLE_LINE_CHARS, pause_s: float = SUBTITLE_PAUSE_S) -> list[list[tuple]]:
+    """The clip's words as captions: [[(start, end, word), ...], ...] in clip time. The words are
+    first split into sentences (at .?! and at pauses of pause_s or more), so a caption never runs
+    across a sentence, then each sentence into captions of up to max_words words on at most
+    SUBTITLE_MAX_LINES lines of line_chars characters, keeping phrases (split at commas) together
+    where they fit and leaving no one-word caption where a neighbour can spare a word."""
+    sentences: list[list[tuple]] = []
+    current: list[tuple] = []
+    last_start = 0.0
     for segment in words:
         word = (segment.get("word") or "").strip()
         seg_start, seg_end = segment.get("start"), segment.get("end")
@@ -513,37 +625,66 @@ def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathl
             continue
         if not (seg_end > clip_start and seg_start < clip_end):
             continue
-        start_rel, end_rel = max(0.0, seg_start - clip_start), max(0.0, seg_end - clip_start)
-        if end_rel <= 0:
-            continue
-        if not current:
-            current, line_start, line_end = [word], start_rel, end_rel
-        elif len(current) >= max_words:
-            lines.append((line_start, line_end, " ".join(current)))
-            current, line_start, line_end = [word], start_rel, end_rel
-        else:
-            current.append(word)
-            line_end = end_rel
+        start_rel = max(0.0, seg_start - clip_start, last_start)
+        end_rel = max(start_rel + 0.05, min(seg_end, clip_end) - clip_start)
+        last_start = start_rel
+        if current and (start_rel - current[-1][1] >= pause_s or current[-1][2].endswith(SUBTITLE_SENTENCE_END)):
+            sentences.append(current)
+            current = []
+        current.append((start_rel, end_rel, word))
     if current:
-        lines.append((line_start, line_end, " ".join(current)))
+        sentences.append(current)
+    return [caption for sentence in sentences for caption in _pack(sentence, max_words, line_chars)]
 
+
+def _ass_text(word: str) -> str:
+    """A word as plain ASS text: braces start override blocks and a backslash starts a tag."""
+    return word.replace("\\", "/").replace("{", "(").replace("}", ")")
+
+
+def write_subtitles(words: list, clip_start: float, clip_end: float, path: pathlib.Path,
+                    max_words: int = SUBTITLE_MAX_WORDS) -> int:
+    """Word-timed ASS captions: one line of up to five words (about 20 characters), white Anton
+    100 px with a black outline, 25% up from the bottom, the word being spoken in amber with a short
+    pop. One event per word, each showing its whole caption, back to back; a caption stays up at
+    least SUBTITLE_MIN_S unless the next one starts sooner. Returns the number of captions."""
+    import pysubs2
+
+    groups = caption_groups(words, clip_start, clip_end, max_words)
     subs = pysubs2.SSAFile()
     subs.info.update({"WrapStyle": 0, "ScaledBorderAndShadow": "yes", "PlayResX": TARGET_W,
                       "PlayResY": TARGET_H, "ScriptType": "v4.00+"})
     style = pysubs2.SSAStyle()
-    style.fontname, style.fontsize = "Anton", 140
+    style.fontname, style.fontsize = "Anton", SUBTITLE_FONT_SIZE
     style.primarycolor = pysubs2.Color(255, 255, 255)
-    style.outline, style.shadow = 2.0, 2.0
+    style.outlinecolor = pysubs2.Color(0, 0, 0)
+    style.outline, style.shadow = 5.0, 2.0
     style.shadowcolor = pysubs2.Color(0, 0, 0, 128)
     style.alignment = pysubs2.Alignment.BOTTOM_CENTER        # ASS alignment 2
-    style.marginl = style.marginr = style.marginv = 50
+    style.marginl = style.marginr = SUBTITLE_MARGIN_H
+    style.marginv = SUBTITLE_MARGIN_V
     style.spacing = 0.0
     subs.styles["Default"] = style
-    for start, end, text in lines:
-        subs.events.append(pysubs2.SSAEvent(start=pysubs2.make_time(s=start), end=pysubs2.make_time(s=end),
-                                            text=text, style="Default"))
+    for index, group in enumerate(groups):
+        next_start = groups[index + 1][0][0] if index + 1 < len(groups) else clip_end - clip_start
+        last_end = group[-1][1]
+        wanted = max(last_end + SUBTITLE_HOLD_S, group[0][0] + SUBTITLE_MIN_S)
+        group_end = max(last_end, min(wanted, next_start))
+        texts = [_ass_text(w) for _, _, w in group]
+        lines = two_lines([w for _, _, w in group])     # one line, since every caption fits one
+        first_line_words = len(lines[0].split(" "))     # where the line break goes (\N), same for every event
+        for k, (start, _, _) in enumerate(group):
+            end = group[k + 1][0] if k + 1 < len(group) else group_end
+            if end <= start:
+                continue
+            marked = [SUBTITLE_ACTIVE + t + "{\\r}" if i == k else t for i, t in enumerate(texts)]
+            line = " ".join(marked[:first_line_words])
+            if len(lines) > 1:
+                line += "\\N" + " ".join(marked[first_line_words:])
+            subs.events.append(pysubs2.SSAEvent(start=pysubs2.make_time(s=start), end=pysubs2.make_time(s=end),
+                                                text=line, style="Default"))
     subs.save(str(path))
-    return len(lines)
+    return len(groups)
 
 
 def audio_fade(duration: float) -> str:
@@ -551,6 +692,51 @@ def audio_fade(duration: float) -> str:
     duration = max(duration, 1.0)
     fade_out = min(0.35, duration / 4)
     return f"afade=t=in:st=0:d=0.12,afade=t=out:st={duration - fade_out:.2f}:d={fade_out:.2f}"
+
+
+def loudness_enabled() -> bool:
+    return os.environ.get("CLIP_LOUDNORM", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def measure_loudness(media: pathlib.Path) -> dict | None:
+    """First pass of FFmpeg's loudnorm on the clip's audio: its measured loudness, or None when
+    there is no audio, it is silent, or FFmpeg can't measure it (the clip then keeps its level)."""
+    cmd = [FFMPEG, "-hide_banner", "-nostats", "-i", str(media), "-vn",
+           "-af", f"loudnorm=I={LOUDNESS_I}:TP={LOUDNESS_TP}:LRA={LOUDNESS_LRA}:print_format=json",
+           "-f", "null", "-"]
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = done.stderr or ""
+    start, end = text.rfind("{"), text.rfind("}")
+    if done.returncode != 0 or start < 0 or end < start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+        values = {key: float(data[key]) for key in
+                  ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not all(math.isfinite(v) for v in values.values()) or values["input_i"] < -70:
+        return None
+    return values
+
+
+def audio_filter(duration: float, loudness: dict | None) -> str:
+    """The clip's audio chain: loudness to LOUDNESS_I (second loudnorm pass, linear: the measured
+    gain applied evenly, no pumping), then 48 kHz stereo named explicitly (loudnorm works at
+    192 kHz, and on Modal's FFmpeg 4.4 a bare aresample left the channel layout open, so the
+    fade after it could not be linked: "Cannot select channel layout"), then the fades."""
+    chain = []
+    if loudness:
+        chain.append(f"loudnorm=I={LOUDNESS_I}:TP={LOUDNESS_TP}:LRA={LOUDNESS_LRA}"
+                     f":measured_I={loudness['input_i']:.2f}:measured_TP={loudness['input_tp']:.2f}"
+                     f":measured_LRA={loudness['input_lra']:.2f}:measured_thresh={loudness['input_thresh']:.2f}"
+                     f":offset={loudness['target_offset']:.2f}:linear=true")
+        chain.append("aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo")
+    chain.append(audio_fade(duration))
+    return ",".join(chain)
 
 
 # --------------------------------------------------------------------------- #
@@ -597,13 +783,14 @@ def crop_pass(segment: pathlib.Path, width: int, height: int, tracks: list[dict]
 
 
 def encode_pass(segment: pathlib.Path, width: int, height: int, chosen: list, subtitles: pathlib.Path,
-                duration: float, out: pathlib.Path, encoder: str, tick, replace: dict[int, int] | None = None) -> None:
+                duration: float, out: pathlib.Path, encoder: str, tick, replace: dict[int, int] | None = None,
+                audio_chain: str | None = None) -> None:
     # FFmpeg runs in the subtitles' folder and gets only the file name: a full path in a
     # filter would need escaping ("C:\\..." on Windows breaks the ass filter's option parsing).
     cmd = [FFMPEG, "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{TARGET_W}x{TARGET_H}", "-r", str(FPS), "-i", "-",
            "-i", str(segment.resolve()), "-map", "0:v:0", "-map", "1:a:0?",
-           "-vf", f"ass={subtitles.name}", "-af", audio_fade(duration),
+           "-vf", f"ass={subtitles.name}", "-af", audio_chain or audio_fade(duration),
            *ENCODERS[encoder]["final"], "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out.resolve())]
     log_path = out.with_suffix(".ffmpeg.log")
     with open(log_path, "w") as log:
@@ -668,6 +855,7 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
         cut_segment(source, start, duration, segment, encoder, target_us)
     width, height = video_size(segment)
     audio = read_audio_16k(segment)
+    loudness = measure_loudness(segment) if loudness_enabled() else None
     thumbs = frame_thumbs(segment)
     flashes = flash_frames(thumbs, flash_max_frames())
     expected_frames = max(1, int(round(duration * FPS)))
@@ -711,14 +899,10 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
     write_subtitles(words, start, end, subtitles)
     tmp_out = work_dir / "clip.mp4"
     tick = lambda i: report("render", i / max(1, n_frames))  # noqa: E731
-    try:
-        encode_pass(segment, width, height, chosen, subtitles, duration, tmp_out, encoder, tick, flashes)
-    except RenderError as exc:
-        if encoder != "nvenc" or isinstance(exc, DecodeError):
-            raise
-        print("NVENC encode failed, retrying with libx264")
-        encoder = "x264"
-        encode_pass(segment, width, height, chosen, subtitles, duration, tmp_out, encoder, tick, flashes)
+    encoder, loudness = encode_with_fallbacks(
+        lambda enc, chain: encode_pass(segment, width, height, chosen, subtitles, duration, tmp_out, enc, tick,
+                                       flashes, chain),
+        encoder, duration, loudness)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(tmp_out), str(out_path))
     timings["render"] = time.time() - t
@@ -726,10 +910,36 @@ def render_clip(models, source: pathlib.Path, start: float, end: float, words: l
 
     followed = sum(1 for face in chosen if face)
     return {"timings": {k: round(v, 2) for k, v in timings.items()}, "frames": n_frames, "tracks": len(vid_tracks),
-            "speakerFrames": followed, "encoder": encoder, "chosen": chosen, "rawChosen": raw_chosen,
+            "speakerFrames": followed, "encoder": encoder,
+            "loudness": round(loudness["input_i"], 1) if loudness else None, "chosen": chosen, "rawChosen": raw_chosen,
             "switches": {"before": count_switches(raw_chosen), "after": count_switches(chosen),
                          "sourceCuts": max(0, len(scene_ranges(scenes, n_frames)) - 1), **steady,
                          "flashFrames": len(flashes)}}
+
+
+def encode_with_fallbacks(encode, encoder: str, duration: float, loudness: dict | None) -> tuple[str, dict | None]:
+    """Encode the clip, falling back so an optional step never costs the clip: first as planned;
+    if that fails with the loudness step, the same encoder with the plain audio fades (the clip
+    keeps its own level); if NVENC still fails, libx264. A DecodeError (the source itself) is
+    not retried. Returns the encoder used and the loudness actually applied (None if dropped)."""
+    plain = audio_fade(duration)
+    planned = audio_filter(duration, loudness)
+    attempts = [(encoder, planned, loudness)]
+    if planned != plain:
+        attempts.append((encoder, plain, None))
+    if encoder == "nvenc":
+        attempts.append(("x264", plain, None))
+    for number, (enc, chain, applied) in enumerate(attempts):
+        try:
+            encode(enc, chain)
+            return enc, applied
+        except RenderError as exc:
+            if isinstance(exc, DecodeError) or number == len(attempts) - 1:
+                raise
+            following = attempts[number + 1]
+            what = "without the loudness step" if following[2] is None and applied is not None else ""
+            print(f"{enc} encode failed ({str(exc)[-200:].strip()}); retrying with {following[0]} {what}".rstrip())
+    raise AssertionError("unreachable")
 
 
 def chosen_summary(chosen: list) -> list:

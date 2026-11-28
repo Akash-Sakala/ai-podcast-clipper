@@ -110,7 +110,7 @@ export type ClipSources = {
 
 /** One run of a job (first run, re-rank or failed attempt), kept for the stats page. */
 export type RunRecord = {
-  mode: "full" | "rerank";
+  mode: "full" | "rerank" | "render";
   status: "done" | "no-clips" | "failed";
   startedAt: string;
   finishedAt: string;
@@ -268,6 +268,8 @@ export type Job = {
   pid?: number;
   progress?: JobProgress | null;
   failedStage?: string;
+  /** Clips that failed to render in the last run (runner.py: one line each). */
+  clipErrors?: string[];
   /** Set when the owner cancelled the run (runner.py --cancel); cleared by the next run. */
   cancelledAt?: string | null;
   engine?: {
@@ -291,13 +293,18 @@ export type Job = {
   comparedAt?: string;
   ranking?: JobRanking;
   reranks?: number;
-  /** What the current or last run did: a full run or a re-rank of the saved transcript. */
-  mode?: "full" | "rerank";
+  /**
+   * What the current or last run did: a full run, a re-rank of the saved transcript, or
+   * Render again (the last run's moments rendered once more, no Gemini).
+   */
+  mode?: "full" | "rerank" | "render";
   /** When the current or last run was started (createdAt for the first run). */
   queuedAt?: string;
   rerankedAt?: string;
   /** Derived by the server: transcript on disk and the video can be had, job not running. */
   canRerank?: boolean;
+  /** Derived by the server: no clips, but the last run's moments and transcript are saved. */
+  canRenderAgain?: boolean;
   /** Derived by the server: an upload whose video is gone (not kept); re-rank asks for the file again. */
   rerankNeedsFile?: boolean;
   videoTransfer?: VideoTransfer | null;

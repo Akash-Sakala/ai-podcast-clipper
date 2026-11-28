@@ -429,6 +429,35 @@ def process_on_modal(job: Job, max_clips: int, mode: str, timings: dict, saver=N
         shutil.rmtree(download_folder(job) / "audio-download", ignore_errors=True)
 
 
+def render_again_on_modal(job: Job, volume, moments: list, timings: dict, saver=None) -> dict:
+    """Phase 2 alone, for the moments an earlier run already picked (moments.json): no
+    transcription and no Gemini call. The video is the kept one, else downloaded again
+    (YouTube) or the upload's own file; render_clips reads each clip's words from the
+    transcript.json uploaded here. Returns the result in merge_results' shape, with an empty
+    ranking (so no Gemini cost is counted)."""
+    functions = lookup_functions((RENDER_FUNCTION,))
+    job.update(videoTransfer=AUDIO_FIRST)
+    if job.data.get("source") == "youtube":
+        started, shown = time.time(), [-1.0]
+
+        def progress(fraction: float) -> None:
+            if fraction - shown[0] >= 0.01:          # job.json at most once per percent
+                shown[0] = fraction
+                set_progress(job, "downloading", fraction=round(fraction, 3))
+
+        set_progress(job, "downloading")
+        video = download_youtube(job, on_progress=progress, update_status=False)
+        timings["download"] = round(time.time() - started, 1)
+    else:
+        video = local_upload(job)
+    upload_transcript(job, volume)
+    if saver is not None and hasattr(saver, "describe"):
+        saver.describe(moments)
+    footage = footage_on_modal(job, volume, video, moments, timings)
+    first = {"moments": moments}
+    return merge_results(first, render_on_modal(job, functions, first, footage, timings, saver))
+
+
 def forget_download(job: Job, keep_video: bool) -> None:
     """After a run that succeeded: the YouTube video leaves the temp folder, into the kept
     videos (videostore.py; deleted when keeping is off) or, with keep_video, into the job
@@ -446,4 +475,5 @@ def forget_download(job: Job, keep_video: bool) -> None:
     shutil.rmtree(folder, ignore_errors=True)
 
 
-__all__ = ["process_on_modal", "forget_download", "merge_results", "StopVideoDownload", "AUDIO_FIRST"]
+__all__ = ["process_on_modal", "render_again_on_modal", "forget_download", "merge_results", "StopVideoDownload",
+           "AUDIO_FIRST"]

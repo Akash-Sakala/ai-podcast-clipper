@@ -9,6 +9,7 @@ it directly from the terminal:
     python runner.py --job-dir "..\\data\\jobs\\<job id>"     (what the web app calls)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --rerank   (re-rank & re-render)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --cancel   (stop a running video, as the app's Cancel)
+    python runner.py --job-dir "..\\data\\jobs\\<job id>" --render-again   (render the same moments again, no Gemini)
     python runner.py --job-dir "..\\data\\jobs\\<job id>" --keep-clips @choice.json
                                                                (after a re-rank: the clips to keep)
     python runner.py --thumbnails                              (covers and clip posters for older videos)
@@ -58,7 +59,7 @@ from clipsets import apply_comparison, read_selection
 from jobstore import DEFAULT_DATA_DIR, Job, log
 from maintenance import backfill_replay, backfill_thumbnails, prune_videos
 from media import file_fingerprint
-from pipeline import run_job, run_rerank
+from pipeline import run_job, run_render_again, run_rerank
 
 
 def stop_on_signals() -> list[str]:
@@ -117,6 +118,8 @@ def main() -> int:
                         help="With --backfill-replay: also redo videos that already have it")
     parser.add_argument("--cancel", action="store_true",
                         help="With --job-dir: stop the video's runner, cancel its Modal calls and clean up")
+    parser.add_argument("--render-again", action="store_true",
+                        help="With --job-dir: render the last run's moments again (no transcription, no Gemini)")
     parser.add_argument("--rerank", action="store_true",
                         help="With --job-dir: re-rank & re-render a finished job from its saved transcript")
     parser.add_argument("--keep-clips", metavar="JSON",
@@ -162,6 +165,10 @@ def main() -> int:
                        error=f"Could not read the clips to keep: {exc}")
             return 2
         return apply_comparison(pathlib.Path(args.job_dir).resolve(), keep)
+    if args.render_again:
+        if not args.job_dir:
+            parser.error("--render-again needs --job-dir")
+        return run_render_again(pathlib.Path(args.job_dir).resolve(), args.keep_remote, args.keep_video)
     if args.rerank:
         if not args.job_dir:
             parser.error("--rerank needs --job-dir")
