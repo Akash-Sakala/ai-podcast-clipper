@@ -159,7 +159,7 @@ RANKING_KEYS = ("SPEAKER_MIN_HOLD_SECONDS", "FLASH_FRAMES_MAX", "DETECT_BATCH", 
                 "MIN_CLIPS", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS", "CLIP_GRACE_SECONDS", "GEMINI_MODELS",
                 "GEMINI_BUSY_RETRIES", "GEMINI_BUSY_WAIT_SECONDS", "GEMINI_THINKING_LEVEL",
                 "GEMINI_TEMPERATURE", "GEMINI_TIMEOUT_SECONDS", "RANKING_TIME_LIMIT_SECONDS",
-                "SCORE_PROFILE", "CLIPPER_APP", "CLIPPER_SECRET")
+                "POST_TEXT_TIME_LIMIT_SECONDS", "SCORE_PROFILE", "CLIPPER_APP", "CLIPPER_SECRET")
 # Keys where an empty value means something ("use the model's default"); it is sent as
 # "default" because an unset key would mean the built-in default instead.
 EMPTY_MEANS_DEFAULT = ("GEMINI_THINKING_LEVEL",)

@@ -28,6 +28,8 @@ Pipeline
        after RANKING_TIME_LIMIT_SECONDS. If Gemini still delivers fewer than MIN_CLIPS
        moments, the rest are picked from the transcript (source="fallback"), so a
        job never ends with zero clips; the reason is recorded in `report`.
+    8. After ranking, write_post_text (one more call, `prompts/post_text.md`) writes
+       each chosen clip's post text: a Shorts title, a caption and a few hashtags.
     8. Every answer's token counts (input, cached, output, thinking) are kept per call
        in report["usage"]; the laptop prices them (gemini_costs.py).
 
@@ -1270,3 +1272,132 @@ def select_moments(words: list[dict], max_clips: int, client, model: str, contex
         log(f"  #{m['rank']} score {m['score']:5.1f}{audience}  {m['start']:8.2f}-{m['end']:8.2f}  "
             f"[{m.get('source', 'gemini')}]{peak}{whole} {m['title']}")
     return chosen
+
+
+# --------------------------------------------------------------------------- #
+# Post text: title, caption and hashtags for each chosen clip
+# --------------------------------------------------------------------------- #
+
+POST_TITLE_MAX = 100          # YouTube's title limit
+POST_CAPTION_MAX = 300        # one to three short sentences
+POST_HASHTAGS_MIN, POST_HASHTAGS_MAX = 3, 5
+POST_CLIP_CHARS = 2500        # transcript sent per clip (about 2 minutes of speech)
+POST_TEXT_TIME_LIMIT_S = _env_float("POST_TEXT_TIME_LIMIT_SECONDS", 60.0)
+_NOT_HASHTAG = re.compile(r"[^0-9A-Za-z_]")
+_TRAILING_HASHTAGS = re.compile(r"(?:\s*#\w+)+\s*$")
+_QUOTES = "\"'\u201c\u201d\u2018\u2019"
+
+
+def _post_schema():
+    from pydantic import BaseModel
+
+    class PostText(BaseModel):
+        id: int
+        title: str
+        caption: str
+        hashtags: list[str]
+
+    return PostText
+
+
+def _one_line(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _cut_at_word(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = text[:limit + 1]
+    cut = head.rsplit(" ", 1)[0] if " " in head else text[:limit]
+    return cut.rstrip(" ,;:-\u2013\u2014")
+
+
+def _cut_at_sentence(text: str, limit: int) -> str:
+    """At most `limit` characters, ending on a whole sentence when one fits."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    ends = [m.end() for m in re.finditer(r"[.!?\u2026](?=\s|$)", head)]
+    return head[:ends[-1]] if ends and ends[-1] >= limit // 3 else _cut_at_word(text, limit)
+
+
+def clean_post(raw: dict) -> dict | None:
+    """Gemini's post text checked in code: a one-line title of at most POST_TITLE_MAX
+    characters without wrapping quotes, a caption without hashtags of at most
+    POST_CAPTION_MAX, and up to POST_HASHTAGS_MAX distinct one-word hashtags with a #."""
+    title = _cut_at_word(_one_line(raw.get("title")).strip(_QUOTES).strip(), POST_TITLE_MAX)
+    caption = _TRAILING_HASHTAGS.sub("", _one_line(raw.get("caption"))).strip()
+    caption = _cut_at_sentence(caption, POST_CAPTION_MAX)
+    items = raw.get("hashtags")
+    if isinstance(items, str):
+        items = items.replace(",", " ").split()
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in items if isinstance(items, list) else []:
+        tag = _NOT_HASHTAG.sub("", str(item))
+        if not tag or len(tag) > 30 or tag.lower() in seen:
+            continue
+        seen.add(tag.lower())
+        tags.append("#" + tag)
+    if not title and not caption:
+        return None
+    return {"title": title, "caption": caption, "hashtags": tags[:POST_HASHTAGS_MAX]}
+
+
+def post_text_listing(chosen: list[dict], lines: list[dict]) -> str:
+    blocks = []
+    for i, m in enumerate(chosen):
+        text = text_between(lines, float(m["start"]), float(m["end"]))[:POST_CLIP_CHARS]
+        blocks.append(f"Clip {i}\nWorking title: {_one_line(m.get('title'))}\n"
+                      f"About: {_one_line(m.get('reason'))}\nTranscript: {text}")
+    return "\n\n".join(blocks)
+
+
+def write_post_text(chosen: list[dict], words: list[dict], client, model: str, context: dict | None = None,
+                    generate=_generate_json, report: dict | None = None, log=print) -> int:
+    """ONE call after ranking: a Shorts title, a caption (the Reel caption and the
+    Short's description) and a few hashtags for every chosen clip, set as m["post"]
+    (clean_post). Never raises: a failed call leaves the clips without post text.
+    The call's tokens and count go into the ranking report like the ranking calls;
+    report["postText"] says how it went. Returns the number of clips written for."""
+    import time
+
+    report = report if report is not None else {}
+    info: dict = {"ran": False, "written": 0}
+    report["postText"] = info
+    if not chosen:
+        return 0
+    if client is None and generate is _generate_json:
+        info["skipped"] = "no Gemini client"
+        return 0
+    lines = build_lines(words)
+    system = _load_prompt("post_text.md", title_max=POST_TITLE_MAX, caption_max=POST_CAPTION_MAX,
+                          hashtags_min=POST_HASHTAGS_MIN, hashtags_max=POST_HASHTAGS_MAX)
+    video = {k: (context or {}).get(k) for k in ("title", "channel")}
+    user = format_context(video) + "Clips\n\n" + post_text_listing(chosen, lines)
+    sub: dict = {"_deadline": time.monotonic() + POST_TEXT_TIME_LIMIT_S if POST_TEXT_TIME_LIMIT_S else None}
+    started = time.monotonic()
+    info["ran"] = True
+    try:
+        answer = generate(client, model, system, user, list[_post_schema()], report=sub, log=log)
+    except Exception as exc:  # noqa: BLE001 - post text is a nicety: the clips go on without it
+        log(f"Post text call failed, the clips have no post text: {exc!r}")
+        info["failed"] = True
+        answer = []
+    for item in answer:
+        try:
+            index = int(item.get("id"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        post = clean_post(item) if 0 <= index < len(chosen) else None
+        if post and "post" not in chosen[index]:
+            chosen[index]["post"] = post
+            info["written"] += 1
+    with _CALLS_LOCK:
+        calls = report.get("calls") if isinstance(report.get("calls"), int) else 0
+        report["calls"] = calls + int(sub.get("calls") or 0)
+        report.setdefault("usage", []).extend(sub.get("usage") or [])
+        report.setdefault("errors", []).extend(f"post text: {e}" for e in sub.get("errors") or [])
+    info.update(seconds=round(time.monotonic() - started, 1), model=sub.get("modelUsed"))
+    log(f"Post text written for {info['written']} of {len(chosen)} clip(s) in {info['seconds']}s")
+    return info["written"]

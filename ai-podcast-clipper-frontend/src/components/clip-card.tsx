@@ -12,6 +12,7 @@ import {
   FallbackTag,
   isFallback,
   PeakBadge,
+  PostedTag,
   ScoreDetails,
 } from "./clip-details";
 import { IconButton } from "./ui/icon-button";
@@ -207,7 +208,8 @@ export const ClipCard = memo(function ClipCard({
 
   const copyTitle = async () => {
     try {
-      await navigator.clipboard.writeText(title);
+      const postTitle = detail?.post?.title?.trim() ?? "";
+      await navigator.clipboard.writeText(postTitle.length ? postTitle : title);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -304,6 +306,7 @@ export const ClipCard = memo(function ClipCard({
         </h3>
         <FallbackTag detail={detail} />
         <PeakBadge detail={detail} />
+        <PostedTag detail={detail} />
         <div className="mt-1 flex items-center justify-between gap-2">
           <span className="text-muted-foreground tabular text-xs">
             {length}
